@@ -1,117 +1,190 @@
+/* 5.06-v10 美化:
+ * - 配色: 医疗专业蓝 #2c6ef2 + 警示红 #d04848 + 成功绿 #2faa55 + 提示橙 #ff9800
+ * - 卡片化: 白底 + 12rpx 圆角 + 柔和阴影
+ * - 渐变: 顶部状态条用 135° 渐变, 视觉焦点明确
+ * - 字号: 标题 28rpx / 正文 26rpx, 比之前 12px (~24rpx) 微调更易读
+ * - 按钮: 白底彩色描边, 替代之前灰色块 (调试感太重)
+ * 不动 wxml 结构, 不动 ts 逻辑.
+ */
+
 page {
-  background-color: #efeff4;
+  background-color: #f5f7fa;
 }
 
-.main-box{
-  padding: 25rpx;
-
-}
-.buttom{
-  background-color: #686868;
-  height: 80rpx;
-  width: 48%;
-  text-align: center;
-  line-height: 80rpx;
-  font-size: 16px;
-  color: #00b0fb;
-}
-.buttom-active{
-  color: #999999;
-}
-.top-buttom{
-  display: flex;
-  justify-content: space-between;
-}
-.deviceInfo{
-  background: white;
-  margin-top: 20rpx;
-  line-height: 70rpx;
-  font-size: 16px;
-  padding: 0 15rpx;
-  box-sizing: border-box;
-}
-.page-box{
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-}
-.page-item{
-  width: 23%;
-  background-color: #a8a8a8;
-  margin-top: 20rpx;
-  height: 80rpx;
-  text-align: center;
-  line-height: 80rpx;
-  font-size: 12px;
-  color: white;
-}
-.active{
-  color: #00b0fb;
+.main-box {
+  padding: 24rpx;
+  padding-bottom: 48rpx;
 }
 
-// 体验版角标（services/env.ts 的 IS_TEST_BUILD 控制显隐；正式版前需关闭）
-.test-build-badge {
-  position: fixed;
-  top: 0;
-  right: 0;
-  z-index: 9999;
-  background: #ff9800;
-  color: #fff;
-  padding: 4rpx 12rpx;
-  font-size: 22rpx;
-  border-bottom-left-radius: 8rpx;
-}
-
-// 5.06-v9: 患者门诊号状态条 (红=未填, 蓝=已填)
+/* ==================== 患者门诊号状态条 ==================== */
 .patient-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14rpx 24rpx;
-  font-size: 26rpx;
+  padding: 28rpx 32rpx;
+  font-size: 28rpx;
   color: #fff;
-  margin: 0 0 12rpx 0;
-  border-radius: 8rpx;
+  margin: 0 0 16rpx 0;
+  border-radius: 16rpx;
+  box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.08);
 }
-.patient-bar-ok { background: #2c6ef2; }
-.patient-bar-bad { background: #d04848; }
+.patient-bar-ok {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  box-shadow: 0 4rpx 16rpx rgba(44, 110, 242, 0.25);
+}
+.patient-bar-bad {
+  background: linear-gradient(135deg, #d04848 0%, #ee6262 100%);
+  box-shadow: 0 4rpx 16rpx rgba(208, 72, 72, 0.25);
+}
 .patient-bar-text {
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-weight: 500;
 }
 .patient-bar-btn {
-  padding: 8rpx 24rpx;
-  background: rgba(255, 255, 255, 0.25);
-  border-radius: 6rpx;
+  padding: 12rpx 28rpx;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 32rpx;
   font-size: 24rpx;
-  margin-left: 12rpx;
+  margin-left: 16rpx;
+  font-weight: 500;
+  letter-spacing: 1rpx;
 }
 
-// 5.06-v8: 连接状态条 (绿=已连接, 红=未连接)
+/* ==================== 蓝牙连接状态条 ==================== */
 .conn-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14rpx 24rpx;
-  font-size: 26rpx;
+  padding: 28rpx 32rpx;
+  font-size: 28rpx;
   color: #fff;
-  margin: 0 0 16rpx 0;
-  border-radius: 8rpx;
+  margin: 0 0 24rpx 0;
+  border-radius: 16rpx;
 }
-.conn-bar-ok { background: #2faa55; }
-.conn-bar-bad { background: #d04848; }
+.conn-bar-ok {
+  background: linear-gradient(135deg, #2faa55 0%, #4cc46f 100%);
+  box-shadow: 0 4rpx 16rpx rgba(47, 170, 85, 0.25);
+}
+.conn-bar-bad {
+  background: linear-gradient(135deg, #d04848 0%, #ee6262 100%);
+  box-shadow: 0 4rpx 16rpx rgba(208, 72, 72, 0.25);
+}
 .conn-bar-text {
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-weight: 500;
 }
 .conn-bar-btn {
-  padding: 8rpx 24rpx;
-  background: rgba(255, 255, 255, 0.25);
-  border-radius: 6rpx;
+  padding: 12rpx 28rpx;
+  background: rgba(255, 255, 255, 0.22);
+  border-radius: 32rpx;
   font-size: 24rpx;
-  margin-left: 12rpx;
+  margin-left: 16rpx;
+  font-weight: 500;
+  letter-spacing: 1rpx;
+}
+
+/* ==================== 主操作按钮 (设备扫描 / 断开连接) ==================== */
+.top-buttom {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 24rpx;
+}
+.buttom {
+  width: 48%;
+  height: 96rpx;
+  text-align: center;
+  line-height: 96rpx;
+  font-size: 30rpx;
+  border-radius: 16rpx;
+  background: #fff;
+  color: #2c6ef2;
+  border: 2rpx solid #2c6ef2;
+  box-shadow: 0 2rpx 8rpx rgba(44, 110, 242, 0.08);
+  font-weight: 500;
+  letter-spacing: 2rpx;
+  box-sizing: border-box;
+}
+.buttom-active {
+  color: #d04848;
+  border-color: #d04848;
+  box-shadow: 0 2rpx 8rpx rgba(208, 72, 72, 0.08);
+}
+.active {
+  color: #d04848;
+}
+
+/* ==================== 设备信息卡片 ==================== */
+.deviceInfo {
+  background: #fff;
+  margin-bottom: 24rpx;
+  padding: 28rpx 32rpx;
+  box-sizing: border-box;
+  border-radius: 16rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.05);
+
+  view {
+    display: flex;
+    align-items: center;
+    line-height: 64rpx;
+    font-size: 28rpx;
+    color: #4b5563;
+    border-bottom: 1rpx solid #f0f2f5;
+    padding: 6rpx 0;
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    text {
+      color: #1f2937;
+      font-weight: 400;
+    }
+  }
+}
+
+/* ==================== 功能宫格 ==================== */
+.page-box {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.page-item {
+  width: 23.5%;
+  margin-bottom: 16rpx;
+  height: 96rpx;
+  text-align: center;
+  line-height: 96rpx;
+  font-size: 24rpx;
+  color: #2c6ef2;
+  background: #fff;
+  border-radius: 12rpx;
+  box-shadow: 0 1rpx 6rpx rgba(0, 0, 0, 0.04);
+  font-weight: 500;
+  box-sizing: border-box;
+  /* 长名字省略号显示, 避免撑破宫格 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 8rpx;
+}
+
+/* ==================== 测试版角标 ==================== */
+.test-build-badge {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 9999;
+  background: rgba(255, 152, 0, 0.92);
+  color: #fff;
+  padding: 6rpx 14rpx;
+  font-size: 20rpx;
+  border-bottom-left-radius: 12rpx;
+  font-weight: 500;
+  letter-spacing: 1rpx;
 }
