@@ -259,18 +259,20 @@ Component({
      *   - 后续 dataStorage.enqueueForBatch / flushPending 会自动从 storage 读最新值带上
      *   - 切换患者只需重新输入新门诊号, 无任何系统级动作 (不断蓝牙, 不重连)
      *
+     * 5.06-v9 (修复): wx.showModal 在 editable=true 时, content 字段作为输入框
+     * 默认值 (不是说明文字!). 之前把说明文字写在 content 里, 用户看到一坨灰字
+     * 在输入框里不知道从哪儿输. 改: content='', 说明走 title, 提示走 placeholderText.
+     *
      * 客户实际场景: 妈妈一个微信扫码进小程序 → 输入孩子A 100234 → 测完点切换 → 输入孩子B 100235.
      */
     onPatientNoTap() {
       const self = this as any;
       const current: string = wx.getStorageSync('patientNo') || '';
       wx.showModal({
-        title: current ? '切换患者门诊号' : '请输入患者门诊号',
-        content: current
-          ? `当前门诊号: ${current}\n切换后, 后续采集的数据会归属到新门诊号.`
-          : '采集前请输入患者的门诊号. 后续每条体征数据会带此门诊号入库, 用于区分不同患者.',
+        title: current ? `切换患者 (当前 ${current})` : '请输入患者门诊号',
+        content: '',  // 关键: editable 时 content 是输入框默认值, 不能填说明文字
         editable: true,
-        placeholderText: '例如: 100234',
+        placeholderText: current ? '输入新患者门诊号, 例如 100235' : '请输入门诊号, 例如 100234',
         confirmText: '确定',
         cancelText: '取消',
         success: (m: any) => {
