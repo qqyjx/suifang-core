@@ -760,17 +760,14 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(200, {
                 'service': '智能随访-可穿戴设备数据接收服务',
-                'mode': '一台设备一个微信用户一行 + 大 JSON 汇总',
-                'version': '5.06-v7',
+                'mode': '一台设备一行 + 大 JSON 汇总; 患者标识 = 大 JSON 每条记录的 "门诊号" 字段',
+                'version': '5.06-v9',
                 'endpoints': {
                     'GET  /api/status': '服务状态',
-                    'GET  /api/data': '查询所有设备 (?wxOpenid= 过滤, =NULL 仅历史未分组数据)',
-                    'POST /api/health-data': 'UPSERT 体征数据 (按 deviceId+wxOpenid 切片)',
+                    'GET  /api/data': '查询所有设备 (可选 ?patientNo= 过滤大 JSON 内的记录)',
+                    'POST /api/health-data': 'UPSERT 体征数据 (按 deviceId 切片, 透传 patientNo 写入大 JSON)',
                     'POST /api/device/register': '按 mac (优先) 或 device_sign UPSERT 到 wearable_device 并返回 deviceId',
                     'POST /api/device/merge': '合并 wearable_device_data 两行: {fromDeviceId, toDeviceId}',
-                    'POST /api/wx/login': '微信小程序 code -> openid (走 jscode2session, 需 WX_APPSECRET)',
-                    'POST /api/ble-event': '客户端蓝牙连接质量埋点 (5.06-v8)',
-                    'GET  /api/ble-event/stats': '最近 N 天连接质量聚合 (?days=7)',
                     'GET  /api/device/by-sign?sign=...': '按 sign 查 wearable_device（不创建）',
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                 },
