@@ -1,5 +1,14 @@
 <view class="main-box">
   <view wx:if="{{isTestBuild}}" class="test-build-badge">测试版 {{buildTag}}</view>
+
+  <!-- 5.06-v9: 当前患者门诊号. 没填 = 红警示 + "输入门诊号" 按钮; 已填 = 显示 + "切换" 按钮.
+       客户场景: 妈妈一个微信给俩娃测, 各自输不同门诊号; 数据按门诊号写入大 JSON 每条记录. -->
+  <view class="patient-bar {{patientNo ? 'patient-bar-ok' : 'patient-bar-bad'}}">
+    <text wx:if="{{patientNo}}" class="patient-bar-text">当前患者 · 门诊号 {{patientNo}}</text>
+    <text wx:else class="patient-bar-text">⚠ 未输入门诊号, 数据无法归属患者</text>
+    <view class="patient-bar-btn" catch:tap="onPatientNoTap">{{patientNo ? '切换患者' : '输入门诊号'}}</view>
+  </view>
+
   <!-- 5.06-v8: 连接状态条. 连上=绿; 断开=红+重连按钮.
        状态来源: data.connected (由 wx.onBLEConnectionStateChange + getConnectedBleDevice 维护) -->
   <view class="conn-bar {{connected ? 'conn-bar-ok' : 'conn-bar-bad'}}">

@@ -12,16 +12,20 @@
 
 API 端点：
 - GET  /api/status                       服务状态 + MySQL 连接
-- GET  /api/data                         查询所有设备的大 JSON (?wxOpenid= 过滤)
-- POST /api/health-data                  写入一条体征记录（自动 UPSERT 到大 JSON 数组）
+- GET  /api/data                         查询所有设备的大 JSON (可选 ?patientNo= 过滤大 JSON 内的记录)
+- POST /api/health-data                  写入一条体征记录（自动 UPSERT 到大 JSON 数组）;
+                                         患者标识传 patientNo, 写入每条记录的 '门诊号' 字段
 - POST /api/device/register              按 mac (优先) 或 device_sign UPSERT 到 wearable_device，返回 deviceId
 - POST /api/device/merge                 合并 wearable_device_data 两行: {fromDeviceId, toDeviceId}
-- POST /api/wx/login                     微信登录: code -> openid (走 jscode2session)
 - GET  /api/device/by-sign?sign=...      按 sign 查 wearable_device（不创建）
 - DELETE /api/device/:id                 删 wearable_device 一行 + 联动删该 deviceId 的所有数据
 
+5.06-v9 决定: 不动 wearable_device_data schema (无 wx_openid / patient_no 列),
+             患者标识统一写在大 JSON 每条记录的 '门诊号' 字段里, 切片仍按 deviceId 一台设备一行.
+             v7/v8 残留的 wx.login / ble_event 端点和函数保留在文件中但不在启动时激活,
+             如需启用请阅读 main 块中的注释.
+
 部署：scp 本文件到 192.168.4.104:/opt/suifang/health_server.py，systemd 启动
-配置: WX_APPSECRET 通过环境变量传 (suifang.service 里 Environment= 配置)
 """
 import os
 import json
@@ -282,14 +286,17 @@ def classify_bp(systolic, diastolic):
     if s >= 120 and d < 80:  return '偏高'
     return '正常'
 
-def to_chinese_record(data_type, data, recorded_at=None, uploaded_at=None):
-    """单条测量 → 中文字段记录（含采集时间 + 上传时间）.
+def to_chinese_record(data_type, data, patient_no=None, recorded_at=None, uploaded_at=None):
+    """单条测量 → 中文字段记录（含采集时间 + 上传时间 + 5.06-v9 门诊号）.
 
     recorded_at: 客户端 saveData 调用时刻 (用户实际测量时刻);
                  客户端 ISO 8601 字符串, 如 '2026-04-29T16:33:01.000Z'.
                  不传时回退到 server 收到 POST 的时刻.
     uploaded_at: server 收到 POST 的时刻 (UTC). 由 upsert_device_data 在调用
                  本函数前固定时刻, 多类型同一批用同一值.
+    patient_no:  5.06-v9 新增. 患者门诊号 (客户端首页输入, 一台手表多患者轮流时
+                 靠这个字段区分). 不传时不写本字段, 兼容老客户端 / 未输入场景.
+                 不动表 schema, 仅在大 JSON 每条记录里加一个 '门诊号' 字段.
     """
     if data_type == 'heartRate':
         record = {'心率值': data.get('heartRate', 0), '心率状态': data.get('heartState', 0)}
@@ -346,36 +353,36 @@ def to_chinese_record(data_type, data, recorded_at=None, uploaded_at=None):
     record['采集时间'] = recorded_at or datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
     # 上传时间: server 收到 POST 的时刻 (一定是 server 端时刻, 防客户端时钟错乱)
     record['上传时间'] = uploaded_at or datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    # 5.06-v9: 门诊号 — 客户端首页输入的患者标识, 写入大 JSON 每条记录里.
+    # 不动表 schema (仍按 deviceId 一行), 同台设备多患者数据靠每条 '门诊号' 字段区分.
+    # 客户端没传 (老版本 / 没输入) 时不写, 兼容历史数据.
+    if patient_no:
+        record['门诊号'] = patient_no
     return record
 
 # ============ UPSERT 大 JSON 逻辑 ============
-def upsert_device_data(device_id, data_type, data, wx_openid=None, recorded_at=None, uploaded_at=None):
-    """一台设备一个微信号一行：SELECT-merge-UPSERT.
+def upsert_device_data(device_id, data_type, data, patient_no=None, recorded_at=None, uploaded_at=None):
+    """一台设备一行：SELECT-merge-UPSERT.
 
-    5.06-v7: 二维 key (deviceId, wx_openid). NULL 也算独立分组 (历史数据).
-    多患者用同一台手表 -> 同 deviceId 不同 wx_openid -> 多行.
+    5.06-v9: 切片回到 v6 风格 — 仅按 deviceId 一维 (不动表 schema).
+    多患者轮流用同一台手表的区分: 在大 JSON 每条记录里塞 '门诊号' 字段
+    (调用方查询时自己按门诊号过滤数组). 一台手表所有患者数据共享同一行,
+    医院流程上靠"换人时切换门诊号"保证语义清晰.
     """
     chinese_key = TYPE_TO_CHINESE.get(data_type)
     if not chinese_key:
         return None, '未知数据类型: {}'.format(data_type)
 
-    new_record = to_chinese_record(data_type, data, recorded_at=recorded_at, uploaded_at=uploaded_at)
+    new_record = to_chinese_record(data_type, data, patient_no=patient_no,
+                                    recorded_at=recorded_at, uploaded_at=uploaded_at)
     conn = get_connection()
     try:
         cur = conn.cursor()
-        # 二维 key 查找: 给定 wx_openid 命中该 (设备, 用户) 行; 没传 wx_openid 命中 NULL 行.
-        if wx_openid:
-            cur.execute(
-                'SELECT id, data FROM wearable_device_data '
-                'WHERE deviceId = %s AND wx_openid = %s LIMIT 1',
-                (device_id, wx_openid)
-            )
-        else:
-            cur.execute(
-                'SELECT id, data FROM wearable_device_data '
-                'WHERE deviceId = %s AND wx_openid IS NULL LIMIT 1',
-                (device_id,)
-            )
+        # v9: 仅按 deviceId 切片 (与 v6 一致, 不依赖 wx_openid 列存在).
+        cur.execute(
+            'SELECT id, data FROM wearable_device_data WHERE deviceId = %s LIMIT 1',
+            (device_id,)
+        )
         row = cur.fetchone()
 
         big_json = {}
@@ -405,13 +412,14 @@ def upsert_device_data(device_id, data_type, data, wx_openid=None, recorded_at=N
                 'type': chinese_key,
                 'totalTypes': len(big_json),
                 'count': len(big_json[chinese_key]),
-                'wxOpenid': wx_openid,
+                'patientNo': patient_no,
             }
         else:
+            # v9: INSERT 仅写 (deviceId, data, createTime), 不依赖 wx_openid 列
             cur.execute(
-                'INSERT INTO wearable_device_data (deviceId, wx_openid, data, createTime) '
-                'VALUES (%s, %s, %s, %s)',
-                (device_id, wx_openid, big_json_str, now_str)
+                'INSERT INTO wearable_device_data (deviceId, data, createTime) '
+                'VALUES (%s, %s, %s)',
+                (device_id, big_json_str, now_str)
             )
             result = {
                 'action': 'insert',
@@ -419,7 +427,7 @@ def upsert_device_data(device_id, data_type, data, wx_openid=None, recorded_at=N
                 'type': chinese_key,
                 'totalTypes': len(big_json),
                 'count': 1,
-                'wxOpenid': wx_openid,
+                'patientNo': patient_no,
             }
         cur.close()
         return result, None
@@ -681,33 +689,32 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             })
 
         elif pathname == '/api/data':
-            # 5.06-v7: 支持 ?wxOpenid= 过滤. 不传 -> 返回所有行 (含 NULL).
-            #          传 'NULL' (字符串) -> 仅返回 wx_openid IS NULL 的历史行.
-            wx_openid_filter = (query.get('wxOpenid') or [None])[0]
+            # 5.06-v9: 数据库一台设备一行 (按 deviceId 切片), 不依赖 wx_openid 列.
+            # 客户端 / 调用方按 patientNo 过滤数据时, 可选 ?patientNo=100234:
+            # 服务端在 Python 端把每行 data 数组按 '门诊号' 字段过滤, 返回精简版.
+            # 不传 patientNo 时返回原样大 JSON (与 v6 行为一致).
+            patient_no_filter = (query.get('patientNo') or [None])[0]
             try:
                 conn = get_connection()
                 cur = conn.cursor()
-                if wx_openid_filter == 'NULL':
-                    cur.execute(
-                        'SELECT id, deviceId, wx_openid, data, createTime '
-                        'FROM wearable_device_data WHERE wx_openid IS NULL '
-                        'ORDER BY deviceId, createTime'
-                    )
-                elif wx_openid_filter:
-                    cur.execute(
-                        'SELECT id, deviceId, wx_openid, data, createTime '
-                        'FROM wearable_device_data WHERE wx_openid = %s '
-                        'ORDER BY deviceId, createTime',
-                        (wx_openid_filter,)
-                    )
-                else:
-                    cur.execute(
-                        'SELECT id, deviceId, wx_openid, data, createTime '
-                        'FROM wearable_device_data ORDER BY deviceId, createTime'
-                    )
+                cur.execute(
+                    'SELECT id, deviceId, data, createTime '
+                    'FROM wearable_device_data ORDER BY deviceId, createTime'
+                )
                 rows = []
                 for r in cur.fetchall():
-                    big_json = json.loads(r[3]) if r[3] else {}
+                    big_json = json.loads(r[2]) if r[2] else {}
+                    if patient_no_filter and isinstance(big_json, dict):
+                        # 按门诊号过滤每个数据类型的数组, 没匹配的类型从结果里剔除
+                        filtered = {}
+                        for k, v in big_json.items():
+                            if isinstance(v, list):
+                                hits = [rec for rec in v if rec.get('门诊号') == patient_no_filter]
+                                if hits: filtered[k] = hits
+                        big_json = filtered
+                        # 该行没有目标患者的任何数据 → 跳过这行
+                        if not big_json:
+                            continue
                     type_counts = {}
                     if isinstance(big_json, dict):
                         for k, v in big_json.items():
@@ -716,14 +723,14 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     rows.append({
                         'id': r[0],
                         'deviceId': r[1],
-                        'wxOpenid': r[2],
                         'data': big_json,
                         'typeCounts': type_counts,
-                        'createTime': r[4].strftime('%Y-%m-%d %H:%M:%S') if r[4] else None,
+                        'createTime': r[3].strftime('%Y-%m-%d %H:%M:%S') if r[3] else None,
                     })
                 cur.close()
                 conn.close()
-                self._send_json(200, {'count': len(rows), 'records': rows})
+                self._send_json(200, {'count': len(rows), 'records': rows,
+                                       'filteredBy': {'patientNo': patient_no_filter} if patient_no_filter else None})
             except Exception as e:
                 self._send_json(500, {'error': str(e)})
 
@@ -786,8 +793,9 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 device_id = body.get('deviceId', DEFAULT_DEVICE_ID)
                 data_type = body.get('dataType')
                 data = body.get('data')
-                # 5.06-v7: 客户端在 wx.login 后带 wxOpenid, 服务端按 (deviceId, wxOpenid) 切片入库
-                wx_openid = body.get('wxOpenid') or None
+                # 5.06-v9: 客户端首页输入的患者门诊号. 写入大 JSON 每条记录的 '门诊号' 字段;
+                # 数据库一台设备一行不变. 老客户端 / 未输入门诊号时 = None, 该字段不写.
+                patient_no = body.get('patientNo') or None
                 # 客户端 4.29-v5+ 携带的双时间戳:
                 #   recordedAt = saveData 调用时刻 (= 用户在表上测量时刻, 经 BleHub 收到回包时填)
                 #   uploadedAt = postOnce 发送时刻 (客户端) — 服务端记录自己收到的时刻更可靠
@@ -802,17 +810,17 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     })
                     return
                 result, err = upsert_device_data(device_id, data_type, data,
-                                                  wx_openid=wx_openid,
+                                                  patient_no=patient_no,
                                                   recorded_at=recorded_at,
                                                   uploaded_at=uploaded_at)
                 if err:
                     self._send_json(400, {'error': err, 'supportedTypes': list(TYPE_TO_CHINESE.keys())})
                     return
-                print('[{}] {} 设备{} 用户{} {}({}条) 总{}类'.format(
+                print('[{}] {} 设备{} 门诊号={} {}({}条) 总{}类'.format(
                     datetime.datetime.now().strftime('%H:%M:%S'),
                     result['action'].upper(),
                     device_id,
-                    (wx_openid[:8] + '...') if wx_openid else 'NULL',
+                    patient_no or 'NULL',
                     result['type'],
                     result['count'],
                     result['totalTypes'],
@@ -897,12 +905,14 @@ if __name__ == '__main__':
     ok, info = test_db()
     if ok:
         print('[启动] MySQL 连接成功 → {}, 当前 {} 行体征数据'.format(DB_CONFIG['host'], info))
-        # 5.06-v6: 启动时确保 mac 列存在 (idempotent), 后续 register 走 mac 优先匹配
+        # 5.06-v6: 启动时确保 wearable_device.mac 列存在 (idempotent), 后续 register 走 mac 优先匹配
         ensure_mac_column()
-        # 5.06-v7: 启动时确保 wx_openid 列存在 (idempotent), 多患者按 (deviceId, openid) 切片
-        ensure_openid_column()
-        # 5.06-v8: 启动时确保 ble_event 表存在 (idempotent), 收蓝牙连接质量埋点
-        ensure_ble_event_table()
+        # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
+        # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
+        # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
+        # 但启动时不调用. 想启用: 解开下面两行注释 + 重启服务.
+        # ensure_openid_column()
+        # ensure_ble_event_table()
     else:
         print('[警告] MySQL 连接失败 → {}: {}'.format(DB_CONFIG['host'], info))
 
@@ -912,15 +922,14 @@ if __name__ == '__main__':
         print('[警告] WX_APPSECRET 未配置, /api/wx/login 会拒绝请求. systemd 加 Environment="WX_APPSECRET=xxx" 后重启')
 
     server = HTTPServer(('0.0.0.0', PORT), HealthDataHandler)
-    print('[启动] 智能随访数据接收服务 v5.06-v7: http://0.0.0.0:{}'.format(PORT))
-    print('[模式] 一台设备一个微信用户一行 + 大 JSON 汇总')
-    print('[端点] POST /api/health-data       UPSERT 体征数据 (deviceId+wxOpenid 切片)')
-    print('[端点] POST /api/wx/login          code -> openid (jscode2session)')
+    print('[启动] 智能随访数据接收服务 v5.06-v9: http://0.0.0.0:{}'.format(PORT))
+    print('[模式] 一台设备一行 + 大 JSON 汇总; 患者标识 = 大 JSON 每条记录的 "门诊号" 字段')
+    print('[端点] POST /api/health-data       UPSERT 体征数据 (按 deviceId 切片, 透传 patientNo)')
     print('[端点] POST /api/device/register   设备名册 UPSERT (mac 优先)')
     print('[端点] POST /api/device/merge      合并 wearable_device_data 两行')
     print('[端点] GET  /api/device/by-sign    设备名册查询')
     print('[端点] GET  /api/status            服务状态')
-    print('[端点] GET  /api/data              查询所有设备 (?wxOpenid= 过滤)')
+    print('[端点] GET  /api/data              查询所有设备 (?patientNo= 过滤大 JSON 内的记录)')
     try:
         server.serve_forever()
     except KeyboardInterrupt:

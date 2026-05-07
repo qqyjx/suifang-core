@@ -27,6 +27,7 @@ Component({
     connected: false,
     isTestBuild: ENV.IS_TEST_BUILD,
     buildTag: ENV.BUILD_TAG,
+    patientNo: '', // 5.06-v9: 当前患者门诊号 (storage.patientNo 同步)
     listDate: [
       {
         name: '📊 数据管理',
@@ -253,6 +254,44 @@ Component({
   methods: {
 
     /**
+     * 5.06-v9: 患者门诊号输入/切换. 没填或想换人就点首页"输入门诊号 / 切换患者"按钮.
+     *   - 弹 wx.showModal 带 editable 输入框, 输入后存 storage.patientNo + setData
+     *   - 后续 dataStorage.enqueueForBatch / flushPending 会自动从 storage 读最新值带上
+     *   - 切换患者只需重新输入新门诊号, 无任何系统级动作 (不断蓝牙, 不重连)
+     *
+     * 客户实际场景: 妈妈一个微信扫码进小程序 → 输入孩子A 100234 → 测完点切换 → 输入孩子B 100235.
+     */
+    onPatientNoTap() {
+      const self = this as any;
+      const current: string = wx.getStorageSync('patientNo') || '';
+      wx.showModal({
+        title: current ? '切换患者门诊号' : '请输入患者门诊号',
+        content: current
+          ? `当前门诊号: ${current}\n切换后, 后续采集的数据会归属到新门诊号.`
+          : '采集前请输入患者的门诊号. 后续每条体征数据会带此门诊号入库, 用于区分不同患者.',
+        editable: true,
+        placeholderText: '例如: 100234',
+        confirmText: '确定',
+        cancelText: '取消',
+        success: (m: any) => {
+          if (!m.confirm) return;
+          const raw = (m.content || '').trim();
+          if (!raw) {
+            wx.showToast({ title: '门诊号不能为空', icon: 'none', duration: 1500 });
+            return;
+          }
+          if (raw === current) {
+            wx.showToast({ title: '门诊号未变', icon: 'none', duration: 1200 });
+            return;
+          }
+          wx.setStorageSync('patientNo', raw);
+          self.setData({ patientNo: raw });
+          wx.showToast({ title: `已切换至 ${raw}`, icon: 'success', duration: 1500 });
+        },
+      });
+    },
+
+    /**
      * 5.06-v8: 用户主动点击"重新连接"按钮 (首页状态条).
      * 清掉 userDisconnected 标志 (允许重连), 然后调 BleHub.requestReconnect 走集中式重连.
      * BleHub 内部指数退避 1s/2s/4s 三次, 互斥锁保证不重复发起.
@@ -346,6 +385,8 @@ Component({
 
     onShow() {
       let self = this;
+      // 5.06-v9: 同步 storage.patientNo 到 data, 防止跳转回首页时角标显示旧值
+      self.setData({ patientNo: wx.getStorageSync('patientNo') || '' });
 
       // let blePackage = {"deviceId":"FA:4E:30:9C:E6:B0","rssi":-38,"connectable":true,"data":{"0":2,"1":1,"2":6,"3":9,"4":255,"5":248,"6":248,"7":76,"8":197,"9":217,"10":146,"11":3,"12":248,"13":3,"14":3,"15":231,"16":254,"17":5,"18":9,"19":86,"20":50,"21":55,"22":90},"deviceName":"V27Z"}
       // 初始化蓝牙适配器

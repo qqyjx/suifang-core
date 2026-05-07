@@ -62,6 +62,33 @@ page {
   border-bottom-left-radius: 8rpx;
 }
 
+// 5.06-v9: 患者门诊号状态条 (红=未填, 蓝=已填)
+.patient-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14rpx 24rpx;
+  font-size: 26rpx;
+  color: #fff;
+  margin: 0 0 12rpx 0;
+  border-radius: 8rpx;
+}
+.patient-bar-ok { background: #2c6ef2; }
+.patient-bar-bad { background: #d04848; }
+.patient-bar-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.patient-bar-btn {
+  padding: 8rpx 24rpx;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 6rpx;
+  font-size: 24rpx;
+  margin-left: 12rpx;
+}
+
 // 5.06-v8: 连接状态条 (绿=已连接, 红=未连接)
 .conn-bar {
   display: flex;

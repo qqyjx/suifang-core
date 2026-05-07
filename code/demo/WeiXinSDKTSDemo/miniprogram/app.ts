@@ -79,53 +79,6 @@ const vpJLBle = new veepooJLBle();
   }
 })();
 
-/**
- * 5.06-v7: wx.login -> openid 持久化, 多患者轮流用同一台手表的入组研究需求.
- *
- * 触发时机: app onLaunch 一次. 同一微信号每次进小程序拿到的 openid 不变,
- * 所以缓存到 storage 后只在缺失时才重新走流程; 不同微信号扫体验版二维码会进入
- * 各自独立的小程序 storage 沙箱, 自然触发新的 wx.login 拿到新 openid 完成切换.
- *
- * 失败容忍: 后端 WX_APPSECRET 未配置 / 网络不通时静默忽略, 客户端继续工作,
- * 数据 POST 时不带 wxOpenid 进入"未分组"行 (与历史行同处). 后端配置好+下次 onLaunch
- * 自动补齐. 不阻塞主流程.
- */
-function ensureWxOpenid(): void {
-  const cached = wx.getStorageSync('wxOpenid');
-  if (cached && typeof cached === 'string' && cached.length > 0) {
-    console.log('[App] wxOpenid 已缓存:', cached.slice(0, 8) + '...');
-    return;
-  }
-  wx.login({
-    success: (res: any) => {
-      if (!res || !res.code) {
-        console.warn('[App] wx.login 无 code:', res);
-        return;
-      }
-      wx.request({
-        url: `${ENV.API_BASE}/api/wx/login`,
-        method: 'POST',
-        data: { code: res.code },
-        success: (rsp: any) => {
-          const openid = rsp && rsp.data && rsp.data.openid;
-          if (typeof openid === 'string' && openid.length > 0) {
-            wx.setStorageSync('wxOpenid', openid);
-            console.log('[App] wxOpenid 登录成功:', openid.slice(0, 8) + '...');
-            // 触发 flushPending: 之前 openid 缺失时入队的数据现在可以补传
-            dataStorage.flushPending().then((r: any) => {
-              if (r.ok > 0 || r.fail > 0) console.log('[App] wxOpenid 就绪触发 flush:', r);
-            });
-          } else {
-            console.warn('[App] /api/wx/login 返回无 openid:', rsp && rsp.data);
-          }
-        },
-        fail: (err: any) => console.warn('[App] /api/wx/login 网络失败:', err && err.errMsg),
-      });
-    },
-    fail: (err: any) => console.warn('[App] wx.login 失败:', err && err.errMsg),
-  });
-}
-
 App<IAppOption>({
   globalData: {},
   onLaunch() {
@@ -133,8 +86,9 @@ App<IAppOption>({
     // 之后页面调 veepooBle.veepooWeiXinSDKNotifyMonitorValueChange 都进 hub 而不会互相覆盖.
     bleHub.init();
 
-    // 5.06-v7: 拉 wxOpenid (一次性, 不阻塞 BLE 主流程)
-    ensureWxOpenid();
+    // 5.06-v9: 患者识别走"门诊号"方案, 不依赖 wx.login. 客户端首页加输入框,
+    // 用户输入门诊号后存 storage.patientNo, 数据 POST 时随 payload 带上.
+    // 服务端把门诊号写入大 JSON 每条记录的 '门诊号' 字段, 不动数据库 schema.
 
     // 启动数据批量上传调度: 2h 一次 + 23:59 兜底 (用户需求, 减少六元数据库写压力).
     // 多重 flush 触发: 这里启动定时器 + onShow 触发 + 网络恢复 + 重连成功 + 队列堆 80 条紧急.
