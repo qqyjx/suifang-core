@@ -4,6 +4,15 @@
 
 当前已集成 **2 款具备二类医疗器械注册证资质**的 Veepoo 可穿戴设备，支持 **10 类体征数据**的自动采集，采集端尽可能多存，客户按需拉取。
 
+## 🎬 在线演示（GitHub Pages）
+
+| 演示 | 链接 |
+|---|---|
+| 极简患者界面（仅连接/断开） | https://qqyjx.github.io/suifang/prototype/patient-demo.html |
+| 4-Tab 完整原型（医护管理界面） | https://qqyjx.github.io/suifang/prototype/index.html |
+
+> 浏览器或手机直接打开即可。三态切换：未连接 / 连接中 / 已连接。键盘 `Space` 切状态、`R` 重置。
+
 ## 为什么必须用手机/小程序，电脑直接收不了手表数据？
 
 ```
