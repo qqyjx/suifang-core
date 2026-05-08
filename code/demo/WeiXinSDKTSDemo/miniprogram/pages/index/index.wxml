@@ -1,48 +1,70 @@
-<view class="main-box">
+<view class="app">
   <view wx:if="{{isTestBuild}}" class="test-build-badge">测试版 {{buildTag}}</view>
 
-  <!-- 5.06-v9: 当前患者门诊号. 没填 = 红警示 + "输入门诊号" 按钮; 已填 = 显示 + "切换" 按钮.
-       客户场景: 妈妈一个微信给俩娃测, 各自输不同门诊号; 数据按门诊号写入大 JSON 每条记录. -->
-  <view class="patient-bar {{patientNo ? 'patient-bar-ok' : 'patient-bar-bad'}}">
-    <text wx:if="{{patientNo}}" class="patient-bar-text">当前患者 · 门诊号 {{patientNo}}</text>
-    <text wx:else class="patient-bar-text">⚠ 未输入门诊号, 数据无法归属患者</text>
-    <view class="patient-bar-btn" catch:tap="onPatientNoTap">{{patientNo ? '切换患者' : '输入门诊号'}}</view>
+  <!-- 5.06-v11: 极简患者界面.
+       默认仅"连接/断开"一个大按钮 + 设备状态卡, 数据同步全自动.
+       连续点 5 次 logo 切换高级模式 (医护/调试). -->
+
+  <!-- 顶部 logo 区, 隐藏管理员入口 -->
+  <view class="header" bindtap="onLogoTap">
+    <view class="logo-circle">⌚</view>
+    <view class="app-title">智能随访</view>
+    <view class="app-subtitle">健康监测 · 数据自动同步</view>
   </view>
 
-  <!-- 5.06-v8: 连接状态条. 连上=绿; 断开=红+重连按钮.
-       状态来源: data.connected (由 wx.onBLEConnectionStateChange + getConnectedBleDevice 维护) -->
-  <view class="conn-bar {{connected ? 'conn-bar-ok' : 'conn-bar-bad'}}">
-    <text wx:if="{{connected}}" class="conn-bar-text">● 已连接 · {{device.name || '手表'}}{{device.VPDeviceElectricPercent ? ' · 电量 ' + device.VPDeviceElectricPercent + '%' : ''}}</text>
-    <text wx:else class="conn-bar-text">● 未连接, BLE 通道断开</text>
-    <view wx:if="{{!connected}}" class="conn-bar-btn" catch:tap="onReconnectTap">重新连接</view>
-  </view>
-  <view class="top-buttom">
-    <view class="buttom" catch:tap="skipDeviceGet">设备扫描</view>
-    <view class="buttom buttom-active {{ connected ? 'active' : '' }}" catch:tap="closeBluetoothAdapterManager">断开连接</view>
-    <!-- <view class="buttom" catch:tap="getF003">获取F003</view> -->
-    <!-- <view class="buttom buttom-active" catch:tap="connectBle2">重新连接</view> -->
-  </view>
-  <!-- 显示设备相关信息 -->
-  <view class="deviceInfo" catch:tap="blePwd">
-    <view>
-      <text>设备名称：{{device.name}}</text>
+  <!-- 设备状态大卡片 -->
+  <view class="status-card {{connected ? 'status-card-on' : 'status-card-off'}}">
+    <view class="status-pulse" wx:if="{{connected}}"></view>
+    <view class="status-icon">{{connected ? '✓' : '○'}}</view>
+    <view class="status-name">{{connected ? (device.name || '智能手表') : '未连接设备'}}</view>
+    <view class="status-detail" wx:if="{{connected}}">
+      <text>电量 {{device.VPDeviceElectricPercent || '--'}}%</text>
+      <text wx:if="{{device.step}}" class="status-step"> · 今日 {{device.step}} 步</text>
     </view>
-    <view>
-      <text>MAC地址：{{device.VPDeviceMAC}}</text>
-    </view>
-    <view>
-      <text style="color: #010203;">固件版本：{{device.VPDeviceVersion}}</text>
-    </view>
-    <view>
-      <text>电池电量：{{device.VPDeviceElectricPercent}}</text>
-    </view>
-    <view>
-      <text>实时步数：{{device.step}} <text wx:if="{{device.distance}}">{{device.distance}}m </text> <text wx:if="{{device.calorie}}">{{device.calorie}}kcal</text> </text>
-    </view>
+    <view class="status-detail" wx:else>请连接您的智能手表</view>
   </view>
 
-  <!-- 页面渲染 -->
-  <view class="page-box">
-    <view class="page-item" wx:for="{{listDate}}" wx:key="index" catch:tap="skipPages" data-path="{{item.path}}">{{item.name}}</view>
+  <!-- 主操作按钮: 连或断 -->
+  <view wx:if="{{!connected}}" class="main-btn main-btn-connect" bindtap="skipDeviceGet">
+    <view class="main-btn-icon">🔍</view>
+    <view class="main-btn-text">连接智能手表</view>
   </view>
+  <view wx:else class="main-btn main-btn-disconnect" bindtap="closeBluetoothAdapterManager">
+    <view class="main-btn-icon">✕</view>
+    <view class="main-btn-text">断开连接</view>
+  </view>
+
+  <!-- 数据同步状态 (连接时显示) -->
+  <view wx:if="{{connected}}" class="sync-tip">
+    <view class="sync-dot"></view>
+    <text>数据自动同步中</text>
+  </view>
+
+  <!-- 极简模式底部提示 -->
+  <view wx:if="{{!advancedMode}}" class="footer-tip">
+    您只需保持手表佩戴并开启蓝牙, 其他无需操作
+  </view>
+
+  <!-- ============ 高级模式 (默认隐藏, 5 次点 logo 显示) ============ -->
+  <block wx:if="{{advancedMode}}">
+    <view class="advanced-divider">— 管理员功能 —</view>
+
+    <view class="patient-bar {{patientNo ? 'patient-bar-ok' : 'patient-bar-bad'}}">
+      <text wx:if="{{patientNo}}" class="patient-bar-text">当前患者 · 门诊号 {{patientNo}}</text>
+      <text wx:else class="patient-bar-text">⚠ 未输入门诊号, 数据无法归属患者</text>
+      <view class="patient-bar-btn" catch:tap="onPatientNoTap">{{patientNo ? '切换患者' : '输入门诊号'}}</view>
+    </view>
+
+    <view class="device-info-card" catch:tap="blePwd">
+      <view class="info-row"><text class="info-key">设备名称</text><text class="info-val">{{device.name || '--'}}</text></view>
+      <view class="info-row"><text class="info-key">MAC 地址</text><text class="info-val">{{device.VPDeviceMAC || '--'}}</text></view>
+      <view class="info-row"><text class="info-key">固件版本</text><text class="info-val">{{device.VPDeviceVersion || '--'}}</text></view>
+      <view class="info-row"><text class="info-key">电量</text><text class="info-val">{{device.VPDeviceElectricPercent || '--'}}%</text></view>
+      <view class="info-row"><text class="info-key">实时步数</text><text class="info-val">{{device.step || 0}} 步 {{device.distance ? '· ' + device.distance + ' m' : ''}}</text></view>
+    </view>
+
+    <view class="page-box">
+      <view class="page-item" wx:for="{{listDate}}" wx:key="index" catch:tap="skipPages" data-path="{{item.path}}">{{item.name}}</view>
+    </view>
+  </block>
 </view>
