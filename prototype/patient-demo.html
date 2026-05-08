@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能随访 · 患者展示</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    background: linear-gradient(135deg, #1a1f2e 0%, #2d3548 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    color: #fff;
+  }
+
+  .stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .state-tag {
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    padding: 8px 18px;
+    border-radius: 100px;
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    color: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    transition: all 0.4s ease;
+  }
+
+  .phone-frame {
+    width: 375px;
+    height: 812px;
+    background: #1a1a1a;
+    border-radius: 48px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5),
+                0 0 0 2px rgba(255, 255, 255, 0.04);
+    padding: 10px;
+    position: relative;
+  }
+
+  .screen {
+    width: 100%;
+    height: 100%;
+    background: #ffffff;
+    border-radius: 38px;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    transition: background 0.5s ease;
+  }
+
+  .notch {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 130px;
+    height: 32px;
+    background: #1a1a1a;
+    border-radius: 100px;
+    z-index: 10;
+  }
+
+  /* Status bar */
+  .status-bar {
+    height: 52px;
+    padding: 18px 30px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 15px;
+    font-weight: 600;
+    color: #1f2937;
+    flex-shrink: 0;
+  }
+  .status-bar .right {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .status-bar svg { display: block; }
+
+  /* Main column */
+  .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 28px 24px 44px;
+    align-items: center;
+  }
+
+  /* Top brand */
+  .top {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .brand {
+    font-size: 20px;
+    font-weight: 600;
+    color: #1f2937;
+    letter-spacing: 3px;
+  }
+  .brand-sub {
+    font-size: 12px;
+    color: #9ca3af;
+    letter-spacing: 1px;
+  }
+
+  /* Center hero */
+  .center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 28px;
+  }
+
+  .hero-ring {
+    width: 260px;
+    height: 260px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    transition: background 0.5s ease;
+    position: relative;
+  }
+  .hero-ring::before,
+  .hero-ring::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+  .screen.connected .hero-ring {
+    background: rgba(47, 170, 85, 0.12);
+  }
+  .screen.connected .hero-ring::before {
+    opacity: 1;
+    border: 2px solid rgba(47, 170, 85, 0.3);
+    animation: ringPulse 2.4s ease-out infinite;
+  }
+  .screen.connected .hero-ring::after {
+    opacity: 1;
+    border: 2px solid rgba(47, 170, 85, 0.18);
+    animation: ringPulse 2.4s ease-out infinite 1.2s;
+  }
+  @keyframes ringPulse {
+    0%   { transform: scale(0.85); opacity: 0.9; }
+    100% { transform: scale(1.15); opacity: 0; }
+  }
+
+  .hero {
+    width: 220px;
+    height: 220px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #cbd5e1 0%, #94a3b8 100%);
+    box-shadow: 0 12px 32px rgba(148, 163, 184, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.5s ease, box-shadow 0.5s ease, transform 0.5s ease;
+    position: relative;
+    z-index: 1;
+  }
+  .screen.connected .hero {
+    background: linear-gradient(135deg, #2faa55 0%, #4cc46f 100%);
+    box-shadow: 0 12px 36px rgba(47, 170, 85, 0.45);
+  }
+  .screen.connecting .hero {
+    background: linear-gradient(135deg, #4a86ff 0%, #2c6ef2 100%);
+    box-shadow: 0 12px 32px rgba(44, 110, 242, 0.45);
+    animation: heroBreath 1.2s ease-in-out infinite;
+  }
+  @keyframes heroBreath {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.04); }
+  }
+  .hero svg {
+    width: 96px;
+    height: 96px;
+    fill: #ffffff;
+  }
+  .screen.connecting .hero svg {
+    animation: spin 2s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+
+  /* Status block */
+  .status-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    text-align: center;
+    min-height: 56px;
+  }
+  .status-text {
+    font-size: 32px;
+    font-weight: 600;
+    color: #1f2937;
+    letter-spacing: 1px;
+  }
+  .status-hint {
+    font-size: 14px;
+    color: #6b7280;
+  }
+  .device-line {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 14px;
+    color: #6b7280;
+  }
+  .device-line .name {
+    color: #1f2937;
+    font-weight: 500;
+  }
+  .device-line .dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #cbd5e1;
+  }
+  .sync-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    color: #2faa55;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .sync-row svg {
+    width: 16px;
+    height: 16px;
+    fill: #2faa55;
+  }
+
+  /* visibility helpers */
+  .when-disconnected { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .when-connected    { display: none;  flex-direction: column; align-items: center; gap: 10px; }
+  .when-connecting   { display: none; }
+  .screen.connected   .when-disconnected { display: none; }
+  .screen.connected   .when-connected    { display: flex; }
+  .screen.connecting  .when-disconnected { display: none; }
+  .screen.connecting  .when-connecting   { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+  /* Bottom action */
+  .bottom {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .btn {
+    width: 100%;
+    height: 56px;
+    border-radius: 28px;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font-size: 17px;
+    font-weight: 600;
+    font-family: inherit;
+    background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+    color: #ffffff;
+    box-shadow: 0 8px 22px rgba(44, 110, 242, 0.4);
+    transition: transform 0.15s ease, box-shadow 0.3s ease, background 0.4s ease;
+  }
+  .btn:hover  { box-shadow: 0 10px 26px rgba(44, 110, 242, 0.5); }
+  .btn:active { transform: scale(0.97); }
+  .btn svg    { width: 22px; height: 22px; fill: currentColor; }
+
+  .screen.connected .btn {
+    background: #ffffff;
+    color: #d04848;
+    border: 1.5px solid rgba(208, 72, 72, 0.7);
+    box-shadow: 0 4px 14px rgba(208, 72, 72, 0.18);
+  }
+  .screen.connected .btn:hover {
+    background: rgba(208, 72, 72, 0.04);
+    box-shadow: 0 6px 18px rgba(208, 72, 72, 0.22);
+  }
+
+  .screen.connecting .btn {
+    background: #e5e7eb;
+    color: #9ca3af;
+    box-shadow: none;
+    cursor: wait;
+    pointer-events: none;
+  }
+
+  .footer {
+    font-size: 11px;
+    color: #9ca3af;
+    letter-spacing: 0.5px;
+  }
+
+  .hint-row {
+    margin-top: 4px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.4);
+    text-align: center;
+    letter-spacing: 0.5px;
+  }
+  .hint-row kbd {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-family: ui-monospace, "SF Mono", monospace;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+
+  <div class="state-tag" id="stateTag">未连接 · 点击下方按钮试试</div>
+
+  <div class="phone-frame">
+    <div class="notch"></div>
+    <div class="screen" id="screen">
+
+      <div class="status-bar">
+        <div class="time">9:41</div>
+        <div class="right">
+          <!-- signal -->
+          <svg width="18" height="11" viewBox="0 0 18 11"><rect x="0"  y="7" width="3" height="4" rx="0.7" fill="#1f2937"/><rect x="5"  y="5" width="3" height="6" rx="0.7" fill="#1f2937"/><rect x="10" y="3" width="3" height="8" rx="0.7" fill="#1f2937"/><rect x="15" y="0" width="3" height="11" rx="0.7" fill="#1f2937"/></svg>
+          <!-- wifi -->
+          <svg width="16" height="11" viewBox="0 0 16 11"><path fill="#1f2937" d="M8 1.6c2.4 0 4.6.8 6.3 2.3l-1.05 1.07A8 8 0 0 0 8 3.1a8 8 0 0 0-5.25 1.87L1.7 3.9A9.3 9.3 0 0 1 8 1.6Zm0 3a6 6 0 0 1 4.2 1.7L11.15 7.4A4.5 4.5 0 0 0 8 6.1a4.5 4.5 0 0 0-3.15 1.3L3.8 6.3A6 6 0 0 1 8 4.6Zm0 3a3 3 0 0 1 2.1.9L8 10.6 5.9 8.5A3 3 0 0 1 8 7.6Z"/></svg>
+          <!-- battery -->
+          <svg width="26" height="12" viewBox="0 0 26 12"><rect x="0.5" y="0.5" width="22" height="11" rx="3" fill="none" stroke="#1f2937" stroke-opacity="0.4"/><rect x="2" y="2" width="19" height="8" rx="1.6" fill="#1f2937"/><rect x="23.2" y="3.5" width="2" height="5" rx="1" fill="#1f2937" fill-opacity="0.4"/></svg>
+        </div>
+      </div>
+
+      <div class="main">
+        <div class="top">
+          <div class="brand">智能随访</div>
+          <div class="brand-sub">智能健康监测</div>
+        </div>
+
+        <div class="center">
+          <div class="hero-ring" id="heroRing">
+            <div class="hero" id="hero">
+              <!-- watch icon -->
+              <svg viewBox="0 0 24 24"><path d="M16 7V2H8v5l-2.7 2A6 6 0 0 0 3 14a6 6 0 0 0 2.3 5L8 21v1h8v-1l2.7-2A6 6 0 0 0 21 14a6 6 0 0 0-2.3-5L16 7zm-4 12.5A5.5 5.5 0 1 1 12 8.5a5.5 5.5 0 0 1 0 11z"/><path d="M12 10a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm.6 4.4 2-1.2-.6-1-2 1.2V11h-1v3.7l3 1.6.5-1z" opacity="0.85"/></svg>
+            </div>
+          </div>
+
+          <div class="status-block">
+            <div class="status-text" id="statusText">未连接</div>
+
+            <div class="when-disconnected">
+              <div class="status-hint">请佩戴好手表后点击下方按钮</div>
+            </div>
+
+            <div class="when-connecting">
+              <div class="status-hint" style="color:#2c6ef2;">正在搜索附近的设备…</div>
+            </div>
+
+            <div class="when-connected">
+              <div class="device-line">
+                <span class="name">S101</span>
+                <span class="dot"></span>
+                <span>电量 89%</span>
+              </div>
+              <div class="sync-row">
+                <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.5 14.5L6 12l1.4-1.4 3.1 3.1 6.1-6.1L18 9l-7.5 7.5z"/></svg>
+                <span>数据正在自动同步</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bottom">
+          <button class="btn" id="actionBtn" aria-label="蓝牙连接控制">
+            <span class="when-disconnected" style="flex-direction:row;">
+              <svg viewBox="0 0 24 24" style="margin-right:8px;"><path d="m17.71 7.71-5.71-5.71h-1v7.59l-4.59-4.59-1.41 1.41 5.59 5.59-5.59 5.59 1.41 1.41 4.59-4.59v7.59h1l5.71-5.71-4.3-4.29zM13 5.83l1.88 1.88-1.88 1.88V5.83zm1.88 10.46L13 18.17v-3.76l1.88 1.88z"/></svg>
+              连接设备
+            </span>
+            <span class="when-connecting" style="flex-direction:row; gap:10px;">
+              连接中…
+            </span>
+            <span class="when-connected" style="flex-direction:row;">
+              <svg viewBox="0 0 24 24" style="margin-right:8px;"><path d="m13 5.83 1.88 1.88-1.6 1.6 1.41 1.41 3.02-3.02L12 2h-1v5.03l2 2v-3.2zM5.41 4 4 5.41 10.59 12 5 17.59 6.41 19 11 14.41V22h1l4.29-4.29 2.3 2.29L20 18.59 5.41 4zM13 18.17v-3.76l1.88 1.88L13 18.17z"/></svg>
+              断开连接
+            </span>
+          </button>
+          <div class="footer">智能随访 · v5.06-v11</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="hint-row">
+    点击按钮试连/断 · 按 <kbd>Space</kbd> 切换状态 · 按 <kbd>R</kbd> 重置
+  </div>
+
+</div>
+
+<script>
+  const screen     = document.getElementById('screen');
+  const statusText = document.getElementById('statusText');
+  const stateTag   = document.getElementById('stateTag');
+  const actionBtn  = document.getElementById('actionBtn');
+
+  // 'disconnected' | 'connecting' | 'connected'
+  let state = 'disconnected';
+  let connectingTimer = null;
+
+  function setState(s) {
+    state = s;
+    screen.classList.remove('connected', 'connecting');
+    if (s === 'connected') {
+      screen.classList.add('connected');
+      statusText.textContent = '已连接';
+      stateTag.textContent = '已连接 · 点击按钮可断开';
+    } else if (s === 'connecting') {
+      screen.classList.add('connecting');
+      statusText.textContent = '连接中…';
+      stateTag.textContent = '连接中… 大约 2 秒';
+    } else {
+      statusText.textContent = '未连接';
+      stateTag.textContent = '未连接 · 点击下方按钮试试';
+    }
+  }
+
+  function toggle() {
+    if (state === 'disconnected') {
+      setState('connecting');
+      clearTimeout(connectingTimer);
+      connectingTimer = setTimeout(() => setState('connected'), 1800);
+    } else if (state === 'connected') {
+      setState('disconnected');
+    }
+  }
+
+  actionBtn.addEventListener('click', toggle);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); toggle(); }
+    else if (e.key === 'r' || e.key === 'R') {
+      clearTimeout(connectingTimer);
+      setState('disconnected');
+    }
+  });
+</script>
+
+</body>
+</html>
