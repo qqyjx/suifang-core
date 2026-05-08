@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能随访 v11 原型</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  background: #1a1a1a;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.phone {
+  width: 375px;
+  height: 812px;
+  background: #f5f7fa;
+  border-radius: 40px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+  position: relative;
+  overflow: hidden;
+  border: 8px solid #000;
+}
+.status-bar {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #000;
+  background: #fff;
+}
+.status-bar .right { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+.app-bar {
+  height: 44px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2937;
+  border-bottom: 1px solid #f0f2f5;
+  position: relative;
+}
+.test-badge {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  background: rgba(255,152,0,0.92); color: #fff;
+  padding: 3px 8px; font-size: 10px; border-radius: 6px; font-weight: 500;
+}
+.content {
+  height: 668px; overflow-y: auto; padding: 12px;
+  background: #f5f7fa;
+}
+.tab-bar {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  height: 56px; background: #fff;
+  border-top: 1px solid #f0f2f5;
+  display: flex; padding-bottom: 0;
+}
+.tab-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 2px;
+  font-size: 10px; color: #9ca3af; cursor: pointer;
+  transition: color 0.2s;
+}
+.tab-item.active { color: #2c6ef2; }
+.tab-icon { font-size: 22px; }
+
+/* 卡片基类 */
+.card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+.card-title {
+  font-size: 14px; font-weight: 600; color: #1f2937; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px;
+}
+
+/* 患者卡 / 连接卡 */
+.patient-card, .conn-card {
+  border-radius: 14px; padding: 16px; margin-bottom: 12px; color: #fff;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.patient-card { background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%); }
+.patient-card.empty { background: linear-gradient(135deg, #d04848 0%, #ee6262 100%); }
+.conn-card { background: linear-gradient(135deg, #2faa55 0%, #4cc46f 100%); }
+.conn-card.bad { background: linear-gradient(135deg, #d04848 0%, #ee6262 100%); }
+.card-info-row { font-size: 13px; line-height: 18px; }
+.card-info-row .big { font-size: 16px; font-weight: 600; }
+.card-info-row .sub { font-size: 11px; opacity: 0.85; margin-top: 2px; }
+.pill-btn {
+  background: rgba(255,255,255,0.22); padding: 6px 14px;
+  border-radius: 20px; font-size: 12px; cursor: pointer;
+  font-weight: 500;
+}
+
+/* 快速采集大按钮 */
+.quick-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 10px; margin-bottom: 12px;
+}
+.quick-btn {
+  background: #fff; border-radius: 12px; padding: 16px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  border-left: 3px solid #2c6ef2;
+}
+.quick-btn .qicon { font-size: 28px; }
+.quick-btn .qname { font-size: 13px; font-weight: 500; color: #1f2937; }
+.quick-btn .qdesc { font-size: 11px; color: #9ca3af; }
+.quick-btn:nth-child(2) { border-left-color: #ef4444; }
+.quick-btn:nth-child(3) { border-left-color: #06b6d4; }
+.quick-btn:nth-child(4) { border-left-color: #f59e0b; }
+
+/* 历史列表 */
+.history-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid #f0f2f5; font-size: 13px;
+}
+.history-row:last-child { border-bottom: none; }
+.history-row .h-icon {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: #eef2ff; color: #2c6ef2; display: flex;
+  align-items: center; justify-content: center; font-size: 16px; margin-right: 10px;
+}
+.history-row .h-info { flex: 1; }
+.history-row .h-info .h-title { font-weight: 500; color: #1f2937; }
+.history-row .h-info .h-time { font-size: 11px; color: #9ca3af; }
+.history-row .h-value {
+  font-size: 13px; font-weight: 600; color: #1f2937;
+}
+.history-row .h-value.warn { color: #ef4444; }
+
+/* 测量列表 */
+.measure-section { margin-bottom: 16px; }
+.section-title {
+  font-size: 12px; font-weight: 500; color: #6b7280;
+  margin: 0 4px 8px; text-transform: uppercase; letter-spacing: 1px;
+}
+.measure-list {
+  background: #fff; border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+.measure-item {
+  display: flex; align-items: center; padding: 14px 16px;
+  border-bottom: 1px solid #f0f2f5; cursor: pointer;
+}
+.measure-item:last-child { border-bottom: none; }
+.measure-item .m-icon {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: #eef2ff; color: #2c6ef2; display: flex;
+  align-items: center; justify-content: center; font-size: 18px;
+  margin-right: 12px;
+}
+.measure-item .m-name {
+  flex: 1; font-size: 14px; font-weight: 500; color: #1f2937;
+}
+.measure-item .m-name .m-sub {
+  display: block; font-size: 11px; font-weight: 400; color: #9ca3af; margin-top: 2px;
+}
+.measure-item .m-arrow { color: #d1d5db; font-size: 16px; }
+
+/* 数据 tab */
+.patient-tabs {
+  display: flex; gap: 8px; padding: 4px 0 12px; overflow-x: auto;
+}
+.patient-chip {
+  padding: 6px 14px; background: #fff; border-radius: 20px;
+  font-size: 12px; color: #6b7280; white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04); cursor: pointer;
+}
+.patient-chip.active { background: #2c6ef2; color: #fff; }
+
+.data-stat-row {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 8px; margin-bottom: 12px;
+}
+.data-stat {
+  background: #fff; border-radius: 12px; padding: 12px 8px;
+  text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+.data-stat .num {
+  font-size: 22px; font-weight: 700; color: #1f2937; line-height: 1;
+}
+.data-stat .label { font-size: 10px; color: #9ca3af; margin-top: 4px; }
+.data-stat .num.warn { color: #ef4444; }
+
+.chart-card {
+  background: #fff; border-radius: 12px; padding: 14px;
+  margin-bottom: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+.chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.chart-title { font-size: 13px; font-weight: 600; color: #1f2937; }
+.chart-range { font-size: 11px; color: #6b7280; }
+.fake-chart {
+  height: 120px;
+  background: linear-gradient(180deg, rgba(44,110,242,0.12) 0%, rgba(44,110,242,0) 100%);
+  position: relative; border-radius: 8px;
+  display: flex; align-items: flex-end; gap: 4px; padding: 8px;
+}
+.bar { flex: 1; background: #2c6ef2; border-radius: 2px 2px 0 0; opacity: 0.85; }
+
+/* 我的 / 设置 */
+.list-group {
+  background: #fff; border-radius: 12px; margin-bottom: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04); overflow: hidden;
+}
+.list-row {
+  display: flex; align-items: center; padding: 14px 16px;
+  border-bottom: 1px solid #f0f2f5; cursor: pointer; font-size: 14px;
+}
+.list-row:last-child { border-bottom: none; }
+.list-row .l-icon {
+  width: 28px; height: 28px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  margin-right: 12px; font-size: 14px; color: #fff;
+}
+.list-row .l-name { flex: 1; color: #1f2937; }
+.list-row .l-value { color: #9ca3af; font-size: 12px; }
+.list-row .l-arrow { color: #d1d5db; font-size: 14px; margin-left: 8px; }
+
+/* tab content */
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* badge "v11 原型" 在底部小字 */
+.proto-tag {
+  position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%);
+  color: #6b7280; font-size: 10px;
+  background: rgba(255,255,255,0.6); padding: 2px 8px; border-radius: 4px;
+}
+</style>
+</head>
+<body>
+
+<div class="phone">
+  <div class="status-bar">
+    <span>15:08</span>
+    <span class="right">📶 📶 89%</span>
+  </div>
+  <div class="app-bar">
+    智能随访
+    <span class="test-badge">5.06-v11</span>
+  </div>
+
+  <div class="content">
+
+    <!-- ========== Tab 1: 首页 ========== -->
+    <div class="tab-content active" id="tab-home">
+      <!-- 患者卡 -->
+      <div class="patient-card">
+        <div>
+          <div class="card-info-row big">门诊号 0012865682</div>
+          <div class="card-info-row sub">当前患者 · 数据归属</div>
+        </div>
+        <div class="pill-btn">切换</div>
+      </div>
+
+      <!-- 连接卡 -->
+      <div class="conn-card">
+        <div>
+          <div class="card-info-row big">● 已连接 S101</div>
+          <div class="card-info-row sub">MAC 9B:B8:07:E6:E6:EE · 电量 89%</div>
+        </div>
+        <div class="pill-btn">详情</div>
+      </div>
+
+      <!-- 快速采集 -->
+      <div class="card-title" style="margin: 8px 4px 8px;">快速采集</div>
+      <div class="quick-grid">
+        <div class="quick-btn">
+          <div class="qicon">🫀</div>
+          <div class="qname">血压</div>
+          <div class="qdesc">手动测量</div>
+        </div>
+        <div class="quick-btn">
+          <div class="qicon">❤️</div>
+          <div class="qname">心率</div>
+          <div class="qdesc">自动监测</div>
+        </div>
+        <div class="quick-btn">
+          <div class="qicon">🩸</div>
+          <div class="qname">血氧</div>
+          <div class="qdesc">手动 / 自动</div>
+        </div>
+        <div class="quick-btn">
+          <div class="qicon">🌡️</div>
+          <div class="qname">体温</div>
+          <div class="qdesc">手动 / 自动</div>
+        </div>
+      </div>
+
+      <!-- 今日采集统计 -->
+      <div class="card">
+        <div class="card-title">今日采集</div>
+        <div class="data-stat-row">
+          <div class="data-stat">
+            <div class="num">12</div>
+            <div class="label">血压条数</div>
+          </div>
+          <div class="data-stat">
+            <div class="num">38</div>
+            <div class="label">心率条数</div>
+          </div>
+          <div class="data-stat">
+            <div class="num warn">1</div>
+            <div class="label">异常</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 最近测量 -->
+      <div class="card">
+        <div class="card-title">最近测量</div>
+        <div class="history-row">
+          <div class="h-icon">🫀</div>
+          <div class="h-info">
+            <div class="h-title">血压 134/91</div>
+            <div class="h-time">14:40 · 高血压2级</div>
+          </div>
+          <div class="h-value warn">⚠</div>
+        </div>
+        <div class="history-row">
+          <div class="h-icon">❤️</div>
+          <div class="h-info">
+            <div class="h-title">心率 78</div>
+            <div class="h-time">14:32 · 静息</div>
+          </div>
+          <div class="h-value">正常</div>
+        </div>
+        <div class="history-row">
+          <div class="h-icon">🩸</div>
+          <div class="h-info">
+            <div class="h-title">血氧 97%</div>
+            <div class="h-time">14:18</div>
+          </div>
+          <div class="h-value">正常</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== Tab 2: 测量 ========== -->
+    <div class="tab-content" id="tab-measure">
+      <div class="patient-card" style="padding: 12px 16px; margin-bottom: 12px;">
+        <div>
+          <div class="card-info-row" style="font-size: 13px;">采集中: 门诊号 0012865682</div>
+        </div>
+        <div class="pill-btn" style="font-size: 11px; padding: 4px 10px;">切换</div>
+      </div>
+
+      <div class="measure-section">
+        <div class="section-title">常规体征</div>
+        <div class="measure-list">
+          <div class="measure-item">
+            <div class="m-icon">🫀</div>
+            <div class="m-name">血压<span class="m-sub">手动按表测量</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">❤️</div>
+            <div class="m-name">心率<span class="m-sub">自动监测 + 手动</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">🩸</div>
+            <div class="m-name">血氧<span class="m-sub">自动全天 + 手动</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">🌡️</div>
+            <div class="m-name">体温<span class="m-sub">自动 + 手动</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">💧</div>
+            <div class="m-name">血糖<span class="m-sub">手动测量</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="measure-section">
+        <div class="section-title">进阶</div>
+        <div class="measure-list">
+          <div class="measure-item">
+            <div class="m-icon">📊</div>
+            <div class="m-name">ECG 心电图<span class="m-sub">心率 + HRV + 诊断</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">🔄</div>
+            <div class="m-name">PTT 脉搏波<span class="m-sub">脉搏波传导时间</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">💉</div>
+            <div class="m-name">血液成分<span class="m-sub">尿酸/胆固醇/甘油三酯</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">⚖️</div>
+            <div class="m-name">身体成分<span class="m-sub">体重/BMI/体脂</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="measure-section">
+        <div class="section-title">综合</div>
+        <div class="measure-list">
+          <div class="measure-item">
+            <div class="m-icon">📅</div>
+            <div class="m-name">日常数据<span class="m-sub">今日 + 历史汇总</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">😴</div>
+            <div class="m-name">睡眠<span class="m-sub">深睡 / 浅睡 / 醒来</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+          <div class="measure-item">
+            <div class="m-icon">👟</div>
+            <div class="m-name">计步<span class="m-sub">步数 / 距离 / 卡路里</span></div>
+            <div class="m-arrow">›</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== Tab 3: 数据 ========== -->
+    <div class="tab-content" id="tab-data">
+      <div class="patient-tabs">
+        <div class="patient-chip active">0012865682</div>
+        <div class="patient-chip">0012217221</div>
+        <div class="patient-chip">0012712518</div>
+        <div class="patient-chip">0012225740</div>
+        <div class="patient-chip">+ 添加</div>
+      </div>
+
+      <div class="data-stat-row">
+        <div class="data-stat">
+          <div class="num">38</div>
+          <div class="label">血压</div>
+        </div>
+        <div class="data-stat">
+          <div class="num">156</div>
+          <div class="label">心率</div>
+        </div>
+        <div class="data-stat">
+          <div class="num warn">3</div>
+          <div class="label">异常项</div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title">血压趋势 · 7 天</span>
+          <span class="chart-range">5/02 - 5/08 ▼</span>
+        </div>
+        <div class="fake-chart">
+          <div class="bar" style="height: 60%"></div>
+          <div class="bar" style="height: 75%"></div>
+          <div class="bar" style="height: 65%"></div>
+          <div class="bar" style="height: 90%; background: #ef4444"></div>
+          <div class="bar" style="height: 70%"></div>
+          <div class="bar" style="height: 55%"></div>
+          <div class="bar" style="height: 80%"></div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-header">
+          <span class="chart-title">心率趋势 · 7 天</span>
+          <span class="chart-range">平均 75 bpm</span>
+        </div>
+        <div class="fake-chart">
+          <div class="bar" style="height: 50%"></div>
+          <div class="bar" style="height: 55%"></div>
+          <div class="bar" style="height: 48%"></div>
+          <div class="bar" style="height: 60%"></div>
+          <div class="bar" style="height: 52%"></div>
+          <div class="bar" style="height: 58%"></div>
+          <div class="bar" style="height: 54%"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">⚠ 异常数据</div>
+        <div class="history-row">
+          <div class="h-icon" style="background: #fee2e2; color: #ef4444;">🫀</div>
+          <div class="h-info">
+            <div class="h-title">血压 134/91 高血压2级</div>
+            <div class="h-time">5/06 14:40 · 已记录</div>
+          </div>
+          <div class="h-value warn">复测</div>
+        </div>
+      </div>
+
+      <div class="card" style="text-align: center;">
+        <span style="color: #2c6ef2; font-size: 14px;">📤 导出 CSV</span>
+        <span style="color: #d1d5db; margin: 0 12px;">|</span>
+        <span style="color: #2c6ef2; font-size: 14px;">📄 生成 PDF</span>
+        <span style="color: #d1d5db; margin: 0 12px;">|</span>
+        <span style="color: #2c6ef2; font-size: 14px;">分享</span>
+      </div>
+    </div>
+
+    <!-- ========== Tab 4: 我的 ========== -->
+    <div class="tab-content" id="tab-settings">
+      <!-- 设备管理 -->
+      <div class="section-title">设备</div>
+      <div class="list-group">
+        <div class="list-row">
+          <div class="l-icon" style="background: #2c6ef2;">🔍</div>
+          <div class="l-name">设备扫描</div>
+          <div class="l-arrow">›</div>
+        </div>
+        <div class="list-row">
+          <div class="l-icon" style="background: #2faa55;">🔄</div>
+          <div class="l-name">蓝牙重连</div>
+          <div class="l-value">已连接</div>
+          <div class="l-arrow">›</div>
+        </div>
+        <div class="list-row">
+          <div class="l-icon" style="background: #d04848;">✕</div>
+          <div class="l-name">断开连接</div>
+          <div class="l-arrow">›</div>
+        </div>
+        <div class="list-row">
+          <div class="l-icon" style="background: #f59e0b;">⬆️</div>
+          <div class="l-name">固件 OTA 升级</div>
+          <div class="l-value">v1.12.03</div>
+          <div class="l-arrow">›</div>
+        </div>
+      </div>
+
+      <!-- 患者 -->
+      <div class="section-title">患者管理</div>
+      <div class="list-group">
+        <div class="list-row">
+          <div class="l-icon" style="background: #2c6ef2;">👤</div>
+          <div class="l-name">当前患者</div>
+          <div class="l-value">0012865682</div>
+          <div class="l-arrow">›</div>
+        </div>
+        <div class="list-row">
+          <div class="l-icon" style="background: #6366f1;">📋</div>
+          <div class="l-name">患者列表</div>
+          <div class="l-value">4 位</div>
+          <div class="l-arrow">›</div>
+        </div>
+      </div>
+
+      <!-- 偏好 -->
+      <div class="section-title">偏好设置</div>
+      <div class="list-group">
+        <div class="list-row">
+          <div class="l-icon" style="background: #06b6d4;">📐</div>
+          <div class="l-name">单位设置</div>
+          <div class="l-value">公制</div>
+          <div class="l-arrow">›</div>
+        </div>
+        <div class="list-row">
+          <div class="l-icon" style="background: #8b5cf6;">🔔</div>
+          <div class="l-name">提醒设置</div>
+          <div class="l-arrow">›</div>
+        </div>
+        <div class="list-row">
+          <div class="l-icon" style="background: #ec4899;">⌚</div>
+          <div class="l-name">表盘相关</div>
+          <div class="l-arrow">›</div>
+        </div>
+      </div>
+
+      <!-- 关于 -->
+      <div class="section-title">关于</div>
+      <div class="list-group">
+        <div class="list-row">
+          <div class="l-icon" style="background: #6b7280;">ℹ️</div>
+          <div class="l-name">版本信息</div>
+          <div class="l-value">5.06-v11</div>
+          <div class="l-arrow">›</div>
+        </div>
+        <div class="list-row">
+          <div class="l-icon" style="background: #6b7280;">📖</div>
+          <div class="l-name">使用说明</div>
+          <div class="l-arrow">›</div>
+        </div>
+      </div>
+
+      <!-- 调试 (仅测试版) -->
+      <div class="section-title">⚙️ 调试 (正式版隐藏)</div>
+      <div class="list-group">
+        <div class="list-row" style="color: #9ca3af;">
+          <div class="l-icon" style="background: #9ca3af;">🐛</div>
+          <div class="l-name">数据日志 / 波形 / 切换服务 / 4G 等</div>
+          <div class="l-arrow">›</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar">
+    <div class="tab-item active" data-tab="home">
+      <div class="tab-icon">🏠</div>
+      <div>首页</div>
+    </div>
+    <div class="tab-item" data-tab="measure">
+      <div class="tab-icon">📋</div>
+      <div>测量</div>
+    </div>
+    <div class="tab-item" data-tab="data">
+      <div class="tab-icon">📊</div>
+      <div>数据</div>
+    </div>
+    <div class="tab-item" data-tab="settings">
+      <div class="tab-icon">👤</div>
+      <div>我的</div>
+    </div>
+  </div>
+</div>
+
+<div class="proto-tag">智能随访 v11 原型 · 4-tab 架构 · 浏览器/真机预览</div>
+
+<script>
+document.querySelectorAll('.tab-item').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab-item').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('tab-' + t.dataset.tab).classList.add('active');
+    document.querySelector('.content').scrollTo(0, 0);
+  });
+});
+// 卡片点击效果(仅模拟)
+document.querySelectorAll('.quick-btn, .measure-item, .list-row, .pill-btn, .patient-chip').forEach(el => {
+  el.addEventListener('click', e => {
+    el.style.opacity = '0.6';
+    setTimeout(() => el.style.opacity = '1', 150);
+  });
+});
+</script>
+</body>
+</html>
