@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>真机测试 Checklist — 打通硬件数据流 · 智能随访</title>
+<style>
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+                 "Microsoft YaHei", "Source Han Sans CN", sans-serif;
+    color: #1f2937;
+    background: #f5f7fa;
+    margin: 0;
+    padding: 24px 16px 64px;
+    font-size: 16px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+}
+.container {
+    max-width: 820px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+    padding: 40px 48px 64px;
+}
+@media (max-width: 640px) {
+    body { padding: 12px 8px 48px; font-size: 15px; }
+    .container { padding: 24px 20px 40px; border-radius: 12px; }
+}
+h1, h2, h3, h4, h5, h6 {
+    color: #1f2937;
+    font-weight: 600;
+    margin-top: 1.6em;
+    margin-bottom: 0.6em;
+    line-height: 1.3;
+}
+h1 {
+    font-size: 28px;
+    margin-top: 0;
+    padding-bottom: 12px;
+    border-bottom: 2px solid #2c6ef2;
+    color: #2c6ef2;
+    letter-spacing: 1px;
+}
+h2 {
+    font-size: 22px;
+    border-left: 4px solid #2c6ef2;
+    padding-left: 12px;
+    background: linear-gradient(90deg, rgba(44,110,242,0.06) 0%, transparent 50%);
+    padding-top: 6px; padding-bottom: 6px;
+}
+h3 { font-size: 18px; color: #374151; }
+h4 { font-size: 16px; color: #4b5563; }
+p { margin: 1em 0; color: #374151; }
+strong { color: #1f2937; font-weight: 600; }
+code {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.9em;
+    background: #f0f2f5;
+    color: #d04848;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+pre {
+    background: #1f2937;
+    color: #e5e7eb;
+    padding: 16px 20px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 1em 0;
+}
+pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    font-size: inherit;
+}
+blockquote {
+    border-left: 4px solid #ff9800;
+    background: rgba(255, 152, 0, 0.06);
+    padding: 12px 18px;
+    margin: 1em 0;
+    color: #4b5563;
+    border-radius: 0 8px 8px 0;
+}
+blockquote p:first-child { margin-top: 0; }
+blockquote p:last-child { margin-bottom: 0; }
+ul, ol { padding-left: 2em; margin: 1em 0; }
+li { margin: 0.4em 0; }
+li > p { margin: 0.4em 0; }
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1.2em 0;
+    font-size: 14px;
+    background: #fff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+@media (min-width: 720px) { table { display: table; white-space: normal; } }
+thead { background: linear-gradient(135deg, #2c6ef2, #4a86ff); color: #fff; }
+th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid #f0f2f5;
+}
+th { font-weight: 600; letter-spacing: 1px; }
+tbody tr:nth-child(odd) { background: #fafbfd; }
+tbody tr:hover { background: #f0f5ff; }
+a { color: #2c6ef2; text-decoration: none; border-bottom: 1px solid transparent; transition: border-color 0.2s; }
+a:hover { border-bottom-color: #2c6ef2; }
+hr { border: none; border-top: 1px solid #e5e7eb; margin: 2em 0; }
+img { max-width: 100%; height: auto; border-radius: 8px; }
+.toc {
+    background: #f0f5ff;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 1em 0 2em;
+    font-size: 14px;
+    border-left: 4px solid #2c6ef2;
+}
+.toc ul { padding-left: 1.4em; margin: 0.4em 0; }
+.footer-meta {
+    margin-top: 64px;
+    padding-top: 16px;
+    border-top: 1px solid #e5e7eb;
+    color: #9ca3af;
+    font-size: 12px;
+    text-align: center;
+}
+.footer-meta a { color: #6b7280; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1 id="真机测试-checklist--打通硬件数据流">真机测试 Checklist —
+打通硬件数据流</h1>
+<p>本文档指导从零开始用 AMOLED 手表 + 手机微信小程序，验证数据从 BLE
+硬件端到端流入六元 MySQL 的完整链路。</p>
+<hr />
+<h2 id="数据流概览">数据流概览</h2>
+<pre><code>AMOLED 手表 ──BLE──→ 手机微信小程序 ──HTTPS──→ dc.ncrc.org.cn/api2 ──→ 六元 MySQL (deviceId=4)
+   待测               待测                     已验证                已验证</code></pre>
+<p><strong>真机测试数据写入 <code>deviceId=4</code></strong>，demo
+数据（deviceId=1/2/3）保留完整。</p>
+<hr />
+<h2 id="准备工作">准备工作</h2>
+<h3 id="环境就绪检查">环境就绪检查</h3>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>检查命令</th>
+<th>期望</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>六元 API 可达</td>
+<td><code>curl -s https://dc.ncrc.org.cn/api2/api/status</code></td>
+<td><code>"status":"running"</code></td>
+</tr>
+<tr>
+<td>register API 已上线</td>
+<td><code>curl -s https://dc.ncrc.org.cn/api2/ | python3 -m json.tool | grep device/register</code></td>
+<td>命中 <code>POST /api/device/register</code></td>
+</tr>
+<tr>
+<td>3 台 demo 设备在</td>
+<td><code>curl -s https://dc.ncrc.org.cn/api2/api/data | python3 -c "import json,sys; print(json.load(sys.stdin)['count'])"</code></td>
+<td><code>3</code></td>
+</tr>
+<tr>
+<td>S101 已注册</td>
+<td><code>curl -s 'https://dc.ncrc.org.cn/api2/api/device/by-sign?sign=S101_FA:BA:94:8A:70:75'</code></td>
+<td>含 <code>"id":4</code></td>
+</tr>
+<tr>
+<td>手表已充电开机</td>
+<td>看手表屏幕</td>
+<td>显示时间</td>
+</tr>
+<tr>
+<td>手表未被其他 App 连</td>
+<td>从其他设备断开蓝牙</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="需要的东西">需要的东西</h3>
+<ul>
+<li>能上网的手机（Android 5.0+ 或 iOS 10+），手机微信已登录</li>
+<li>AMOLED 手表（VP-W680），已充电</li>
+<li>Windows 电脑 + 微信开发者工具（最新稳定版）</li>
+</ul>
+<hr />
+<h2 id="phase-awindows-侧导入项目">Phase A：Windows 侧导入项目</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>A1.</strong> 打开 Windows
+版微信开发者工具</label></li>
+<li><label><input type="checkbox" /><strong>A2.</strong>
+点「导入项目」，目录填：</label>
+<pre><code>\\wsl$\Ubuntu\home\qq\WeChat_Mini_Program_Ble_SDK\code\demo\WeiXinSDKTSDemo</code></pre></li>
+<li><label><input type="checkbox" /><strong>A3.</strong>
+AppID：<code>wxbc5453a4c53dbee8</code></label></li>
+<li><label><input type="checkbox" /><strong>A4.</strong> 点「设置 →
+项目设置」：</label>
+<ul class="task-list">
+<li><label><input
+type="checkbox" />本地设置：勾选「不校验合法域名、web-view（业务域名）、TLS
+版本以及 HTTPS 证书」</label></li>
+<li><label><input
+type="checkbox" />本地设置：勾选「增强编译」</label></li>
+<li><label><input
+type="checkbox" />基础库：<code>≥ 3.8.9</code></label></li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>A5.</strong>
+点「编译」，看模拟器窗口是否出现小程序首页</label></li>
+<li><label><input type="checkbox" /><strong>A6.</strong>
+看控制台：<strong>无红色报错</strong>（黄色警告可忽略）</label></li>
+</ul>
+<p><strong>验收：</strong> 模拟器显示首页，控制台无红色错误。</p>
+<hr />
+<h2 id="phase-b真机预览">Phase B：真机预览</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>B1.</strong>
+在微信开发者工具点右上角「预览」按钮</label></li>
+<li><label><input type="checkbox" /><strong>B2.</strong>
+弹出二维码</label></li>
+<li><label><input type="checkbox" /><strong>B3.</strong> 手机微信扫码 →
+打开小程序</label></li>
+<li><label><input type="checkbox" /><strong>B4.</strong>
+手机上的权限检查：</label>
+<ul class="task-list">
+<li><label><input type="checkbox" />系统蓝牙：已开启</label></li>
+<li><label><input type="checkbox" />系统定位：已开启（微信扫 BLE
+需要定位权限）</label></li>
+<li><label><input type="checkbox" />微信 → 设置 → 隐私 →
+授权管理：蓝牙已授权</label></li>
+<li><label><input type="checkbox" />微信 → 设置 → 隐私 →
+授权管理：位置已授权</label></li>
+</ul></li>
+</ul>
+<p><strong>验收：</strong> 手机上能看到小程序首页，有功能菜单列表。</p>
+<hr />
+<h2 id="phase-cble-连接--密钥认证关键卡点">Phase C：BLE 连接 +
+密钥认证（关键卡点）</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>C1.</strong> 手机小程序首页
+→ 找「蓝牙连接」或类似入口 → 进入
+<code>pages/bleConnection</code></label></li>
+<li><label><input type="checkbox" /><strong>C2.</strong>
+点「扫描」按钮</label>
+<ul>
+<li>期望：5 秒内列出附近的 BLE 设备</li>
+<li>手表应出现，名称类似 <code>VP-W680</code> 或 MAC 地址开头</li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>C3.</strong>
+点选中手表</label>
+<ul>
+<li>期望：「连接中...」loading，5-10 秒后成功</li>
+<li>期望：密钥认证 <code>veepooBlePasswordCheckManager()</code>
+成功</li>
+<li>期望：跳回首页，显示设备已连接</li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>C4.</strong>
+在首页确认「已连接 VP-W680」或类似字样</label></li>
+</ul>
+<p><strong>若卡在「连接中」：</strong></p>
+<ol type="1">
+<li>在微信开发者工具点「远程调试」→「vConsole」查看日志</li>
+<li>看是否有 <code>veepooBlePasswordCheckManager</code> 的调用日志</li>
+<li>重启手表蓝牙（关机再开）</li>
+<li>确认没有其他手机或 App 正在连这只手表</li>
+<li>关闭小程序重新扫码打开</li>
+</ol>
+<p><strong>验收：</strong> 首页显示设备已连接，无持续 loading。</p>
+<hr />
+<h2 id="phase-d第一类数据验证--心率最快">Phase D：第一类数据验证 —
+心率（最快）</h2>
+<p><strong>WSL 端准备：</strong> 在 WSL 终端启动实时监控：</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> /home/qq/WeChat_Mini_Program_Ble_SDK</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">bash</span> scripts/watch-production-data.sh</span></code></pre></div>
+<p>监控界面会实时显示 <code>deviceId=4</code>
+的状态（初始应为「尚无数据」）。</p>
+<hr />
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>D1.</strong> 手机小程序首页
+→ 进入「心率测试」页面（<code>pages/heartRateTest</code>）</label></li>
+<li><label><input type="checkbox" /><strong>D2.</strong>
+点「开始测量」按钮</label></li>
+<li><label><input type="checkbox" /><strong>D3.</strong>
+戴上手表（确保贴紧手腕）</label></li>
+<li><label><input type="checkbox" /><strong>D4.</strong> 等 5-15
+秒</label>
+<ul>
+<li>期望：UI 显示真实心率值（如 <code>72 bpm</code>）</li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>D5.</strong>
+在微信开发者工具 vConsole 查看日志：</label>
+<ul>
+<li>期望看到：<code>[DataStorage] HTTP同步heartRate成功: ...</code></li>
+<li>期望看到：<code>action: "insert"</code> 或
+<code>"update"</code></li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>D6.</strong> 在 WSL
+监控界面看：</label>
+<ul>
+<li>期望：<code>设备4</code> 从「尚无数据」变为
+<code>心率(1): {心率值: XX, ...}</code></li>
+<li>采集时间应该是现在的时间</li>
+</ul></li>
+</ul>
+<p><strong>验收三条：</strong></p>
+<ul>
+<li>✅ 手机 UI 看到真实心率</li>
+<li>✅ vConsole 看到 HTTP 同步成功日志</li>
+<li>✅ WSL 监控看到 deviceId=4 新增了心率记录</li>
+</ul>
+<p><strong>达成这三条 = 第一个硬件数据类型打通成功。</strong></p>
+<hr />
+<h2 id="phase-e扩展测试其他数据类型">Phase E：扩展测试其他数据类型</h2>
+<p>每种数据独立测试，失败一个不影响其他。每跑完一个在监控面板确认数据到达。</p>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>E1. 血氧</strong>
+<code>pages/bloodOxygen</code></label>
+<ul>
+<li>点测量 → 等 10 秒</li>
+<li>监控面板：<code>设备4</code> 新增 <code>血氧(1)</code></li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>E2. 血压</strong>
+<code>pages/universalBlood</code></label>
+<ul>
+<li>点开始 → 手表充气测量 → 等 30-60 秒</li>
+<li>监控面板：<code>设备4</code> 新增 <code>血压(1)</code></li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>E3. 体温</strong>
+<code>pages/bodyTemperature</code></label>
+<ul>
+<li>手表贴皮肤 → 点读取</li>
+<li>监控面板：<code>设备4</code> 新增 <code>体温(1)</code></li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>E4. 步数</strong>
+<code>pages/readDailyData</code></label>
+<ul>
+<li>点读取今日数据</li>
+<li>监控面板：<code>设备4</code> 新增 <code>步数(1)</code></li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>E5. 睡眠</strong>
+<code>pages/sleep</code>（需要过夜数据，可选）</label>
+<ul>
+<li>点读取昨夜数据</li>
+<li>监控面板：<code>设备4</code> 新增 <code>睡眠(1)</code></li>
+</ul></li>
+</ul>
+<hr />
+<h2 id="phase-f鲁棒性验证427-体验版交付前必跑">Phase F：鲁棒性验证（4.27
+体验版交付前必跑）</h2>
+<blockquote>
+<p>在 D/E 数据类型打通后做。任何一条不过都不应交付。</p>
+</blockquote>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>F1.
+断网重传</strong></label>
+<ul>
+<li>测心率前手机切飞行模式</li>
+<li>在心率页测一组数据</li>
+<li>vConsole 期望看到：<code>HTTP同步heartRate失败入队待补传</code></li>
+<li>关闭飞行模式，等 5-10 秒</li>
+<li>vConsole
+期望看到：<code>[Sync] 网络恢复补传 {ok: 1, fail: 0}</code></li>
+<li>服务器 <code>bash scripts/watch-production-data.sh</code>
+看到该组心率到达</li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>F2.
+蓝牙断线自动重连</strong></label>
+<ul>
+<li>连接成功后让手表远离手机 5 米至断线（或关手表蓝牙）</li>
+<li>vConsole 期望看到：<code>[AutoReconnect] result=&gt;</code>
+后跟一个失败结果</li>
+<li>让手表再次靠近 / 重开手表蓝牙</li>
+<li>数秒内 vConsole 显示连接成功，无需用户手动操作</li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>F3. App.onShow
+自动重连</strong></label>
+<ul>
+<li>连接状态下退出小程序到桌面</li>
+<li>锁屏 1 分钟后再唤醒，重开小程序</li>
+<li>vConsole 期望看到：<code>[App.onShow] 自动重连=&gt;</code></li>
+<li>不需要进连接页就能继续测心率</li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>F4.
+扫描白名单过滤</strong></label>
+<ul>
+<li>在公司同时打开多个非 Veepoo 蓝牙设备（手环 / AirPods /
+其他厂商手表）</li>
+<li>进入连接页扫描</li>
+<li>列表只显示 <code>S101</code> / <code>VP-</code> / <code>VPR</code>
+开头且 RSSI≥-75 的设备</li>
+</ul></li>
+<li><label><input type="checkbox" /><strong>F5. 扫描 30s
+自动停止</strong></label>
+<ul>
+<li>进入连接页不点任何东西</li>
+<li>30 秒后自动弹出 toast <code>扫描结束，未找到请重试</code></li>
+</ul></li>
+</ul>
+<h2 id="phase-g体验版正式版区分仅体验版交付时跑">Phase
+G：体验版/正式版区分（仅体验版交付时跑）</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>G1.</strong>
+编译运行：首页右上角显示橙色「测试版 test-2026.04.27」角标</label></li>
+<li><label><input type="checkbox" /><strong>G2.</strong>
+真机预览：vConsole
+调试面板<strong>自动开启</strong>（不需要在开发者工具勾选）</label></li>
+<li><label><input type="checkbox" /><strong>G3.</strong>
+切换试跑（不发布）：临时把 <code>services/env.ts</code> 改
+<code>IS_TEST_BUILD: false</code> → 重新编译 → 角标消失、vConsole
+关闭；改回 true 提交</label></li>
+</ul>
+<hr />
+<h2 id="故障排查">故障排查</h2>
+<h3 id="小程序报-requestfail-url-not-in-domain-list">小程序报
+"request:fail url not in domain list"</h3>
+<ul>
+<li>微信开发者工具「设置 → 项目设置」勾选「不校验合法域名」</li>
+</ul>
+<h3 id="蓝牙扫不到设备">蓝牙扫不到设备</h3>
+<ul>
+<li>手机定位权限未开（BLE 扫描在微信上强制要求定位权限）</li>
+<li>手表已被其他 App 连着 → 断开其他连接</li>
+<li>手表息屏广播停止 → 按按键唤醒</li>
+</ul>
+<h3 id="连接成功但没数据">连接成功但没数据</h3>
+<ul>
+<li>密钥认证失败 → vConsole 搜 <code>passwordCheck</code>
+看是否成功</li>
+<li>手表固件返回的 BLE type 码与代码不匹配
+<ul>
+<li>心率=51，血压=18，血氧=30，体温=6</li>
+<li>在采集页面 vConsole 打断点看 <code>e.type</code></li>
+</ul></li>
+</ul>
+<h3 id="vconsole-看到-http-失败">vConsole 看到 HTTP 失败</h3>
+<ul>
+<li>手机无网络</li>
+<li><code>dc.ncrc.org.cn</code> 无法访问 →
+<code>curl https://dc.ncrc.org.cn/api2/api/status</code> 测试</li>
+<li>域名校验没勾掉</li>
+</ul>
+<h3 id="数据已写入但监控面板没反应">数据已写入但监控面板没反应</h3>
+<ul>
+<li>监控面板默认关注 deviceId=4，检查 <code>TARGET_DEVICE</code>
+环境变量</li>
+<li>手动 curl 验证：
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-s</span> https://dc.ncrc.org.cn/api2/api/data <span class="kw">|</span> <span class="ex">python3</span> <span class="at">-m</span> json.tool <span class="at">--no-ensure-ascii</span></span></code></pre></div></li>
+</ul>
+<hr />
+<h2 id="数据归宿说明">数据归宿说明</h2>
+<ul>
+<li><strong>真机采集数据</strong> →
+<code>deviceId=4</code>（本次测试新增）</li>
+<li><strong>Demo 数据</strong> →
+<code>deviceId=1/2/3</code>（保持不变）</li>
+<li><code>dataStorage.ts</code> 中的 <code>deviceId=4</code>
+是暂时硬编码，打通后再做动态映射（从手表 MAC 地址查 deviceId）</li>
+</ul>
+<hr />
+<h2 id="打通后的下一步">打通后的下一步</h2>
+<ol type="1">
+<li>✅ <strong>动态 deviceId 映射</strong>：已实现 ——
+<code>services/dataStorage.ts:resolveDeviceId()</code> 在 BLE 连接后调
+<code>POST /api/device/register</code> 取 deviceId</li>
+<li>✅ <strong>断网重传</strong>：已实现 —— <code>enqueuePending</code>
++ <code>flushPending</code>，触发点：onShow / 网络恢复</li>
+<li><strong>合法域名上架</strong>：小程序正式发布前，把
+<code>dc.ncrc.org.cn</code> 加到微信公众平台后台的合法 request
+域名（详见 <code>docs/4.25plan.md</code> Step 10.1）</li>
+<li><strong>数据校验</strong>：血压/心率等值的合理性检查（如血压 &lt;
+60/40 或 &gt; 250/180 拒绝入库）</li>
+<li><strong>受试者编号 ↔︎ deviceId 绑定</strong>：当前
+<code>patientId</code> 硬编码为 1；正式上线前由六元/医生端建立映射</li>
+</ol>
+<hr />
+<h2 id="参考文件">参考文件</h2>
+<ul>
+<li>数据采集全流程：<a
+href="SDK数据采集全景.html">docs/SDK数据采集全景.md</a></li>
+<li>BLE 连接代码：<a
+href="../code/demo/WeiXinSDKTSDemo/miniprogram/pages/bleConnection/index.ts">code/demo/WeiXinSDKTSDemo/miniprogram/pages/bleConnection/index.ts</a></li>
+<li>心率测试代码：<a
+href="../code/demo/WeiXinSDKTSDemo/miniprogram/pages/heartRateTest/index.ts">code/demo/WeiXinSDKTSDemo/miniprogram/pages/heartRateTest/index.ts</a></li>
+<li>数据存储服务：<a
+href="../code/demo/WeiXinSDKTSDemo/miniprogram/services/dataStorage.ts">code/demo/WeiXinSDKTSDemo/miniprogram/services/dataStorage.ts</a></li>
+<li>监控脚本：<a
+href="../scripts/watch-production-data.sh">scripts/watch-production-data.sh</a></li>
+</ul>
+
+<div class="footer-meta">
+智能随访 · 文档自 docs/真机测试checklist.md 自动生成 ·
+<a href="https://github.com/qqyjx/suifang">GitHub 仓库</a>
+</div>
+</div>
+</body>
+</html>

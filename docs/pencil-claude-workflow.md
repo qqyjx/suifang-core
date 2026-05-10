@@ -93,7 +93,7 @@ Pencil 启动时应该自动写入这块. 没有就手动看 Pencil → Settings
 
 ```
 [Claude Code]
-   > 看一下我现在 pages/index/ 的实现, 跟 Pencil 当前 Slide "首页 v11" 的设计对比,
+   > 看一下我现在 pages/index/ 的实现, 跟 Pencil 当前 Slide "首页 v10" 的设计对比,
      列出哪里不一致
    ↓
 [Claude Code] (读 wxml/less + Pencil Slide layers)
@@ -124,18 +124,18 @@ Pencil 启动时应该自动写入这块. 没有就手动看 Pencil → Settings
 
 ---
 
-## 智能随访 v11 落地建议步骤
+## 智能随访 v10 落地建议步骤
 
 ### 阶段 1: 业务对齐 (本阶段, 不动 UI)
-- ✅ 已产出: [docs/business-logic-v11.md](business-logic-v11.md) (业务逻辑设计文档)
-- ✅ 已产出: [docs/ui-prototype-v11.md](ui-prototype-v11.md) (UI 设计规格)
+- ✅ 已产出: [docs/business-logic-v10.md](business-logic-v10.md) (业务逻辑设计文档)
+- ✅ 已产出: [docs/ui-prototype-v10.md](ui-prototype-v10.md) (UI 设计规格)
 - ✅ 已产出: [prototype/index.html](../prototype/index.html) (可点击 HTML 原型)
 - 待做: 跟客户/医生评审业务逻辑文档, 确认 9 个决策点的选择
 
 ### 阶段 2: 用 Pencil 把 4-tab 画细 (1-2 天)
-- 在 Pencil 创建一个 .pen 文件 `suifang-v11.pen`
+- 在 Pencil 创建一个 .pen 文件 `suifang-v10.pen`
 - 4 个 Slide: home / measure / data / settings
-- 每个 Slide 按 [docs/ui-prototype-v11.md](ui-prototype-v11.md) 的 ASCII 线框画细化版
+- 每个 Slide 按 [docs/ui-prototype-v10.md](ui-prototype-v10.md) 的 ASCII 线框画细化版
 - Claude Code 边看边给意见 (模式 1/3)
 - 用 Components 抽出复用的卡片 (patient-bar / conn-bar / measure-item / list-row)
 
@@ -148,12 +148,12 @@ Pencil 启动时应该自动写入这块. 没有就手动看 Pencil → Settings
 - 模式 2: 让 Claude Code 把每个 Slide 转成 wxml + less
 - 配套修改 app.json 加 tabBar
 - 旧 25 page 不动, 仅做导航重组
-- 阶段 1-6 按 [docs/ui-prototype-v11.md](ui-prototype-v11.md) 末尾 "实施方案" 走
+- 阶段 1-6 按 [docs/ui-prototype-v10.md](ui-prototype-v10.md) 末尾 "实施方案" 走
 
 ### 阶段 5: 上线 + 测试 (0.5 天)
-- BUILD_TAG → 5.06-v11
+- BUILD_TAG → 5.06-v10
 - PowerShell git pull D:\suifang_dev
-- 微信开发者工具上传 5.6.11 → 选为体验版
+- 微信开发者工具上传 5.6.10 → 选为体验版
 - 客户重扫旧二维码
 
 ---
@@ -203,12 +203,12 @@ WSL ↔ Windows 主机 的 MCP 跨边界问题如果出现, 退路是: 在 Windo
 
 ## 现在你做的事 (按优先级)
 
-1. **打开 [docs/business-logic-v11.md](business-logic-v11.md), 跟同事/医生评审 9 个决策点**
+1. **打开 [docs/business-logic-v10.md](business-logic-v10.md), 跟同事/医生评审 9 个决策点**
    决策完了再动手画 Pencil, 否则方向错画了白画.
 
 2. **同时让同事**:
-   - 在 Pencil 创建 `prototype/suifang-v11.pen`
-   - 4 个 Slide 按 [docs/ui-prototype-v11.md](ui-prototype-v11.md) 的 ASCII 线框画
+   - 在 Pencil 创建 `prototype/suifang-v10.pen`
+   - 4 个 Slide 按 [docs/ui-prototype-v10.md](ui-prototype-v10.md) 的 ASCII 线框画
    - 业务逻辑评审完后, 把决策点 1-9 的答案反映到 Pencil 设计稿
 
 3. **本机 (WSL) 同步**:

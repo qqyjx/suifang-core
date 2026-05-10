@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>智能随访小程序使用指南 · 智能随访</title>
+<style>
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+                 "Microsoft YaHei", "Source Han Sans CN", sans-serif;
+    color: #1f2937;
+    background: #f5f7fa;
+    margin: 0;
+    padding: 24px 16px 64px;
+    font-size: 16px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+}
+.container {
+    max-width: 820px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+    padding: 40px 48px 64px;
+}
+@media (max-width: 640px) {
+    body { padding: 12px 8px 48px; font-size: 15px; }
+    .container { padding: 24px 20px 40px; border-radius: 12px; }
+}
+h1, h2, h3, h4, h5, h6 {
+    color: #1f2937;
+    font-weight: 600;
+    margin-top: 1.6em;
+    margin-bottom: 0.6em;
+    line-height: 1.3;
+}
+h1 {
+    font-size: 28px;
+    margin-top: 0;
+    padding-bottom: 12px;
+    border-bottom: 2px solid #2c6ef2;
+    color: #2c6ef2;
+    letter-spacing: 1px;
+}
+h2 {
+    font-size: 22px;
+    border-left: 4px solid #2c6ef2;
+    padding-left: 12px;
+    background: linear-gradient(90deg, rgba(44,110,242,0.06) 0%, transparent 50%);
+    padding-top: 6px; padding-bottom: 6px;
+}
+h3 { font-size: 18px; color: #374151; }
+h4 { font-size: 16px; color: #4b5563; }
+p { margin: 1em 0; color: #374151; }
+strong { color: #1f2937; font-weight: 600; }
+code {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.9em;
+    background: #f0f2f5;
+    color: #d04848;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+pre {
+    background: #1f2937;
+    color: #e5e7eb;
+    padding: 16px 20px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 1em 0;
+}
+pre code {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    font-size: inherit;
+}
+blockquote {
+    border-left: 4px solid #ff9800;
+    background: rgba(255, 152, 0, 0.06);
+    padding: 12px 18px;
+    margin: 1em 0;
+    color: #4b5563;
+    border-radius: 0 8px 8px 0;
+}
+blockquote p:first-child { margin-top: 0; }
+blockquote p:last-child { margin-bottom: 0; }
+ul, ol { padding-left: 2em; margin: 1em 0; }
+li { margin: 0.4em 0; }
+li > p { margin: 0.4em 0; }
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1.2em 0;
+    font-size: 14px;
+    background: #fff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+@media (min-width: 720px) { table { display: table; white-space: normal; } }
+thead { background: linear-gradient(135deg, #2c6ef2, #4a86ff); color: #fff; }
+th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid #f0f2f5;
+}
+th { font-weight: 600; letter-spacing: 1px; }
+tbody tr:nth-child(odd) { background: #fafbfd; }
+tbody tr:hover { background: #f0f5ff; }
+a { color: #2c6ef2; text-decoration: none; border-bottom: 1px solid transparent; transition: border-color 0.2s; }
+a:hover { border-bottom-color: #2c6ef2; }
+hr { border: none; border-top: 1px solid #e5e7eb; margin: 2em 0; }
+img { max-width: 100%; height: auto; border-radius: 8px; }
+.toc {
+    background: #f0f5ff;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 1em 0 2em;
+    font-size: 14px;
+    border-left: 4px solid #2c6ef2;
+}
+.toc ul { padding-left: 1.4em; margin: 0.4em 0; }
+.footer-meta {
+    margin-top: 64px;
+    padding-top: 16px;
+    border-top: 1px solid #e5e7eb;
+    color: #9ca3af;
+    font-size: 12px;
+    text-align: center;
+}
+.footer-meta a { color: #6b7280; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1 id="智能随访小程序使用指南">智能随访小程序使用指南</h1>
+<p><strong>体验版 · 2026.04.27</strong></p>
+<hr />
+<h2 id="你将拿到三样东西">你将拿到三样东西</h2>
+<ol type="1">
+<li><strong>手表</strong>一只（已充电、能正常显示时间）</li>
+<li>这份<strong>说明书</strong>（你正在看）</li>
+<li>一张<strong>体验版二维码</strong>（在文档末尾，或单独发到你微信）</li>
+</ol>
+<hr />
+<h2 id="准备工作5-分钟">准备工作（5 分钟）</h2>
+<ul>
+<li>手表先充电至少 30 分钟（看到电池满格图标）</li>
+<li>手机打开蓝牙</li>
+<li>手机连上 WiFi 或 4G</li>
+<li>打开微信，准备扫码</li>
+</ul>
+<hr />
+<h2 id="第一次使用首次绑定约-3-分钟">第一次使用（首次绑定，约 3
+分钟）</h2>
+<h3 id="1-微信扫描下方二维码--进入智能随访小程序">1. 微信扫描下方二维码
+→ 进入「智能随访」小程序</h3>
+<blockquote>
+<p>第一次扫码会弹出"加入体验版"提示，点确定即可。
+如果提示"未授权，请联系开发者"，说明你的微信号还没加白名单，请反馈给我们。</p>
+</blockquote>
+<h3 id="2-进入首页">2. 进入首页</h3>
+<p>首页<strong>右上角</strong>会看到橙色「<strong>测试版
+test-2026.04.27</strong>」字样 = 进对了。</p>
+<h3 id="3-扫描手表">3. 扫描手表</h3>
+<ul>
+<li>点首页「<strong>设备扫描</strong>」按钮</li>
+<li>手表会出现在列表里（设备名以 <code>S101</code> / <code>VP-</code> /
+<code>VPR</code> 开头）</li>
+<li>点选你这只手表</li>
+</ul>
+<blockquote>
+<p>列表里<strong>不会</strong>显示
+AirPods、其他厂家手环等不兼容设备——这是正常的过滤。</p>
+</blockquote>
+<h3 id="4-等连接成功">4. 等连接成功</h3>
+<ul>
+<li>看到「连接中…」提示约 5-10 秒</li>
+<li>出现「连接成功」即可</li>
+<li>此时手表会自动握手认证（无需手动输入密码）</li>
+</ul>
+<hr />
+<h2 id="日常使用">日常使用</h2>
+<ul>
+<li><strong>手表全天戴着</strong>——心率、血氧、步数等会自动采集</li>
+<li><strong>每天打开一次小程序</strong>：回到前台时会自动同步当天累积的数据</li>
+<li><strong>没网时</strong>：采集到的数据会先存到手机本地，<strong>下次连上网自动补传</strong>——不会丢</li>
+</ul>
+<p>如需主动测一个指标（心率、血氧、血压、体温等），从首页菜单进入对应页面，点「开始测量」。</p>
+<hr />
+<h2 id="常见问题">常见问题</h2>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>解决办法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>列表里看不到我的表</td>
+<td>检查充电；把手表靠近手机（1 米内）；关再开手机蓝牙</td>
+</tr>
+<tr>
+<td>连接后掉线</td>
+<td>退到桌面再重新打开小程序，会自动重连</td>
+</tr>
+<tr>
+<td>测的数据没显示</td>
+<td>数据由医生在后台查看，患者侧暂不显示历史曲线（后续版本会加）</td>
+</tr>
+<tr>
+<td>提示"扫描结束，未找到请重试"</td>
+<td>30 秒未扫到任何兼容手表会自动停止；点「设备扫描」重新开始</td>
+</tr>
+<tr>
+<td>iOS 第一次进入很慢</td>
+<td>首次加载需要 5-10 秒，正常现象</td>
+</tr>
+<tr>
+<td>安卓提示蓝牙权限被拒</td>
+<td>手机系统设置 → 微信 → 权限 → 蓝牙打开</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="反馈渠道">反馈渠道</h2>
+<ul>
+<li><strong>技术问题</strong>（小程序报错、数据没传上去）：[填工程师联系方式]</li>
+<li><strong>设备问题</strong>（手表充不进电、屏幕不亮）：[填医院联系人]</li>
+<li><strong>使用问题</strong>（不知道怎么操作）：先看这份说明书，再咨询护士</li>
+</ul>
+<hr />
+<h2 id="隐私说明">隐私说明</h2>
+<p>本小程序仅采集<strong>佩戴期间</strong>的生理数据（心率、血氧、血压等），用于医生临床随访研究。
+数据通过加密通道（HTTPS）传输到医院科研数据库，不会用于任何商业用途。
+若你不希望继续参与，告知主治医生即可立即解绑。</p>
+<hr />
+<h2 id="体验版二维码">体验版二维码</h2>
+<blockquote>
+<p>[此处由发布者从微信公众平台导出体验版二维码图片插入]</p>
+</blockquote>
+<hr />
+<p><em>本指南由开发团队维护，最新版见
+<code>docs/医院交付使用指南.md</code>。如发现错误请反馈。</em></p>
+
+<div class="footer-meta">
+智能随访 · 文档自 docs/医院交付使用指南.md 自动生成 ·
+<a href="https://github.com/qqyjx/suifang">GitHub 仓库</a>
+</div>
+</div>
+</body>
+</html>

@@ -13,6 +13,24 @@
 
 > 浏览器或手机直接打开即可。三态切换：未连接 / 连接中 / 已连接。键盘 `Space` 切状态、`R` 重置。
 
+## 📚 在线文档（GitHub Pages 自动渲染）
+
+所有 `docs/*.md` 已生成同款样式 HTML，浏览器/手机直接打开即可阅读，移动端响应式 + 中文优化。
+
+| 文档 | 受众 | 在线链接 |
+|---|---|---|
+| 医院交付使用指南 | 患者本人 | https://qqyjx.github.io/suifang/docs/%E5%8C%BB%E9%99%A2%E4%BA%A4%E4%BB%98%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.html |
+| 新设备接入手册 | 医院 PM / 护士 | https://qqyjx.github.io/suifang/docs/%E6%96%B0%E8%AE%BE%E5%A4%87%E6%8E%A5%E5%85%A5%E6%89%8B%E5%86%8C.html |
+| 真机测试 checklist | 工程师 | https://qqyjx.github.io/suifang/docs/%E7%9C%9F%E6%9C%BA%E6%B5%8B%E8%AF%95checklist.html |
+| 服务器运维 | 运维 | https://qqyjx.github.io/suifang/docs/%E6%9C%8D%E5%8A%A1%E5%99%A8%E8%BF%90%E7%BB%B4.html |
+| 功能测试-手表数据上传 | 第三方测试 | https://qqyjx.github.io/suifang/docs/%E5%8A%9F%E8%83%BD%E6%B5%8B%E8%AF%95-%E6%89%8B%E8%A1%A8%E6%95%B0%E6%8D%AE%E4%B8%8A%E4%BC%A0.html |
+| FAQ-常见问题清单 | 全员 | https://qqyjx.github.io/suifang/docs/FAQ-%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E6%B8%85%E5%8D%95.html |
+| SDK 数据采集全景 | 工程师 | https://qqyjx.github.io/suifang/docs/SDK%E6%95%B0%E6%8D%AE%E9%87%87%E9%9B%86%E5%85%A8%E6%99%AF.html |
+| Veepoo SDK 使用文档（5600+ 行） | 工程师 | https://qqyjx.github.io/suifang/docs/VeepooWeiXinSDK%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3.html |
+| 业务逻辑设计 v10 | 产品 + 工程师 | https://qqyjx.github.io/suifang/docs/business-logic-v10.html |
+| UI 原型 v10 设计稿 | 产品 + 设计 | https://qqyjx.github.io/suifang/docs/ui-prototype-v10.html |
+| Pencil + Claude Code 工作流 | 设计 + 工程师 | https://qqyjx.github.io/suifang/docs/pencil-claude-workflow.html |
+
 ## 为什么必须用手机/小程序，电脑直接收不了手表数据？
 
 ```
@@ -540,9 +558,9 @@ export const ENV = {
 
 | 角色 | 看哪份文档 | 路径 |
 |---|---|---|
-| 患者本人 | 怎么扫码 / 连蓝牙 / 故障 | [`docs/医院交付使用指南.md`](docs/医院交付使用指南.md) |
-| 医院 PM / 护士 / 项目运营 | 接入新患者 5 步 SOP / 加白名单 / Veepoo 兼容性 | [`docs/新设备接入手册.md`](docs/新设备接入手册.md) |
-| 工程师 | 完整交付规划 / 微信发布 SOP / 真机验证 | [`docs/4.25plan.md`](docs/4.25plan.md) + [`docs/真机测试checklist.md`](docs/真机测试checklist.md) |
+| 患者本人 | 怎么扫码 / 连蓝牙 / 故障 | [`医院交付使用指南`](https://qqyjx.github.io/suifang/docs/%E5%8C%BB%E9%99%A2%E4%BA%A4%E4%BB%98%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.html) |
+| 医院 PM / 护士 / 项目运营 | 接入新患者 5 步 SOP / 加白名单 / Veepoo 兼容性 | [`新设备接入手册`](https://qqyjx.github.io/suifang/docs/%E6%96%B0%E8%AE%BE%E5%A4%87%E6%8E%A5%E5%85%A5%E6%89%8B%E5%86%8C.html) |
+| 工程师 | 完整交付规划 / 微信发布 SOP / 真机验证 | `docs/4.25plan.md`(已废弃) + [`真机测试 checklist`](https://qqyjx.github.io/suifang/docs/%E7%9C%9F%E6%9C%BA%E6%B5%8B%E8%AF%95checklist.html) |
 
 ### 体验版交付物（4.27）
 
