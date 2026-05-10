@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>手表数据上传 · 功能测试 · 智能随访 v5.06-v10</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    color: #1f2937;
+    line-height: 1.7;
+    background: #f5f7fa;
+    padding: 32px 16px 64px;
+  }
+  .doc {
+    max-width: 880px;
+    margin: 0 auto;
+    background: #fff;
+    padding: 56px 64px;
+    border-radius: 8px;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+  }
+  .meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: #6b7280;
+    border-bottom: 1px solid #e5e7eb;
+    padding-bottom: 12px;
+    margin-bottom: 24px;
+  }
+  h1 {
+    font-size: 26px;
+    font-weight: 600;
+    color: #1f2937;
+    margin: 8px 0 32px;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+  h2 {
+    font-size: 20px;
+    font-weight: 600;
+    color: #1f2937;
+    margin: 36px 0 16px;
+    border-left: 4px solid #2c6ef2;
+    padding-left: 12px;
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    color: #1f2937;
+    margin: 24px 0 12px;
+  }
+  .section-letter {
+    font-size: 15px;
+    font-weight: 600;
+    color: #2c6ef2;
+    margin: 20px 0 8px;
+    letter-spacing: 1px;
+  }
+  p, li { font-size: 14.5px; }
+  ul, ol { margin: 8px 0 12px 24px; }
+  ol.steps { counter-reset: step; list-style: none; margin-left: 0; }
+  ol.steps > li {
+    counter-increment: step;
+    padding: 10px 0 10px 48px;
+    position: relative;
+    border-bottom: 1px dashed #e5e7eb;
+  }
+  ol.steps > li:last-child { border-bottom: none; }
+  ol.steps > li::before {
+    content: "(" counter(step) ")";
+    position: absolute;
+    left: 8px;
+    top: 10px;
+    color: #2c6ef2;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .step-group-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #6b7280;
+    margin: 20px 0 4px;
+    padding: 6px 12px;
+    background: #f5f7fa;
+    border-radius: 6px;
+    letter-spacing: 1px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 14px;
+  }
+  th, td {
+    border: 1px solid #d1d5db;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: #f5f7fa;
+    font-weight: 600;
+    color: #374151;
+  }
+  code, .code {
+    font-family: ui-monospace, "SF Mono", Consolas, "Courier New", monospace;
+    background: #f3f4f6;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    color: #d04848;
+  }
+  pre {
+    background: #1f2937;
+    color: #e5e7eb;
+    padding: 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 12px 0;
+  }
+  .callout {
+    background: #eef2ff;
+    border-left: 4px solid #2c6ef2;
+    padding: 12px 16px;
+    margin: 12px 0;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  .callout-warn {
+    background: #fef2f2;
+    border-left-color: #d04848;
+  }
+  .pass-table th { width: 30%; }
+  .pass-table td.expect { color: #2faa55; font-weight: 500; }
+  .footer {
+    text-align: center;
+    color: #9ca3af;
+    font-size: 12px;
+    margin-top: 56px;
+    padding-top: 16px;
+    border-top: 1px solid #e5e7eb;
+  }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .doc { box-shadow: none; padding: 32px; }
+    pre { background: #f3f4f6; color: #1f2937; }
+    .step-group-title { background: #f3f4f6; }
+  }
+</style>
+</head>
+<body>
+
+<div class="doc">
+
+<div class="meta">
+  <span>项目：智能随访 — 可穿戴设备体征数据采集平台</span>
+  <span>版本：v5.06-v10</span>
+</div>
+
+<h1>6.2 功能测试方法</h1>
+
+<p style="color:#6b7280; font-style: italic;">以下为示例</p>
+
+<h2>6.2.1 手表数据上传测试</h2>
+
+<!-- ============ a. 测试对象 ============ -->
+<div class="section-letter">a. 测试对象</div>
+<p>
+  智能随访微信小程序 <code>v5.06-v10</code> 的"可穿戴设备体征数据采集与上传"功能。
+  涵盖蓝牙连接、患者门诊号绑定、体征数据采集、HTTPS 同步至云端 MySQL 数据库的端到端链路。
+</p>
+
+<!-- ============ b. 测试目的 ============ -->
+<div class="section-letter">b. 测试目的</div>
+<p>
+  验证可穿戴智能手表（Veepoo S101）通过微信小程序采集患者体征数据后，
+  能否经由 <code>HTTPS</code> 同步至六元 MySQL 数据库（<code>h6dp_suifang.wearable_device_data</code>），
+  并按门诊号正确归属患者。
+</p>
+
+<p>验证范围：</p>
+<ul>
+  <li>蓝牙连接成功率与稳定性</li>
+  <li>体征数据完整性（采集时间 / 上传时间 / 数值字段）</li>
+  <li>患者归属正确性（门诊号写入大 JSON 每条记录）</li>
+  <li>多患者轮流采集场景（同一台手表换人）</li>
+  <li>离线缓存与网络恢复重传</li>
+</ul>
+
+<!-- ============ c. 测试设备 ============ -->
+<div class="section-letter">c. 测试设备</div>
+
+<table>
+  <tr><th>类别</th><th>项目</th><th>规格 / 数量</th></tr>
+  <tr><td rowspan="2">硬件</td>
+      <td>Veepoo S101 智能手表</td>
+      <td>BLE 4.0+，二类医疗器械注册证 × 1 块</td></tr>
+  <tr><td>测试手机</td>
+      <td>iOS 14+ 或 Android 12+，蓝牙 4.0+，已安装微信最新版 × 1 部</td></tr>
+  <tr><td rowspan="2">软件</td>
+      <td>微信小程序</td>
+      <td>"智能随访" v5.06-v10 体验版（已加入体验成员白名单）</td></tr>
+  <tr><td>后端服务</td>
+      <td><code>https://dc.ncrc.org.cn/api2</code> + 六元 MySQL <code>h6dp_suifang</code></td></tr>
+  <tr><td rowspan="2">环境</td>
+      <td>网络</td>
+      <td>移动数据或 WiFi（可访问公网）</td></tr>
+  <tr><td>测试门诊号</td>
+      <td>形如 <code>TEST_20260508_001</code>（不与生产患者冲突）</td></tr>
+</table>
+
+<!-- ============ d. 测试步骤 ============ -->
+<div class="section-letter">d. 测试步骤</div>
+
+<div class="step-group-title">阶段一：环境准备</div>
+<ol class="steps">
+  <li>测试人员在手机微信中扫描"智能随访"体验版二维码，进入小程序。</li>
+  <li>确认小程序顶部右上角显示橙色"<strong>测试版 5.06-v10</strong>"角标。</li>
+  <li>确认手表已开机、电量 ≥ 20%、佩戴在测试人员手腕上贴合皮肤。</li>
+  <li>确认手机蓝牙已打开，且微信"附近的设备"权限已授权（Android 12+ 必须）。</li>
+</ol>
+
+<div class="step-group-title">阶段二：蓝牙连接</div>
+<ol class="steps">
+  <li>在小程序首页正中央可见圆形 <strong>⌚ logo</strong> + "智能随访"标题，下方为白色虚线状态卡（"○ 未连接设备 / 请连接您的智能手表"）。</li>
+  <li>点击底部蓝色大按钮"<strong>🔍 连接智能手表</strong>"，跳转至"设备扫描"页。</li>
+  <li>等待 5–10 秒，扫描列表中应出现 <code>S101</code> 设备名 + MAC 地址（形如 <code>9B:B8:07:E6:E6:EE</code>）。</li>
+  <li>点击列表中目标 S101 设备项，开始连接（约 5 秒）。期间可见"连接中"提示。</li>
+  <li>连接成功后自动跳回首页：状态卡变为绿色渐变，显示"<strong>✓ 智能手表 · 电量 XX%</strong>"，卡片右上有白色脉冲圆点。</li>
+  <li>状态卡下方应显示绿色 ●"<strong>数据自动同步中</strong>"闪烁指示。</li>
+</ol>
+
+<div class="step-group-title">阶段三：患者门诊号绑定（高级模式）</div>
+<ol class="steps">
+  <li>在首页 <strong>3 秒内连续快速点击顶部圆形 ⌚ logo 共 5 次</strong>，触发隐藏的管理员入口。</li>
+  <li>点击成功后弹出 toast：<em>"已切换至高级模式"</em>，下方页面延伸出"— 管理员功能 —"分隔线。</li>
+  <li>分隔线下出现红色警示条"<strong>⚠ 未输入门诊号, 数据无法归属患者</strong>"。</li>
+  <li>点击红条右侧"<strong>输入门诊号</strong>"按钮，弹出输入框。</li>
+  <li>在输入框填入测试门诊号 <code>TEST_20260508_001</code>，点击"确定"。</li>
+  <li>红条变为蓝色："<strong>当前患者 · 门诊号 TEST_20260508_001</strong>" + "切换患者"按钮。</li>
+</ol>
+
+<div class="step-group-title">阶段四：体征数据采集</div>
+<ol class="steps">
+  <li>在手表侧键长按 1 秒唤醒手表，进入主菜单。</li>
+  <li>选择"<strong>血压</strong>"测量项，等待手表完成测量（约 30 秒），表盘显示结果（例：120/80 mmHg）。</li>
+  <li>重复测量"<strong>心率</strong>"（自动监测）、"<strong>血氧</strong>"（自动 + 手动）、"<strong>体温</strong>"（约 10 秒）。</li>
+  <li>每完成一次测量，手机端首页"数据自动同步中"指示应短暂加速闪烁，表示有新数据上传。</li>
+  <li>若需测多名患者：点击高级模式中"<strong>切换患者</strong>"按钮 → 输入新门诊号（例如 <code>TEST_20260508_002</code>） → 让另一位测试者佩戴同一手表，重复采集。</li>
+</ol>
+
+<div class="step-group-title">阶段五：服务端数据验证</div>
+<ol class="steps">
+  <li>在测试电脑（任何可访问公网的设备）打开终端 / PowerShell / 浏览器开发者工具，执行以下查询：</li>
+  <li>
+    通过 curl 查询：
+    <pre>curl -s "https://dc.ncrc.org.cn/api2/api/data?patientNo=TEST_20260508_001" | python3 -m json.tool</pre>
+  </li>
+  <li>检查响应 JSON 应包含：
+    <ul>
+      <li><code>count</code>: 大于 0 的整数（有命中记录）</li>
+      <li><code>records[0].deviceId</code>: 已分配的设备主键（形如 <code>9</code>）</li>
+      <li><code>records[0].data</code>: 含 <code>"血压"</code> / <code>"心率"</code> / <code>"血氧"</code> / <code>"体温"</code> 等键，每个键对应数组</li>
+      <li>每条数据记录应含字段：<code>"门诊号": "TEST_20260508_001"</code>、<code>"采集时间"</code>（ISO 8601）、<code>"上传时间"</code>（ISO 8601）</li>
+    </ul>
+  </li>
+  <li>核对采集时间与手表上的实际测量时间相差应 ≤ 5 秒（北京时间 = UTC + 8）。</li>
+  <li>如测试了多名患者，重复查询第二个门诊号 <code>?patientNo=TEST_20260508_002</code>，应仅返回第二名患者的记录，不与第一名混淆。</li>
+  <li>整理测试记录（手机截图、终端输出、JSON 响应），编写测试报告。</li>
+</ol>
+
+<!-- ============ e. 通过判定标准 ============ -->
+<div class="section-letter">e. 通过判定标准</div>
+
+<table class="pass-table">
+  <tr><th>判定项</th><th>通过标准</th></tr>
+  <tr><td>蓝牙连接成功率</td>
+      <td class="expect">10 次连接 ≥ 9 次成功（≥ 90%）</td></tr>
+  <tr><td>数据完整性</td>
+      <td class="expect">数据库每条记录 <code>采集时间</code> 与 <code>上传时间</code> 字段均非空，时序正常</td></tr>
+  <tr><td>数据归属正确性</td>
+      <td class="expect">服务端记录的 <code>门诊号</code> 与小程序输入完全一致，无错号</td></tr>
+  <tr><td>多患者隔离</td>
+      <td class="expect">按 <code>?patientNo=</code> 查询返回结果仅包含该门诊号数据</td></tr>
+  <tr><td>数据上传时延</td>
+      <td class="expect">从手表完成测量到云端 API 可查询 ≤ 60 秒</td></tr>
+  <tr><td>离线兜底</td>
+      <td class="expect">关闭小程序前台 5 分钟后重新打开，pending 队列数据自动重传成功</td></tr>
+</table>
+
+<div class="callout">
+  <strong>说明：</strong>本测试为功能验证，不评估性能（如吞吐量、并发连接、长时间稳定性）。
+  性能测试需另行设计。
+</div>
+
+<!-- ============ f. 测试记录与备注 ============ -->
+<div class="section-letter">f. 测试记录与备注</div>
+
+<ul>
+  <li>测试数据使用前缀 <code>TEST_</code> 命名门诊号，方便结束后通过运维接口批量清理。</li>
+  <li>测试期间保持手机微信小程序处于前台，避免系统挂起影响 BLE 数据上传时延。</li>
+  <li>若测试中途出现连接失败：可在小程序"管理员功能"区域查看 <code>设备名称 / MAC 地址 / 固件版本 / 电量</code> 协助排查。</li>
+  <li>测试结束后，第三方测试人员保留以下证据：
+    <ul>
+      <li>手机端关键步骤截图（连接成功、门诊号输入、同步指示）</li>
+      <li>终端 curl 查询输出（含完整 JSON 响应）</li>
+      <li>手表端测量结果照片（与服务端数值核对）</li>
+    </ul>
+  </li>
+  <li>失败案例处理：记录复现步骤、当前小程序版本、手机型号、网络环境，附截图至测试报告附件。</li>
+</ul>
+
+<div class="callout callout-warn">
+  <strong>注意：</strong>本文档涉及的接口 <code>https://dc.ncrc.org.cn/api2</code> 为生产环境，请勿对真实患者数据执行删除等破坏性操作。
+  仅以 <code>TEST_</code> 前缀的测试数据进行验证。
+</div>
+
+<div class="footer">
+  智能随访 v5.06-v10 · 功能测试方法 · 文档更新日期：2026-05-08
+</div>
+
+</div>
+
+</body>
+</html>
