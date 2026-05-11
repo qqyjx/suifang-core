@@ -4,14 +4,15 @@
 
 ---
 
-## 🎬 在线演示（GitHub Pages）
+## 🎬 在线演示与看板（GitHub Pages）
 
-| 演示 | 在线链接 | 说明 |
+| 链接 | 用途 | 说明 |
 |---|---|---|
-| 🩺 极简患者界面 | [patient-demo.html](https://qqyjx.github.io/suifang/prototype/patient-demo.html) | 患者本人用，仅"连接 / 断开"一个按钮，三态切换（未连接 / 连接中 / 已连接） |
-| 📋 医护管理界面 | [index.html](https://qqyjx.github.io/suifang/prototype/index.html) | 4-Tab 架构：首页 / 测量 / 数据 / 我的（设计稿） |
+| 📊 [**实时数据看板**](https://qqyjx.github.io/suifang/prototype/data-dashboard.html) | 给医院看数据 | **实时**拉 `/api/data`，按门诊号聚合显示，30s 自动刷新 + 手动刷新按钮 |
+| 🩺 [极简患者界面](https://qqyjx.github.io/suifang/prototype/patient-demo.html) | 患者本人界面演示 | 仅"连接/断开"一个按钮，三态切换 |
+| 📋 [医护管理界面](https://qqyjx.github.io/suifang/prototype/index.html) | 4-Tab 架构原型 | 首页 / 测量 / 数据 / 我的 |
 
-> 浏览器/手机直接打开。`Space` 切状态、`R` 重置。
+> 浏览器/手机直接打开即可。数据看板需要能访问 `dc.ncrc.org.cn`（公网就行，不需要 VPN）。
 
 ---
 

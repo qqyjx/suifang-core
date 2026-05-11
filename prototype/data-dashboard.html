@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>智能随访 · 实时数据看板</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+               "Microsoft YaHei", "Source Han Sans CN", sans-serif;
+  color: #1f2937;
+  background: #f5f7fa;
+  padding: 20px 16px 64px;
+  min-height: 100vh;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1200px; margin: 0 auto; }
+
+/* Header */
+.header {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff;
+  border-radius: 16px;
+  padding: 24px 28px;
+  margin-bottom: 16px;
+  box-shadow: 0 4px 16px rgba(44,110,242,0.25);
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+}
+.header h1 { font-size: 22px; font-weight: 600; letter-spacing: 2px; margin-bottom: 4px; }
+.header .sub { font-size: 13px; opacity: 0.9; }
+.header .actions { display: flex; gap: 10px; align-items: center; }
+.refresh-btn {
+  background: rgba(255,255,255,0.2); color: #fff;
+  padding: 8px 16px; border-radius: 20px;
+  font-size: 13px; cursor: pointer; border: 1px solid rgba(255,255,255,0.3);
+  transition: background 0.2s;
+}
+.refresh-btn:hover, .refresh-btn:active { background: rgba(255,255,255,0.32); }
+.refresh-btn .spinner { display: inline-block; transition: transform 0.5s; }
+.refresh-btn.spinning .spinner { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.auto-tag {
+  font-size: 12px; opacity: 0.85;
+  background: rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 12px;
+}
+
+/* Server / fetch status */
+.status-bar {
+  background: #fff; border-radius: 12px;
+  padding: 14px 20px; margin-bottom: 16px;
+  display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
+  font-size: 13px; color: #6b7280;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.status-bar .item { display: flex; align-items: center; gap: 6px; }
+.status-bar .label { color: #9ca3af; }
+.status-bar .value { color: #1f2937; font-weight: 500; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: #2faa55; box-shadow: 0 0 0 0 rgba(47,170,85,0.4); animation: pulse 2s infinite; }
+.dot-err { background: #d04848; }
+.dot-warn { background: #f59e0b; }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(47,170,85,0.4); } 50% { box-shadow: 0 0 0 6px rgba(47,170,85,0); } }
+
+/* Overall stats row */
+.stats-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.stat-card {
+  background: #fff; border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  border-left: 3px solid #2c6ef2;
+}
+.stat-card .num { font-size: 26px; font-weight: 700; color: #1f2937; line-height: 1.2; }
+.stat-card .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+.stat-card.green { border-left-color: #2faa55; }
+.stat-card.orange { border-left-color: #f59e0b; }
+.stat-card.red { border-left-color: #d04848; }
+
+/* Section title */
+.section-title {
+  font-size: 15px; font-weight: 600; color: #1f2937;
+  margin: 20px 0 12px; padding-left: 12px; border-left: 4px solid #2c6ef2;
+}
+.section-title .meta { font-weight: 400; color: #9ca3af; font-size: 12px; margin-left: 10px; }
+
+/* Patient cards */
+.patients { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 800px) { .patients { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1200px) { .patients { grid-template-columns: 1fr 1fr 1fr; } }
+
+.patient-card {
+  background: #fff; border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  overflow: hidden;
+}
+.patient-card.has-today .patient-header { background: linear-gradient(135deg, #2faa55 0%, #4cc46f 100%); }
+.patient-card.is-null .patient-header { background: linear-gradient(135deg, #9ca3af 0%, #6b7280 100%); }
+.patient-header {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff; padding: 14px 18px;
+}
+.patient-no { font-size: 18px; font-weight: 600; letter-spacing: 1px; }
+.patient-tag {
+  display: inline-block; background: rgba(255,255,255,0.22);
+  padding: 3px 10px; border-radius: 10px;
+  font-size: 11px; margin-top: 4px; letter-spacing: 0.5px;
+}
+.patient-body { padding: 16px 18px; }
+.metric-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; font-size: 13px; border-bottom: 1px solid #f0f2f5;
+}
+.metric-row:last-child { border-bottom: none; }
+.metric-row .key { color: #6b7280; }
+.metric-row .val { color: #1f2937; font-weight: 500; }
+.metric-row .val.muted { color: #9ca3af; font-weight: 400; }
+
+.type-bars { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.type-pill {
+  background: #f0f5ff; color: #2c6ef2;
+  padding: 4px 10px; border-radius: 10px;
+  font-size: 11px; font-weight: 500;
+}
+.type-pill.bp { background: #fee2e2; color: #d04848; }   /* 血压 */
+.type-pill.heart { background: #fef3c7; color: #d97706; } /* 心率 */
+.type-pill.step { background: #e0f2fe; color: #0284c7; } /* 步数 */
+
+/* Time-since */
+.time-since {
+  font-size: 11px; color: #9ca3af; margin-top: 8px; font-style: italic;
+}
+.time-since.fresh { color: #2faa55; font-weight: 500; font-style: normal; }
+.time-since.stale { color: #f59e0b; }
+.time-since.dead { color: #d04848; }
+
+/* Loading / error */
+.loading, .error {
+  background: #fff; border-radius: 12px;
+  padding: 60px 20px; text-align: center;
+  color: #6b7280; font-size: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.error { color: #d04848; }
+.error pre { font-size: 11px; color: #9ca3af; margin-top: 12px; text-align: left; }
+
+.footer { text-align: center; color: #9ca3af; font-size: 11px; margin-top: 32px; }
+.footer a { color: #2c6ef2; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div>
+      <h1>智能随访 · 实时数据看板</h1>
+      <div class="sub">连接到生产数据库 · 自动刷新</div>
+    </div>
+    <div class="actions">
+      <span class="auto-tag" id="autoTag">自动刷新 30s</span>
+      <div class="refresh-btn" id="refreshBtn"><span class="spinner">⟳</span> 立即刷新</div>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <div class="item"><span class="dot dot-warn" id="connDot"></span><span class="label">API</span></div>
+    <div class="item"><span class="label">最后刷新</span><span class="value" id="lastFetch">--</span></div>
+    <div class="item"><span class="label">服务端时间</span><span class="value" id="serverTime">--</span></div>
+    <div class="item"><span class="label">数据表行数</span><span class="value" id="rowCount">--</span></div>
+    <div class="item"><span class="label">总记录条数</span><span class="value" id="totalRecords">--</span></div>
+    <div class="item"><span class="label">门诊号数</span><span class="value" id="patientCount">--</span></div>
+  </div>
+
+  <div class="stats-grid" id="statsGrid"></div>
+
+  <div class="section-title">
+    患者数据
+    <span class="meta" id="patientMeta"></span>
+  </div>
+
+  <div id="patients" class="patients">
+    <div class="loading">正在加载数据…</div>
+  </div>
+
+  <div class="footer">
+    数据来源 <a href="https://dc.ncrc.org.cn/api2/api/data" target="_blank">/api/data</a>
+    · 服务端 v5.06-v10
+    · <a href="https://github.com/qqyjx/suifang" target="_blank">GitHub 仓库</a>
+  </div>
+
+</div>
+
+<script>
+const API_URL = 'https://dc.ncrc.org.cn/api2/api/data';
+const STATUS_URL = 'https://dc.ncrc.org.cn/api2/api/status';
+const REFRESH_INTERVAL_MS = 30000;
+
+let autoRefreshTimer = null;
+let lastDataHash = '';
+
+function fmtCST(iso) {
+  if (!iso) return '--';
+  try {
+    let s = iso.length === 19 ? iso + 'Z' : iso;
+    const d = new Date(s);
+    return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\//g, '-');
+  } catch { return iso.slice(0, 19); }
+}
+function fmtSince(iso) {
+  if (!iso) return { text: '无数据', cls: 'dead' };
+  try {
+    let s = iso.length === 19 ? iso + 'Z' : iso;
+    const ms = Date.now() - new Date(s).getTime();
+    const min = Math.floor(ms / 60000);
+    if (min < 0) return { text: '时间异常', cls: 'stale' };
+    if (min < 5) return { text: `刚刚 (${min} 分钟前)`, cls: 'fresh' };
+    if (min < 60) return { text: `${min} 分钟前`, cls: 'fresh' };
+    const h = Math.floor(min / 60);
+    if (h < 24) return { text: `${h} 小时前`, cls: 'fresh' };
+    const d = Math.floor(h / 24);
+    if (d < 3) return { text: `${d} 天前`, cls: 'stale' };
+    return { text: `${d} 天前 (久未更新)`, cls: 'dead' };
+  } catch { return { text: '--', cls: 'stale' }; }
+}
+
+function typeClass(name) {
+  if (name === '血压') return 'bp';
+  if (name === '心率') return 'heart';
+  if (name === '步数') return 'step';
+  return '';
+}
+
+function setConnState(state) {
+  const dot = document.getElementById('connDot');
+  dot.className = 'dot ' + (state === 'ok' ? 'dot-ok' : state === 'warn' ? 'dot-warn' : 'dot-err');
+}
+
+async function fetchAndRender() {
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('spinning');
+  try {
+    setConnState('warn');
+    const [dataRes, statusRes] = await Promise.allSettled([
+      fetch(API_URL, { cache: 'no-store' }),
+      fetch(STATUS_URL, { cache: 'no-store' })
+    ]);
+
+    if (dataRes.status !== 'fulfilled' || !dataRes.value.ok) {
+      throw new Error('/api/data fetch 失败: ' + (dataRes.reason || dataRes.value.statusText));
+    }
+    const data = await dataRes.value.json();
+
+    if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+      const status = await statusRes.value.json();
+      document.getElementById('serverTime').textContent = status.server_time || '--';
+    }
+
+    document.getElementById('lastFetch').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    document.getElementById('rowCount').textContent = data.count;
+    setConnState('ok');
+
+    aggregateAndRender(data);
+  } catch (err) {
+    console.error(err);
+    setConnState('err');
+    document.getElementById('patients').innerHTML =
+      '<div class="error">❌ 拉取数据失败<pre>' + (err.message || err) + '</pre>' +
+      '<br>请检查网络/VPN, 或刷新页面重试.</div>';
+  } finally {
+    setTimeout(() => btn.classList.remove('spinning'), 500);
+  }
+}
+
+function aggregateAndRender(data) {
+  const records = data.records || [];
+
+  const patientMap = new Map(); // 门诊号 -> { count, types, latest, earliest, devices }
+  let totalRecords = 0;
+  const globalTypes = {};
+
+  records.forEach(row => {
+    const big = row.data || {};
+    Object.entries(big).forEach(([typeName, recs]) => {
+      if (!Array.isArray(recs)) return;
+      globalTypes[typeName] = (globalTypes[typeName] || 0) + recs.length;
+      recs.forEach(rec => {
+        totalRecords++;
+        const pn = rec['门诊号'] || 'NULL';
+        if (!patientMap.has(pn)) {
+          patientMap.set(pn, {
+            count: 0, types: {}, latest: '', earliest: '', devices: new Set()
+          });
+        }
+        const p = patientMap.get(pn);
+        p.count++;
+        p.types[typeName] = (p.types[typeName] || 0) + 1;
+        p.devices.add(row.deviceId);
+        const ts = (rec['采集时间'] || '').slice(0, 19);
+        if (ts) {
+          if (!p.latest || ts > p.latest) p.latest = ts;
+          if (!p.earliest || ts < p.earliest) p.earliest = ts;
+        }
+      });
+    });
+  });
+
+  document.getElementById('totalRecords').textContent = totalRecords.toLocaleString();
+  document.getElementById('patientCount').textContent = patientMap.size;
+
+  // 整体统计卡
+  renderStatsGrid(globalTypes, patientMap);
+
+  // 患者卡片 (NULL 放最后)
+  const sortedPatients = [...patientMap.entries()].sort((a, b) => {
+    if (a[0] === 'NULL') return 1;
+    if (b[0] === 'NULL') return -1;
+    return b[1].count - a[1].count;
+  });
+
+  // 今日活跃 patient 数
+  const today = new Date().toISOString().slice(0, 10);
+  const todayActive = sortedPatients.filter(([pn, info]) =>
+    pn !== 'NULL' && info.latest && info.latest.slice(0, 10) === today
+  ).length;
+  document.getElementById('patientMeta').textContent =
+    `共 ${patientMap.size - (patientMap.has('NULL') ? 1 : 0)} 位 (不计 NULL), 今日活跃 ${todayActive} 位`;
+
+  document.getElementById('patients').innerHTML = sortedPatients.map(([pn, info]) => {
+    const since = fmtSince(info.latest);
+    const isNull = pn === 'NULL';
+    const isToday = info.latest && info.latest.slice(0, 10) === today;
+    const devs = [...info.devices].sort((a,b)=>a-b).join(', ');
+    const types = Object.entries(info.types).sort((a,b) => b[1] - a[1])
+      .map(([n, c]) => `<span class="type-pill ${typeClass(n)}">${n} ${c}</span>`).join('');
+
+    let cls = '';
+    if (isNull) cls = 'is-null';
+    else if (isToday) cls = 'has-today';
+
+    return `
+      <div class="patient-card ${cls}">
+        <div class="patient-header">
+          <div class="patient-no">${isNull ? '历史数据 (无门诊号)' : pn}</div>
+          <div class="patient-tag">${isToday ? '今日活跃' : (isNull ? 'v9 之前' : 'v10 入组')}</div>
+        </div>
+        <div class="patient-body">
+          <div class="metric-row"><span class="key">采集条数</span><span class="val">${info.count}</span></div>
+          <div class="metric-row"><span class="key">设备 deviceId</span><span class="val muted">${devs}</span></div>
+          <div class="metric-row"><span class="key">最早采集</span><span class="val muted">${fmtCST(info.earliest)}</span></div>
+          <div class="metric-row"><span class="key">最晚采集</span><span class="val">${fmtCST(info.latest)}</span></div>
+          <div class="time-since ${since.cls}">距最新数据: ${since.text}</div>
+          <div class="type-bars">${types}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderStatsGrid(globalTypes, patientMap) {
+  const cards = [];
+  const total = Object.values(globalTypes).reduce((a, b) => a + b, 0);
+  cards.push({ label: '记录总数', num: total.toLocaleString(), cls: '' });
+
+  // 关键指标
+  const keyTypes = ['血压', '心率', '血氧', '步数', '日综合', '体温'];
+  keyTypes.forEach(t => {
+    if (globalTypes[t]) {
+      const cls = t === '血压' ? 'red' : (t === '心率' ? 'orange' : (t === '步数' ? 'green' : ''));
+      cards.push({ label: t, num: globalTypes[t].toLocaleString(), cls });
+    }
+  });
+
+  document.getElementById('statsGrid').innerHTML = cards.map(c =>
+    `<div class="stat-card ${c.cls}"><div class="num">${c.num}</div><div class="label">${c.label}</div></div>`
+  ).join('');
+}
+
+document.getElementById('refreshBtn').addEventListener('click', fetchAndRender);
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(fetchAndRender, REFRESH_INTERVAL_MS);
+}
+
+// 页面隐藏时停, 显示时立刻刷一次 + 重启定时
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  } else {
+    fetchAndRender();
+    startAutoRefresh();
+  }
+});
+
+fetchAndRender();
+startAutoRefresh();
+</script>
+</body>
+</html>
