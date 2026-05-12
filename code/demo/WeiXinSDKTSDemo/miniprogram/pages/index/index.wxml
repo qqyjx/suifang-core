@@ -14,6 +14,12 @@
       <view class="brand-sub">智能健康监测</view>
     </view>
 
+    <!-- 5.06-v10: 门诊号小条 (永远可见, 防止被藏到高级模式医护找不到) -->
+    <view class="patient-strip {{patientNo ? 'patient-strip-set' : 'patient-strip-empty'}}" catch:tap="onPatientNoTap">
+      <text wx:if="{{patientNo}}" class="patient-strip-text">门诊号 {{patientNo}} · 点击切换</text>
+      <text wx:else class="patient-strip-text">⚠ 请先输入患者门诊号</text>
+    </view>
+
     <!-- 中央 hero 区: 大圆球 + 状态文字 -->
     <view class="center">
       <view class="hero-ring">

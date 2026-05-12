@@ -63,6 +63,38 @@ page {
   letter-spacing: 2rpx;
 }
 
+/* ==================== 门诊号小条 (永远可见的输入入口) ==================== */
+.patient-strip {
+  margin-top: 32rpx;
+  padding: 20rpx 36rpx;
+  border-radius: 40rpx;
+  font-size: 26rpx;
+  text-align: center;
+  letter-spacing: 1rpx;
+  transition: background 0.3s, color 0.3s;
+}
+
+.patient-strip-empty {
+  background: rgba(255, 152, 0, 0.12);
+  color: #d97706;
+  border: 2rpx solid rgba(255, 152, 0, 0.35);
+}
+
+.patient-strip-set {
+  background: rgba(44, 110, 242, 0.08);
+  color: #2c6ef2;
+  border: 2rpx solid rgba(44, 110, 242, 0.25);
+  font-weight: 500;
+}
+
+.patient-strip-text {
+  display: inline-block;
+}
+
+.patient-strip:active {
+  opacity: 0.7;
+}
+
 /* ==================== 中央 hero 区 ==================== */
 .center {
   display: flex;
