@@ -1,21 +1,21 @@
-/* 5.06-v10 极简患者界面:
- * - 默认: 仅 "连接/断开" 一个大按钮 + 设备状态大卡, 数据自动同步
- * - 隐藏: 连续点 5 次 logo 切高级模式 (复用 25+ 按钮 + 门诊号 + 设备详情)
- * - 风格: 渐变背景 + 大留白 + 单色焦点, 给患者用减少认知负担
+/* 5.06-v10 极简患者界面 — 1:1 移植自 prototype/patient-demo.html 视觉.
+ * 两态: 未连接 (灰渐变球+蓝按钮) / 已连接 (绿渐变球+双脉冲+红描边断开).
+ * px → rpx 倍 2 (小程序 750rpx 宽 = iPhone 14 375pt).
  */
 
 page {
-  background: #f5f7fa;
+  background: #ffffff;
 }
 
-.app {
+/* ==================== 屏幕容器 ==================== */
+.screen {
   min-height: 100vh;
-  padding: 32rpx 32rpx 64rpx;
-  box-sizing: border-box;
-  background: linear-gradient(180deg, #eef2ff 0%, #f5f7fa 220rpx, #f5f7fa 100%);
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  transition: background 0.5s ease;
 }
 
-/* ==================== 测试版角标 ==================== */
 .test-build-badge {
   position: fixed;
   top: 0;
@@ -30,205 +30,245 @@ page {
   letter-spacing: 1rpx;
 }
 
-/* ==================== 顶部 logo 区 (隐藏管理员入口) ==================== */
-.header {
-  text-align: center;
-  padding: 64rpx 0 48rpx;
+/* ==================== 主列 ==================== */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 56rpx 48rpx 88rpx;
+  align-items: center;
+  min-height: 100vh;
+  box-sizing: border-box;
 }
 
-.logo-circle {
-  width: 128rpx;
-  height: 128rpx;
-  line-height: 128rpx;
-  text-align: center;
-  margin: 0 auto 24rpx;
-  font-size: 64rpx;
-  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
-  border-radius: 50%;
-  color: #fff;
-  box-shadow: 0 8rpx 24rpx rgba(44, 110, 242, 0.3);
+/* ==================== 顶部 brand (5 次点切高级模式入口) ==================== */
+.top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
-.app-title {
-  font-size: 44rpx;
+.brand {
+  font-size: 40rpx;
   font-weight: 600;
   color: #1f2937;
-  letter-spacing: 4rpx;
+  letter-spacing: 6rpx;
   margin-bottom: 8rpx;
 }
 
-.app-subtitle {
+.brand-sub {
   font-size: 24rpx;
   color: #9ca3af;
-  font-weight: 400;
-  letter-spacing: 1rpx;
-}
-
-/* ==================== 设备状态大卡 ==================== */
-.status-card {
-  background: #fff;
-  border-radius: 24rpx;
-  padding: 56rpx 40rpx;
-  margin-bottom: 32rpx;
-  text-align: center;
-  box-shadow: 0 4rpx 24rpx rgba(0, 0, 0, 0.06);
-  position: relative;
-  overflow: hidden;
-}
-
-.status-card-on {
-  background: linear-gradient(135deg, #2faa55 0%, #4cc46f 100%);
-  color: #fff;
-  box-shadow: 0 8rpx 32rpx rgba(47, 170, 85, 0.25);
-}
-
-.status-card-off {
-  background: #fff;
-  color: #6b7280;
-  border: 2rpx dashed #d1d5db;
-}
-
-/* 已连接的脉冲动画(柔和呼吸感) */
-.status-pulse {
-  position: absolute;
-  top: 32rpx;
-  right: 32rpx;
-  width: 16rpx;
-  height: 16rpx;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7);
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); }
-  70% { box-shadow: 0 0 0 16rpx rgba(255, 255, 255, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
-}
-
-.status-icon {
-  font-size: 96rpx;
-  font-weight: 300;
-  line-height: 1;
-  margin-bottom: 24rpx;
-}
-
-.status-card-on .status-icon {
-  color: #fff;
-}
-
-.status-card-off .status-icon {
-  color: #d1d5db;
-}
-
-.status-name {
-  font-size: 36rpx;
-  font-weight: 600;
-  margin-bottom: 12rpx;
   letter-spacing: 2rpx;
 }
 
-.status-detail {
-  font-size: 26rpx;
-  opacity: 0.9;
-  font-weight: 400;
+/* ==================== 中央 hero 区 ==================== */
+.center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 56rpx 0;
 }
 
-.status-card-off .status-detail {
-  color: #9ca3af;
-}
-
-.status-step {
-  opacity: 0.85;
-}
-
-/* ==================== 主操作大按钮 ==================== */
-.main-btn {
+/* 外圈 (脉冲容器), 已连接时有微绿底色 */
+.hero-ring {
+  width: 520rpx;
+  height: 520rpx;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 120rpx;
-  border-radius: 24rpx;
+  position: relative;
+  margin-bottom: 56rpx;
+  transition: background 0.5s ease;
+}
+
+.screen-connected .hero-ring {
+  background: rgba(47, 170, 85, 0.12);
+}
+
+/* 双脉冲圆环 (仅已连接) */
+.hero-ring-pulse {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: 50%;
+  border: 4rpx solid rgba(47, 170, 85, 0.3);
+  animation: ringPulse 2.4s ease-out infinite;
+}
+
+.hero-ring-pulse-2 {
+  border-color: rgba(47, 170, 85, 0.18);
+  animation-delay: 1.2s;
+}
+
+@keyframes ringPulse {
+  0%   { transform: scale(0.85); opacity: 0.9; }
+  100% { transform: scale(1.15); opacity: 0; }
+}
+
+/* 内圆 (表盘 icon 容器), 未连接灰渐变 / 已连接绿渐变 */
+.hero {
+  width: 440rpx;
+  height: 440rpx;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #cbd5e1 0%, #94a3b8 100%);
+  box-shadow: 0 24rpx 64rpx rgba(148, 163, 184, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+  transition: background 0.5s ease, box-shadow 0.5s ease;
+}
+
+.screen-connected .hero {
+  background: linear-gradient(135deg, #2faa55 0%, #4cc46f 100%);
+  box-shadow: 0 24rpx 72rpx rgba(47, 170, 85, 0.45);
+}
+
+.hero-icon {
+  font-size: 192rpx;
+  line-height: 1;
+  color: #ffffff;
+  filter: brightness(1.2);
+}
+
+/* ==================== 状态文字区 ==================== */
+.status-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  min-height: 112rpx;
+}
+
+.status-text {
+  font-size: 64rpx;
+  font-weight: 600;
+  color: #1f2937;
+  letter-spacing: 2rpx;
+  margin-bottom: 16rpx;
+}
+
+.status-hint {
+  font-size: 28rpx;
+  color: #6b7280;
+}
+
+.status-hint-connected {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.device-line {
+  display: flex;
+  gap: 20rpx;
+  align-items: center;
+  font-size: 28rpx;
+  color: #6b7280;
+  margin-bottom: 12rpx;
+}
+
+.device-name {
+  color: #1f2937;
+  font-weight: 500;
+}
+
+.device-detail {
+  color: #6b7280;
+}
+
+.dot {
+  width: 8rpx;
+  height: 8rpx;
+  border-radius: 50%;
+  background: #cbd5e1;
+}
+
+.sync-row {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  color: #2faa55;
+  font-size: 26rpx;
+  font-weight: 500;
+}
+
+.sync-check {
+  width: 32rpx;
+  height: 32rpx;
+  line-height: 32rpx;
+  text-align: center;
+  border-radius: 50%;
+  background: #2faa55;
+  color: #fff;
+  font-size: 22rpx;
+  font-weight: 600;
+}
+
+/* ==================== 底部胶囊按钮 ==================== */
+.bottom {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.btn {
+  width: 100%;
+  height: 112rpx;
+  border-radius: 56rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 34rpx;
   font-weight: 600;
   letter-spacing: 4rpx;
-  margin-bottom: 32rpx;
-  transition: opacity 0.2s;
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #ffffff;
+  box-shadow: 0 16rpx 44rpx rgba(44, 110, 242, 0.4);
+  transition: opacity 0.15s, box-shadow 0.3s, background 0.4s;
+  box-sizing: border-box;
 }
 
-.main-btn:active {
+.btn:active {
   opacity: 0.85;
 }
 
-.main-btn-connect {
-  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
-  color: #fff;
-  box-shadow: 0 8rpx 24rpx rgba(44, 110, 242, 0.3);
-}
-
-.main-btn-disconnect {
-  background: #fff;
+.screen-connected .btn {
+  background: #ffffff;
   color: #d04848;
-  border: 2rpx solid #d04848;
-  box-shadow: 0 4rpx 16rpx rgba(208, 72, 72, 0.12);
+  border: 3rpx solid rgba(208, 72, 72, 0.7);
+  box-shadow: 0 8rpx 28rpx rgba(208, 72, 72, 0.18);
 }
 
-.main-btn-icon {
-  font-size: 36rpx;
-  margin-right: 16rpx;
+.btn-text {
+  font-weight: 600;
 }
 
-.main-btn-text {
-  flex: none;
-}
-
-/* ==================== 数据同步状态 ==================== */
-.sync-tip {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 24rpx;
-  color: #6b7280;
-  padding: 16rpx 0;
-  letter-spacing: 1rpx;
-}
-
-.sync-dot {
-  width: 12rpx;
-  height: 12rpx;
-  border-radius: 50%;
-  background: #2faa55;
-  margin-right: 12rpx;
-  animation: blink 1.5s infinite;
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-/* ==================== 底部提示 ==================== */
-.footer-tip {
-  text-align: center;
+.footer {
   font-size: 22rpx;
   color: #9ca3af;
-  margin-top: 48rpx;
-  padding: 0 48rpx;
-  line-height: 1.6;
   letter-spacing: 1rpx;
+  margin-top: 24rpx;
 }
 
-/* ==================== 高级模式 (默认隐藏) ==================== */
+/* ==================== 高级模式 (默认隐藏, 5 次点 brand 显示) ==================== */
+.advanced-section {
+  padding: 0 32rpx 64rpx;
+  background: #f5f7fa;
+}
+
 .advanced-divider {
   text-align: center;
   font-size: 22rpx;
   color: #9ca3af;
-  margin: 56rpx 0 24rpx;
+  margin: 40rpx 0 24rpx;
   letter-spacing: 4rpx;
 }
 
-/* 患者门诊号条 (高级模式内) */
 .patient-bar {
   display: flex;
   align-items: center;
@@ -236,7 +276,7 @@ page {
   padding: 28rpx 32rpx;
   font-size: 28rpx;
   color: #fff;
-  margin: 0 0 16rpx 0;
+  margin-bottom: 16rpx;
   border-radius: 16rpx;
   box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.08);
 }
@@ -265,10 +305,9 @@ page {
   letter-spacing: 1rpx;
 }
 
-/* 设备信息卡 (高级模式内) */
 .device-info-card {
   background: #fff;
-  margin: 16rpx 0 24rpx;
+  margin-bottom: 24rpx;
   padding: 24rpx 32rpx;
   border-radius: 16rpx;
   box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.05);
@@ -292,7 +331,6 @@ page {
   font-weight: 500;
 }
 
-/* 25+ 按钮宫格 (高级模式内) */
 .page-box {
   display: flex;
   flex-wrap: wrap;

@@ -1,70 +1,86 @@
-<view class="app">
-  <view wx:if="{{isTestBuild}}" class="test-build-badge">测试版 {{buildTag}}</view>
+<view class="screen {{connected ? 'screen-connected' : ''}}">
+  <view wx:if="{{isTestBuild}}" class="test-build-badge">{{buildTag}}</view>
 
-  <!-- 5.06-v10: 极简患者界面.
-       默认仅"连接/断开"一个大按钮 + 设备状态卡, 数据同步全自动.
-       连续点 5 次 logo 切换高级模式 (医护/调试). -->
+  <!-- 5.06-v10 极简患者界面 (视觉对齐 prototype/patient-demo.html):
+       未连接: 大灰渐变球 + "未连接" 大字 + 蓝色"连接设备"胶囊按钮
+       已连接: 球变绿渐变 + 双脉冲圆环 + 设备名/电量 + ✓同步指示 + 白底红描边"断开连接"
+       隐藏管理员入口: 连续点 5 次 brand 区切换 advancedMode. -->
 
-  <!-- 顶部 logo 区, 隐藏管理员入口 -->
-  <view class="header" bindtap="onLogoTap">
-    <view class="logo-circle">⌚</view>
-    <view class="app-title">智能随访</view>
-    <view class="app-subtitle">健康监测 · 数据自动同步</view>
-  </view>
+  <view class="main">
 
-  <!-- 设备状态大卡片 -->
-  <view class="status-card {{connected ? 'status-card-on' : 'status-card-off'}}">
-    <view class="status-pulse" wx:if="{{connected}}"></view>
-    <view class="status-icon">{{connected ? '✓' : '○'}}</view>
-    <view class="status-name">{{connected ? (device.name || '智能手表') : '未连接设备'}}</view>
-    <view class="status-detail" wx:if="{{connected}}">
-      <text>电量 {{device.VPDeviceElectricPercent || '--'}}%</text>
-      <text wx:if="{{device.step}}" class="status-step"> · 今日 {{device.step}} 步</text>
+    <!-- 顶部 brand 区 (5 次点切高级模式) -->
+    <view class="top" bindtap="onLogoTap">
+      <view class="brand">智能随访</view>
+      <view class="brand-sub">智能健康监测</view>
     </view>
-    <view class="status-detail" wx:else>请连接您的智能手表</view>
+
+    <!-- 中央 hero 区: 大圆球 + 状态文字 -->
+    <view class="center">
+      <view class="hero-ring">
+        <view wx:if="{{connected}}" class="hero-ring-pulse hero-ring-pulse-1"></view>
+        <view wx:if="{{connected}}" class="hero-ring-pulse hero-ring-pulse-2"></view>
+        <view class="hero">
+          <view class="hero-icon">⌚</view>
+        </view>
+      </view>
+
+      <view class="status-block">
+        <view class="status-text">{{connected ? '已连接' : '未连接'}}</view>
+
+        <view wx:if="{{!connected}}" class="status-hint">
+          请佩戴好手表后点击下方按钮
+        </view>
+
+        <view wx:if="{{connected}}" class="status-hint-connected">
+          <view class="device-line">
+            <text class="device-name">{{device.name || 'S101'}}</text>
+            <view class="dot"></view>
+            <text class="device-detail">电量 {{device.VPDeviceElectricPercent || '--'}}%</text>
+          </view>
+          <view class="sync-row">
+            <view class="sync-check">✓</view>
+            <text>数据正在自动同步</text>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 底部按钮 -->
+    <view class="bottom">
+      <view wx:if="{{!connected}}" class="btn" bindtap="skipDeviceGet">
+        <text class="btn-text">连接设备</text>
+      </view>
+      <view wx:else class="btn" bindtap="closeBluetoothAdapterManager">
+        <text class="btn-text">断开连接</text>
+      </view>
+      <view class="footer">智能随访 · v{{buildTag}}</view>
+    </view>
+
   </view>
 
-  <!-- 主操作按钮: 连或断 -->
-  <view wx:if="{{!connected}}" class="main-btn main-btn-connect" bindtap="skipDeviceGet">
-    <view class="main-btn-icon">🔍</view>
-    <view class="main-btn-text">连接智能手表</view>
-  </view>
-  <view wx:else class="main-btn main-btn-disconnect" bindtap="closeBluetoothAdapterManager">
-    <view class="main-btn-icon">✕</view>
-    <view class="main-btn-text">断开连接</view>
-  </view>
-
-  <!-- 数据同步状态 (连接时显示) -->
-  <view wx:if="{{connected}}" class="sync-tip">
-    <view class="sync-dot"></view>
-    <text>数据自动同步中</text>
-  </view>
-
-  <!-- 极简模式底部提示 -->
-  <view wx:if="{{!advancedMode}}" class="footer-tip">
-    您只需保持手表佩戴并开启蓝牙, 其他无需操作
-  </view>
-
-  <!-- ============ 高级模式 (默认隐藏, 5 次点 logo 显示) ============ -->
+  <!-- ============ 高级模式 (默认隐藏, 5 次点 brand 显示) ============ -->
   <block wx:if="{{advancedMode}}">
-    <view class="advanced-divider">— 管理员功能 —</view>
+    <view class="advanced-section">
+      <view class="advanced-divider">— 管理员功能 —</view>
 
-    <view class="patient-bar {{patientNo ? 'patient-bar-ok' : 'patient-bar-bad'}}">
-      <text wx:if="{{patientNo}}" class="patient-bar-text">当前患者 · 门诊号 {{patientNo}}</text>
-      <text wx:else class="patient-bar-text">⚠ 未输入门诊号, 数据无法归属患者</text>
-      <view class="patient-bar-btn" catch:tap="onPatientNoTap">{{patientNo ? '切换患者' : '输入门诊号'}}</view>
-    </view>
+      <view class="patient-bar {{patientNo ? 'patient-bar-ok' : 'patient-bar-bad'}}">
+        <text wx:if="{{patientNo}}" class="patient-bar-text">当前患者 · 门诊号 {{patientNo}}</text>
+        <text wx:else class="patient-bar-text">⚠ 未输入门诊号, 数据无法归属患者</text>
+        <view class="patient-bar-btn" catch:tap="onPatientNoTap">{{patientNo ? '切换患者' : '输入门诊号'}}</view>
+      </view>
 
-    <view class="device-info-card" catch:tap="blePwd">
-      <view class="info-row"><text class="info-key">设备名称</text><text class="info-val">{{device.name || '--'}}</text></view>
-      <view class="info-row"><text class="info-key">MAC 地址</text><text class="info-val">{{device.VPDeviceMAC || '--'}}</text></view>
-      <view class="info-row"><text class="info-key">固件版本</text><text class="info-val">{{device.VPDeviceVersion || '--'}}</text></view>
-      <view class="info-row"><text class="info-key">电量</text><text class="info-val">{{device.VPDeviceElectricPercent || '--'}}%</text></view>
-      <view class="info-row"><text class="info-key">实时步数</text><text class="info-val">{{device.step || 0}} 步 {{device.distance ? '· ' + device.distance + ' m' : ''}}</text></view>
-    </view>
+      <view class="device-info-card" catch:tap="blePwd">
+        <view class="info-row"><text class="info-key">设备名称</text><text class="info-val">{{device.name || '--'}}</text></view>
+        <view class="info-row"><text class="info-key">MAC 地址</text><text class="info-val">{{device.VPDeviceMAC || '--'}}</text></view>
+        <view class="info-row"><text class="info-key">固件版本</text><text class="info-val">{{device.VPDeviceVersion || '--'}}</text></view>
+        <view class="info-row"><text class="info-key">电量</text><text class="info-val">{{device.VPDeviceElectricPercent || '--'}}%</text></view>
+        <view class="info-row"><text class="info-key">实时步数</text><text class="info-val">{{device.step || 0}} 步 {{device.distance ? '· ' + device.distance + ' m' : ''}}</text></view>
+      </view>
 
-    <view class="page-box">
-      <view class="page-item" wx:for="{{listDate}}" wx:key="index" catch:tap="skipPages" data-path="{{item.path}}">{{item.name}}</view>
+      <view class="page-box">
+        <view class="page-item" wx:for="{{listDate}}" wx:key="index" catch:tap="skipPages" data-path="{{item.path}}">{{item.name}}</view>
+      </view>
     </view>
   </block>
+
 </view>
