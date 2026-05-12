@@ -315,11 +315,14 @@ function aggregateAndRender(data) {
   // 整体统计卡
   renderStatsGrid(globalTypes, patientMap);
 
-  // 患者卡片 (NULL 放最后)
+  // 患者卡片排序: 按该患者所属的最大 deviceId 倒序 (新设备/新入组在前),
+  // NULL 历史固定放最后.
   const sortedPatients = [...patientMap.entries()].sort((a, b) => {
     if (a[0] === 'NULL') return 1;
     if (b[0] === 'NULL') return -1;
-    return b[1].count - a[1].count;
+    const maxA = Math.max(...a[1].devices);
+    const maxB = Math.max(...b[1].devices);
+    return maxB - maxA;
   });
 
   // 今日活跃 patient 数
