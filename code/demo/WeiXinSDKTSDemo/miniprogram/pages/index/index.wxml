@@ -1,7 +1,7 @@
 <view class="app">
   <view wx:if="{{isTestBuild}}" class="test-build-badge">测试版 {{buildTag}}</view>
 
-  <!-- 5.06-v11: 极简患者界面.
+  <!-- 5.06-v10: 极简患者界面.
        默认仅"连接/断开"一个大按钮 + 设备状态卡, 数据同步全自动.
        连续点 5 次 logo 切换高级模式 (医护/调试). -->
 

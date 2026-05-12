@@ -28,7 +28,7 @@ Component({
     isTestBuild: ENV.IS_TEST_BUILD,
     buildTag: ENV.BUILD_TAG,
     patientNo: '', // 5.06-v9: 当前患者门诊号 (storage.patientNo 同步)
-    advancedMode: false, // 5.06-v11: 高级模式 (默认 false 给患者用极简; 连点 5 次 logo 切换)
+    advancedMode: false, // 5.06-v10: 高级模式 (默认 false 给患者用极简; 连点 5 次 logo 切换)
     listDate: [
       {
         name: '📊 数据管理',
@@ -255,7 +255,7 @@ Component({
   methods: {
 
     /**
-     * 5.06-v11: logo 区域点击, 隐藏管理员入口.
+     * 5.06-v10: logo 区域点击, 隐藏管理员入口.
      *   连续点 5 次 logo (3 秒内) 切换 advancedMode (高级模式 ↔ 极简模式).
      *   极简模式给患者用 (默认): 只看到连/断按钮 + 设备状态卡, 数据自动同步.
      *   高级模式给医护/调试用: 多出门诊号输入 + 设备详情 + 25+ 子页面入口.
