@@ -65,3 +65,5 @@ init.sh
 task.json
 features.json
 CLAUDE.md
+# Python 编译缓存 (scripts/md2html.py 运行产生)
+scripts/__pycache__/
