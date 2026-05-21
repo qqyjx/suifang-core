@@ -310,8 +310,10 @@ body {
   <div class="pagination" id="pagination" style="display:none;"></div>
 
   <div class="footer">
-    数据来源 <a href="https://dc.ncrc.org.cn/api2/api/data" target="_blank">/api/data</a>
-    · 服务端 v5.06-v10
+    数据来源
+    <a href="https://dc.ncrc.org.cn/api2/api/patients/summary" target="_blank">/api/patients/summary</a>
+    (回落 <a href="https://dc.ncrc.org.cn/api2/api/data" target="_blank">/api/data</a>)
+    · 服务端 v5.06-v10 (gzip)
     · <a href="https://github.com/qqyjx/suifang" target="_blank">GitHub 仓库</a>
     · 快捷键 <span class="kbd">/</span> 搜索 <span class="kbd">←</span><span class="kbd">→</span> 翻页
   </div>
@@ -319,8 +321,12 @@ body {
 </div>
 
 <script>
-const API_URL = 'https://dc.ncrc.org.cn/api2/api/data';
-const STATUS_URL = 'https://dc.ncrc.org.cn/api2/api/status';
+// v10: 默认走 /api/patients/summary (服务端聚合 + gzip), 响应体比 /api/data 小 ~50x.
+// 老服务器 (没部署 v10) 自动回落到 /api/data 客户端聚合.
+const API_BASE = 'https://dc.ncrc.org.cn/api2';
+const SUMMARY_URL = API_BASE + '/api/patients/summary';
+const DATA_URL = API_BASE + '/api/data';
+const STATUS_URL = API_BASE + '/api/status';
 const REFRESH_INTERVAL_MS = 30000;
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 
@@ -395,33 +401,46 @@ function highlightMatch(text, q) {
   return `${before}<mark>${hit}</mark>${after}`;
 }
 
-/* ----------------- Fetch ----------------- */
+/* ----------------- Fetch -----------------
+ * v10 策略: 优先打 /api/patients/summary (服务端聚合, 响应小).
+ *   - 成功 → 直接喂给 ingestSummary, 不需要客户端再做大 JSON 聚合
+ *   - 404 (老服务器没部署 v10) → 自动回落 /api/data 走客户端 aggregate()
+ */
 async function fetchAndRender() {
   const btn = document.getElementById('refreshBtn');
   btn.classList.add('spinning');
   try {
     setConnState('warn');
-    const [dataRes, statusRes] = await Promise.allSettled([
-      fetch(API_URL, { cache: 'no-store' }),
+    const [summaryRes, statusRes] = await Promise.allSettled([
+      fetch(SUMMARY_URL, { cache: 'no-store' }),
       fetch(STATUS_URL, { cache: 'no-store' })
     ]);
-
-    if (dataRes.status !== 'fulfilled' || !dataRes.value.ok) {
-      throw new Error('/api/data fetch 失败: ' + (dataRes.reason || dataRes.value.statusText));
-    }
-    const data = await dataRes.value.json();
 
     if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
       const status = await statusRes.value.json();
       document.getElementById('serverTime').textContent = status.server_time || '--';
     }
-
     document.getElementById('lastFetch').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-    document.getElementById('rowCount').textContent = data.count;
-    setConnState('ok');
 
-    aggregate(data);
+    let usedSummary = false;
+    if (summaryRes.status === 'fulfilled' && summaryRes.value.ok) {
+      const summary = await summaryRes.value.json();
+      document.getElementById('rowCount').textContent = summary.rows ?? '--';
+      ingestSummary(summary);
+      usedSummary = true;
+    } else {
+      // fallback: 老服务器或临时 5xx → 拉详细 /api/data 客户端聚合
+      const dataRes = await fetch(DATA_URL, { cache: 'no-store' });
+      if (!dataRes.ok) throw new Error('/api/data fetch 失败: ' + dataRes.statusText);
+      const data = await dataRes.json();
+      document.getElementById('rowCount').textContent = data.count;
+      aggregate(data);
+    }
+    setConnState('ok');
     renderAll();
+    // 调试用: 状态栏标记本次使用了哪个端点
+    const meta = document.getElementById('renderMeta');
+    if (meta) meta.dataset.endpoint = usedSummary ? 'summary' : 'data';
   } catch (err) {
     console.error(err);
     setConnState('err');
@@ -432,6 +451,35 @@ async function fetchAndRender() {
   } finally {
     setTimeout(() => btn.classList.remove('spinning'), 500);
   }
+}
+
+/* v10: 服务端 summary 直接入缓存, 不需要解 records 大 JSON. */
+function ingestSummary(summary) {
+  const patients = summary.patients || [];
+  const globalTypes = {};
+  let totalRecords = 0;
+
+  cachedPatients = patients.map(p => {
+    Object.entries(p.types || {}).forEach(([k, v]) => {
+      globalTypes[k] = (globalTypes[k] || 0) + v;
+    });
+    totalRecords += p.count || 0;
+    const devices = (p.devices || []).slice().sort((a, b) => a - b);
+    return {
+      pn: p.patientNo == null ? 'NULL' : p.patientNo,
+      count: p.count || 0,
+      types: p.types || {},
+      latest: (p.latest || '').slice(0, 19),
+      earliest: (p.earliest || '').slice(0, 19),
+      devices,
+      maxDevice: devices.length ? Math.max(...devices) : 0,
+      typeKeys: Object.keys(p.types || {}),
+    };
+  });
+  cachedTypes = globalTypes;
+
+  document.getElementById('totalRecords').textContent = totalRecords.toLocaleString();
+  document.getElementById('patientCount').textContent = cachedPatients.length;
 }
 
 /* ----------------- Aggregation (cached) ----------------- */

@@ -12,7 +12,10 @@
 
 API 端点：
 - GET  /api/status                       服务状态 + MySQL 连接
-- GET  /api/data                         查询所有设备的大 JSON (可选 ?patientNo= 过滤大 JSON 内的记录)
+- GET  /api/data                         查询所有设备的大 JSON (可选 ?patientNo= 过滤;
+                                         v10 新增 ?page=N&size=M 分页, deviceId DESC; 响应支持 gzip)
+- GET  /api/patients/summary             v10 新增: 按门诊号服务端聚合摘要
+                                         (count/types/devices/earliest/latest, 响应 ~50x 小于 /api/data)
 - POST /api/health-data                  写入一条体征记录（自动 UPSERT 到大 JSON 数组）;
                                          患者标识传 patientNo, 写入每条记录的 '门诊号' 字段
 - POST /api/device/register              按 mac (优先) 或 device_sign UPSERT 到 wearable_device，返回 deviceId
@@ -30,6 +33,7 @@ API 端点：
 import os
 import json
 import re
+import gzip
 import datetime
 import traceback
 import urllib.request
@@ -666,6 +670,13 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # gzip 压缩: 客户端支持 (Accept-Encoding 含 gzip) + 响应 > 1KB 才压缩,
+        # 小响应压缩反而变大 (gzip header 开销). 实测大 JSON 可压到 1/15 大小.
+        self.send_header('Vary', 'Accept-Encoding')
+        accept_enc = (self.headers.get('Accept-Encoding') or '').lower()
+        if 'gzip' in accept_enc and len(body) > 1024:
+            body = gzip.compress(body, compresslevel=6)
+            self.send_header('Content-Encoding', 'gzip')
         self.send_header('Content-Length', len(body))
         self.end_headers()
         self.wfile.write(body)
@@ -689,17 +700,29 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             })
 
         elif pathname == '/api/data':
-            # 5.06-v9: 数据库一台设备一行 (按 deviceId 切片), 不依赖 wx_openid 列.
+            # 5.06-v10: 数据库一台设备一行 (按 deviceId 切片), 不依赖 wx_openid 列.
             # 客户端 / 调用方按 patientNo 过滤数据时, 可选 ?patientNo=100234:
             # 服务端在 Python 端把每行 data 数组按 '门诊号' 字段过滤, 返回精简版.
             # 不传 patientNo 时返回原样大 JSON (与 v6 行为一致).
+            # v10 新增 ?page=N&size=M 分页 (deviceId DESC 排, 大号在前):
+            #   不传 size 或 size=0 = 不分页, 返回全部 (兼容旧客户端).
+            #   传 size > 0 时返回 records[page-1*size : page*size], total 字段给出过滤后总数.
             patient_no_filter = (query.get('patientNo') or [None])[0]
+            try:
+                page = max(1, int((query.get('page') or ['1'])[0]))
+            except (ValueError, TypeError):
+                page = 1
+            try:
+                size = max(0, min(500, int((query.get('size') or ['0'])[0])))
+            except (ValueError, TypeError):
+                size = 0
             try:
                 conn = get_connection()
                 cur = conn.cursor()
+                # deviceId DESC: 大号 (新设备) 排前面, 与 dashboard 默认排序一致
                 cur.execute(
                     'SELECT id, deviceId, data, createTime '
-                    'FROM wearable_device_data ORDER BY deviceId, createTime'
+                    'FROM wearable_device_data ORDER BY deviceId DESC, createTime'
                 )
                 rows = []
                 for r in cur.fetchall():
@@ -729,8 +752,95 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     })
                 cur.close()
                 conn.close()
-                self._send_json(200, {'count': len(rows), 'records': rows,
-                                       'filteredBy': {'patientNo': patient_no_filter} if patient_no_filter else None})
+                total = len(rows)
+                if size > 0:
+                    start = (page - 1) * size
+                    rows = rows[start:start + size]
+                resp = {
+                    'count': len(rows),
+                    'total': total,
+                    'records': rows,
+                    'filteredBy': {'patientNo': patient_no_filter} if patient_no_filter else None,
+                }
+                if size > 0:
+                    resp['page'] = page
+                    resp['size'] = size
+                    resp['hasMore'] = page * size < total
+                self._send_json(200, resp)
+            except Exception as e:
+                self._send_json(500, {'error': str(e)})
+
+        elif pathname == '/api/patients/summary':
+            # 5.06-v10: 服务端按门诊号聚合, 不返回大 JSON 全文, 只返回每个患者的
+            #   { patientNo, count, types: {心率:N, 血氧:M,...}, devices: [id1,id2], earliest, latest }
+            # 实测响应体比 /api/data 小 ~50x, 适合 dashboard 30s 轮询.
+            # 客户端要看具体某条数据再用 /api/data?patientNo=xxx 拉详情.
+            try:
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    'SELECT id, deviceId, data, createTime '
+                    'FROM wearable_device_data ORDER BY deviceId DESC'
+                )
+                # patient_no -> { count, types, devices(set), earliest, latest }
+                summary = {}
+                unbound_count = 0  # 没门诊号的记录数 (用 _NULL_ 占位)
+                row_count = 0
+                for r in cur.fetchall():
+                    row_count += 1
+                    big_json = json.loads(r[2]) if r[2] else {}
+                    if not isinstance(big_json, dict):
+                        continue
+                    for type_key, arr in big_json.items():
+                        if not isinstance(arr, list):
+                            continue
+                        for rec in arr:
+                            if not isinstance(rec, dict):
+                                continue
+                            p_no = rec.get('门诊号') or '_NULL_'
+                            entry = summary.setdefault(p_no, {
+                                'count': 0,
+                                'types': {},
+                                'devices': set(),
+                                'earliest': None,
+                                'latest': None,
+                            })
+                            entry['count'] += 1
+                            entry['types'][type_key] = entry['types'].get(type_key, 0) + 1
+                            entry['devices'].add(r[1])
+                            # 时间戳: upsert_device_data 把客户端 recordedAt 落到中文字段 '采集时间' (ISO),
+                            # 兼容老/异常记录回退 recordedAt/uploadedAt 字段, 最后兜底 row createTime
+                            ts = rec.get('采集时间') or rec.get('recordedAt') or rec.get('uploadedAt')
+                            if not ts and r[3]:
+                                ts = r[3].strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                            if ts:
+                                if entry['earliest'] is None or ts < entry['earliest']:
+                                    entry['earliest'] = ts
+                                if entry['latest'] is None or ts > entry['latest']:
+                                    entry['latest'] = ts
+                            if p_no == '_NULL_':
+                                unbound_count += 1
+                cur.close()
+                conn.close()
+                patients = []
+                for p_no, entry in summary.items():
+                    patients.append({
+                        'patientNo': None if p_no == '_NULL_' else p_no,
+                        'count': entry['count'],
+                        'types': entry['types'],
+                        # 设备 ID 按 desc 排, 大号在前
+                        'devices': sorted(entry['devices'], reverse=True),
+                        'earliest': entry['earliest'],
+                        'latest': entry['latest'],
+                    })
+                # 默认按 latest desc 排, 最近活跃的在前, NULL 放最后
+                patients.sort(key=lambda x: (x['latest'] or '', x['patientNo'] or ''), reverse=True)
+                self._send_json(200, {
+                    'count': len(patients),
+                    'rows': row_count,
+                    'unboundRecords': unbound_count,
+                    'patients': patients,
+                })
             except Exception as e:
                 self._send_json(500, {'error': str(e)})
 
@@ -761,10 +871,11 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             self._send_json(200, {
                 'service': '智能随访-可穿戴设备数据接收服务',
                 'mode': '一台设备一行 + 大 JSON 汇总; 患者标识 = 大 JSON 每条记录的 "门诊号" 字段',
-                'version': '5.06-v9',
+                'version': '5.06-v10',
                 'endpoints': {
                     'GET  /api/status': '服务状态',
-                    'GET  /api/data': '查询所有设备 (可选 ?patientNo= 过滤大 JSON 内的记录)',
+                    'GET  /api/data': '查询所有设备 (可选 ?patientNo= 过滤; ?page=N&size=M 分页, deviceId DESC; 响应支持 gzip)',
+                    'GET  /api/patients/summary': '按门诊号聚合摘要 (count/types/devices/earliest/latest, ~50x 小于 /api/data)',
                     'POST /api/health-data': 'UPSERT 体征数据 (按 deviceId 切片, 透传 patientNo 写入大 JSON)',
                     'POST /api/device/register': '按 mac (优先) 或 device_sign UPSERT 到 wearable_device 并返回 deviceId',
                     'POST /api/device/merge': '合并 wearable_device_data 两行: {fromDeviceId, toDeviceId}',
