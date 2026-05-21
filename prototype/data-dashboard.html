@@ -64,6 +64,7 @@ body {
 .dot-err { background: #d04848; }
 .dot-warn { background: #f59e0b; }
 @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(47,170,85,0.4); } 50% { box-shadow: 0 0 0 6px rgba(47,170,85,0); } }
+.render-meta { margin-left: auto; color: #9ca3af; font-size: 12px; }
 
 /* Overall stats row */
 .stats-grid {
@@ -86,8 +87,50 @@ body {
 .section-title {
   font-size: 15px; font-weight: 600; color: #1f2937;
   margin: 20px 0 12px; padding-left: 12px; border-left: 4px solid #2c6ef2;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
 }
 .section-title .meta { font-weight: 400; color: #9ca3af; font-size: 12px; margin-left: 10px; }
+
+/* Toolbar (search + filters) */
+.toolbar {
+  background: #fff; border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(120px, 180px)) auto;
+  gap: 10px 12px;
+  align-items: center;
+}
+@media (max-width: 760px) {
+  .toolbar { grid-template-columns: 1fr 1fr; }
+  .toolbar .search-wrap { grid-column: span 2; }
+  .toolbar .clear-btn { grid-column: span 2; justify-self: stretch; }
+}
+.search-wrap { position: relative; }
+.search-wrap .icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: #9ca3af; font-size: 14px; pointer-events: none;
+}
+.toolbar input[type="text"] {
+  width: 100%; padding: 9px 12px 9px 34px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 14px; color: #1f2937; background: #f9fafb;
+  outline: none; transition: border 0.2s, background 0.2s;
+}
+.toolbar input[type="text"]:focus { border-color: #2c6ef2; background: #fff; }
+.toolbar select {
+  width: 100%; padding: 9px 10px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 13px; color: #1f2937; background: #f9fafb;
+  outline: none; cursor: pointer;
+}
+.toolbar select:focus { border-color: #2c6ef2; background: #fff; }
+.clear-btn {
+  padding: 9px 14px; border: 1px solid #e5e7eb; border-radius: 8px;
+  background: #fff; color: #6b7280; cursor: pointer; font-size: 13px;
+  white-space: nowrap; transition: all 0.2s;
+}
+.clear-btn:hover { background: #f0f5ff; color: #2c6ef2; border-color: #c7dafe; }
 
 /* Patient cards */
 .patients { display: grid; grid-template-columns: 1fr; gap: 14px; }
@@ -106,6 +149,10 @@ body {
   color: #fff; padding: 14px 18px;
 }
 .patient-no { font-size: 18px; font-weight: 600; letter-spacing: 1px; }
+.patient-no mark {
+  background: rgba(255,255,0,0.55); color: inherit;
+  border-radius: 3px; padding: 0 2px;
+}
 .patient-tag {
   display: inline-block; background: rgba(255,255,255,0.22);
   padding: 3px 10px; border-radius: 10px;
@@ -127,9 +174,11 @@ body {
   padding: 4px 10px; border-radius: 10px;
   font-size: 11px; font-weight: 500;
 }
-.type-pill.bp { background: #fee2e2; color: #d04848; }   /* 血压 */
-.type-pill.heart { background: #fef3c7; color: #d97706; } /* 心率 */
-.type-pill.step { background: #e0f2fe; color: #0284c7; } /* 步数 */
+.type-pill.bp { background: #fee2e2; color: #d04848; }
+.type-pill.heart { background: #fef3c7; color: #d97706; }
+.type-pill.step { background: #e0f2fe; color: #0284c7; }
+.type-pill.spo2 { background: #ede9fe; color: #7c3aed; }
+.type-pill.temp { background: #fce7f3; color: #be185d; }
 
 /* Time-since */
 .time-since {
@@ -139,18 +188,63 @@ body {
 .time-since.stale { color: #f59e0b; }
 .time-since.dead { color: #d04848; }
 
-/* Loading / error */
-.loading, .error {
+/* Pagination */
+.pagination {
+  display: flex; justify-content: center; align-items: center;
+  gap: 6px; margin-top: 24px; flex-wrap: wrap;
+}
+.pagination .info {
+  margin-right: 10px; color: #6b7280; font-size: 13px;
+}
+.pagination button, .pagination .ellipsis {
+  min-width: 36px; height: 36px; padding: 0 10px;
+  border: 1px solid #e5e7eb; background: #fff; color: #1f2937;
+  border-radius: 8px; cursor: pointer; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.pagination button:hover:not(:disabled):not(.active) {
+  border-color: #2c6ef2; color: #2c6ef2;
+}
+.pagination button.active {
+  background: #2c6ef2; color: #fff; border-color: #2c6ef2; font-weight: 600;
+}
+.pagination button:disabled {
+  color: #d1d5db; cursor: not-allowed; background: #f9fafb;
+}
+.pagination .ellipsis {
+  border: none; background: transparent; color: #9ca3af; cursor: default;
+}
+.pagination .jump {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 10px; color: #6b7280; font-size: 13px;
+}
+.pagination .jump input {
+  width: 56px; height: 36px; padding: 0 8px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 13px; text-align: center; outline: none;
+}
+.pagination .jump input:focus { border-color: #2c6ef2; }
+
+/* Empty / Loading / error */
+.empty, .loading, .error {
   background: #fff; border-radius: 12px;
   padding: 60px 20px; text-align: center;
   color: #6b7280; font-size: 14px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  grid-column: 1 / -1;
 }
+.empty .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
 .error { color: #d04848; }
-.error pre { font-size: 11px; color: #9ca3af; margin-top: 12px; text-align: left; }
+.error pre { font-size: 11px; color: #9ca3af; margin-top: 12px; text-align: left; white-space: pre-wrap; }
 
 .footer { text-align: center; color: #9ca3af; font-size: 11px; margin-top: 32px; }
 .footer a { color: #2c6ef2; text-decoration: none; }
+.footer .kbd {
+  display: inline-block; padding: 1px 6px; border: 1px solid #e5e7eb;
+  border-radius: 4px; background: #fff; color: #6b7280; font-size: 10px;
+  font-family: monospace; margin: 0 2px;
+}
 </style>
 </head>
 <body>
@@ -174,6 +268,7 @@ body {
     <div class="item"><span class="label">数据表行数</span><span class="value" id="rowCount">--</span></div>
     <div class="item"><span class="label">总记录条数</span><span class="value" id="totalRecords">--</span></div>
     <div class="item"><span class="label">门诊号数</span><span class="value" id="patientCount">--</span></div>
+    <div class="render-meta" id="renderMeta"></div>
   </div>
 
   <div class="stats-grid" id="statsGrid"></div>
@@ -183,14 +278,42 @@ body {
     <span class="meta" id="patientMeta"></span>
   </div>
 
+  <div class="toolbar">
+    <div class="search-wrap">
+      <span class="icon">🔍</span>
+      <input type="text" id="searchInput" placeholder="搜索门诊号 / deviceId (按 / 聚焦)" autocomplete="off">
+    </div>
+    <select id="filterStatus" title="活跃状态">
+      <option value="all">全部状态</option>
+      <option value="today">今日活跃</option>
+      <option value="7d">7 天内</option>
+      <option value="stale">久未更新 (3 天+)</option>
+      <option value="null">NULL 历史</option>
+    </select>
+    <select id="filterType" title="数据类型">
+      <option value="all">全部类型</option>
+    </select>
+    <select id="sortBy" title="排序方式">
+      <option value="latest">最新采集时间 ↓</option>
+      <option value="latest-asc">最早采集时间 ↑</option>
+      <option value="count">采集条数 ↓</option>
+      <option value="device">deviceId ↓</option>
+      <option value="patient">门诊号 ↑</option>
+    </select>
+    <button class="clear-btn" id="clearFilters" type="button">重置</button>
+  </div>
+
   <div id="patients" class="patients">
     <div class="loading">正在加载数据…</div>
   </div>
+
+  <div class="pagination" id="pagination" style="display:none;"></div>
 
   <div class="footer">
     数据来源 <a href="https://dc.ncrc.org.cn/api2/api/data" target="_blank">/api/data</a>
     · 服务端 v5.06-v10
     · <a href="https://github.com/qqyjx/suifang" target="_blank">GitHub 仓库</a>
+    · 快捷键 <span class="kbd">/</span> 搜索 <span class="kbd">←</span><span class="kbd">→</span> 翻页
   </div>
 
 </div>
@@ -199,9 +322,21 @@ body {
 const API_URL = 'https://dc.ncrc.org.cn/api2/api/data';
 const STATUS_URL = 'https://dc.ncrc.org.cn/api2/api/status';
 const REFRESH_INTERVAL_MS = 30000;
+const PAGE_SIZE_OPTIONS = [20, 50, 100];
 
 let autoRefreshTimer = null;
 let lastDataHash = '';
+let cachedPatients = [];
+let cachedTypes = {};
+
+const state = {
+  search: '',
+  filterStatus: 'all',
+  filterType: 'all',
+  sortBy: 'latest',
+  page: 1,
+  pageSize: 20,
+};
 
 function fmtCST(iso) {
   if (!iso) return '--';
@@ -223,7 +358,8 @@ function fmtSince(iso) {
     const h = Math.floor(min / 60);
     if (h < 24) return { text: `${h} 小时前`, cls: 'fresh' };
     const d = Math.floor(h / 24);
-    if (d < 3) return { text: `${d} 天前`, cls: 'stale' };
+    if (d < 3) return { text: `${d} 天前`, cls: 'fresh' };
+    if (d < 7) return { text: `${d} 天前`, cls: 'stale' };
     return { text: `${d} 天前 (久未更新)`, cls: 'dead' };
   } catch { return { text: '--', cls: 'stale' }; }
 }
@@ -232,14 +368,34 @@ function typeClass(name) {
   if (name === '血压') return 'bp';
   if (name === '心率') return 'heart';
   if (name === '步数') return 'step';
+  if (name === '血氧') return 'spo2';
+  if (name === '体温') return 'temp';
   return '';
 }
 
-function setConnState(state) {
+function setConnState(s) {
   const dot = document.getElementById('connDot');
-  dot.className = 'dot ' + (state === 'ok' ? 'dot-ok' : state === 'warn' ? 'dot-warn' : 'dot-err');
+  dot.className = 'dot ' + (s === 'ok' ? 'dot-ok' : s === 'warn' ? 'dot-warn' : 'dot-err');
 }
 
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function highlightMatch(text, q) {
+  const safe = escapeHtml(text);
+  if (!q) return safe;
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx < 0) return safe;
+  const before = escapeHtml(text.slice(0, idx));
+  const hit = escapeHtml(text.slice(idx, idx + q.length));
+  const after = escapeHtml(text.slice(idx + q.length));
+  return `${before}<mark>${hit}</mark>${after}`;
+}
+
+/* ----------------- Fetch ----------------- */
 async function fetchAndRender() {
   const btn = document.getElementById('refreshBtn');
   btn.classList.add('spinning');
@@ -264,22 +420,30 @@ async function fetchAndRender() {
     document.getElementById('rowCount').textContent = data.count;
     setConnState('ok');
 
-    aggregateAndRender(data);
+    aggregate(data);
+    renderAll();
   } catch (err) {
     console.error(err);
     setConnState('err');
     document.getElementById('patients').innerHTML =
-      '<div class="error">❌ 拉取数据失败<pre>' + (err.message || err) + '</pre>' +
+      '<div class="error">❌ 拉取数据失败<pre>' + escapeHtml(err.message || String(err)) + '</pre>' +
       '<br>请检查网络/VPN, 或刷新页面重试.</div>';
+    document.getElementById('pagination').style.display = 'none';
   } finally {
     setTimeout(() => btn.classList.remove('spinning'), 500);
   }
 }
 
-function aggregateAndRender(data) {
+/* ----------------- Aggregation (cached) ----------------- */
+function aggregate(data) {
   const records = data.records || [];
+  // Cheap hash: row count + last device summary. Skip re-aggregate if unchanged.
+  const hash = data.count + ':' + records.length + ':' +
+    records.map(r => (r.deviceId || '') + ':' + Object.keys(r.data || {}).length).join('|');
+  if (hash === lastDataHash && cachedPatients.length) return;
+  lastDataHash = hash;
 
-  const patientMap = new Map(); // 门诊号 -> { count, types, latest, earliest, devices }
+  const patientMap = new Map();
   let totalRecords = 0;
   const globalTypes = {};
 
@@ -293,7 +457,7 @@ function aggregateAndRender(data) {
         const pn = rec['门诊号'] || 'NULL';
         if (!patientMap.has(pn)) {
           patientMap.set(pn, {
-            count: 0, types: {}, latest: '', earliest: '', devices: new Set()
+            pn, count: 0, types: {}, latest: '', earliest: '', devices: new Set()
           });
         }
         const p = patientMap.get(pn);
@@ -309,79 +473,321 @@ function aggregateAndRender(data) {
     });
   });
 
+  cachedPatients = [...patientMap.values()].map(p => ({
+    ...p,
+    devices: [...p.devices].sort((a, b) => a - b),
+    maxDevice: Math.max(...p.devices),
+    typeKeys: Object.keys(p.types),
+  }));
+  cachedTypes = globalTypes;
+
   document.getElementById('totalRecords').textContent = totalRecords.toLocaleString();
   document.getElementById('patientCount').textContent = patientMap.size;
-
-  // 整体统计卡
-  renderStatsGrid(globalTypes, patientMap);
-
-  // 患者卡片排序: 按该患者所属的最大 deviceId 倒序 (新设备/新入组在前),
-  // NULL 历史固定放最后.
-  const sortedPatients = [...patientMap.entries()].sort((a, b) => {
-    if (a[0] === 'NULL') return 1;
-    if (b[0] === 'NULL') return -1;
-    const maxA = Math.max(...a[1].devices);
-    const maxB = Math.max(...b[1].devices);
-    return maxB - maxA;
-  });
-
-  // 今日活跃 patient 数
-  const today = new Date().toISOString().slice(0, 10);
-  const todayActive = sortedPatients.filter(([pn, info]) =>
-    pn !== 'NULL' && info.latest && info.latest.slice(0, 10) === today
-  ).length;
-  document.getElementById('patientMeta').textContent =
-    `共 ${patientMap.size - (patientMap.has('NULL') ? 1 : 0)} 位 (不计 NULL), 今日活跃 ${todayActive} 位`;
-
-  document.getElementById('patients').innerHTML = sortedPatients.map(([pn, info]) => {
-    const since = fmtSince(info.latest);
-    const isNull = pn === 'NULL';
-    const isToday = info.latest && info.latest.slice(0, 10) === today;
-    const devs = [...info.devices].sort((a,b)=>a-b).join(', ');
-    const types = Object.entries(info.types).sort((a,b) => b[1] - a[1])
-      .map(([n, c]) => `<span class="type-pill ${typeClass(n)}">${n} ${c}</span>`).join('');
-
-    let cls = '';
-    if (isNull) cls = 'is-null';
-    else if (isToday) cls = 'has-today';
-
-    return `
-      <div class="patient-card ${cls}">
-        <div class="patient-header">
-          <div class="patient-no">${isNull ? '历史数据 (无门诊号)' : pn}</div>
-          <div class="patient-tag">${isToday ? '今日活跃' : (isNull ? 'v9 之前' : 'v10 入组')}</div>
-        </div>
-        <div class="patient-body">
-          <div class="metric-row"><span class="key">采集条数</span><span class="val">${info.count}</span></div>
-          <div class="metric-row"><span class="key">设备 deviceId</span><span class="val muted">${devs}</span></div>
-          <div class="metric-row"><span class="key">最早采集</span><span class="val muted">${fmtCST(info.earliest)}</span></div>
-          <div class="metric-row"><span class="key">最晚采集</span><span class="val">${fmtCST(info.latest)}</span></div>
-          <div class="time-since ${since.cls}">距最新数据: ${since.text}</div>
-          <div class="type-bars">${types}</div>
-        </div>
-      </div>
-    `;
-  }).join('');
 }
 
-function renderStatsGrid(globalTypes, patientMap) {
-  const cards = [];
-  const total = Object.values(globalTypes).reduce((a, b) => a + b, 0);
-  cards.push({ label: '记录总数', num: total.toLocaleString(), cls: '' });
+/* ----------------- Filter + Sort + Paginate ----------------- */
+function applyFiltersSort() {
+  const today = new Date().toISOString().slice(0, 10);
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+  const q = state.search.trim().toLowerCase();
 
-  // 关键指标
-  const keyTypes = ['血压', '心率', '血氧', '步数', '日综合', '体温'];
-  keyTypes.forEach(t => {
-    if (globalTypes[t]) {
-      const cls = t === '血压' ? 'red' : (t === '心率' ? 'orange' : (t === '步数' ? 'green' : ''));
-      cards.push({ label: t, num: globalTypes[t].toLocaleString(), cls });
+  let out = cachedPatients.filter(p => {
+    if (q) {
+      const inPn = String(p.pn).toLowerCase().includes(q);
+      const inDev = p.devices.some(d => String(d).toLowerCase().includes(q));
+      if (!inPn && !inDev) return false;
+    }
+    if (state.filterStatus !== 'all') {
+      const isNull = p.pn === 'NULL';
+      const day = (p.latest || '').slice(0, 10);
+      switch (state.filterStatus) {
+        case 'today': if (isNull || day !== today) return false; break;
+        case '7d':    if (isNull || !day || day < sevenDaysAgo) return false; break;
+        case 'stale': if (isNull || (day && day >= threeDaysAgo)) return false; break;
+        case 'null':  if (!isNull) return false; break;
+      }
+    }
+    if (state.filterType !== 'all' && !p.types[state.filterType]) return false;
+    return true;
+  });
+
+  out.sort((a, b) => {
+    if (a.pn === 'NULL' && b.pn !== 'NULL') return 1;
+    if (b.pn === 'NULL' && a.pn !== 'NULL') return -1;
+    switch (state.sortBy) {
+      case 'latest':     return (b.latest || '').localeCompare(a.latest || '');
+      case 'latest-asc': return (a.latest || '￿').localeCompare(b.latest || '￿');
+      case 'count':      return b.count - a.count;
+      case 'device':     return b.maxDevice - a.maxDevice;
+      case 'patient':    return String(a.pn).localeCompare(String(b.pn), 'zh-CN');
+      default:           return 0;
     }
   });
 
+  return out;
+}
+
+/* ----------------- Render ----------------- */
+function renderAll() {
+  renderStatsGrid();
+  renderTypeFilterOptions();
+  renderPatients();
+}
+
+function renderStatsGrid() {
+  const total = Object.values(cachedTypes).reduce((a, b) => a + b, 0);
+  const cards = [{ label: '记录总数', num: total.toLocaleString(), cls: '' }];
+  const keyTypes = ['血压', '心率', '血氧', '步数', '日综合', '体温'];
+  keyTypes.forEach(t => {
+    if (cachedTypes[t]) {
+      const cls = t === '血压' ? 'red' : (t === '心率' ? 'orange' : (t === '步数' ? 'green' : ''));
+      cards.push({ label: t, num: cachedTypes[t].toLocaleString(), cls });
+    }
+  });
   document.getElementById('statsGrid').innerHTML = cards.map(c =>
     `<div class="stat-card ${c.cls}"><div class="num">${c.num}</div><div class="label">${c.label}</div></div>`
   ).join('');
 }
+
+function renderTypeFilterOptions() {
+  const sel = document.getElementById('filterType');
+  const current = sel.value;
+  const types = Object.keys(cachedTypes).sort((a, b) => cachedTypes[b] - cachedTypes[a]);
+  const existing = new Set(Array.from(sel.options).map(o => o.value));
+  if (types.length === existing.size - 1 && types.every(t => existing.has(t))) return;
+  sel.innerHTML = '<option value="all">全部类型</option>' +
+    types.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)} (${cachedTypes[t]})</option>`).join('');
+  if (existing.has(current)) sel.value = current;
+}
+
+function renderPatients() {
+  const t0 = performance.now();
+  const list = applyFiltersSort();
+  const totalNullExcluded = cachedPatients.filter(p => p.pn !== 'NULL').length;
+  const today = new Date().toISOString().slice(0, 10);
+  const todayActive = cachedPatients.filter(p => p.pn !== 'NULL' && p.latest && p.latest.slice(0, 10) === today).length;
+  document.getElementById('patientMeta').textContent =
+    `共 ${totalNullExcluded} 位 (不计 NULL), 今日活跃 ${todayActive} 位 · 筛选后 ${list.length} 位`;
+
+  const totalPages = Math.max(1, Math.ceil(list.length / state.pageSize));
+  if (state.page > totalPages) state.page = totalPages;
+  if (state.page < 1) state.page = 1;
+  const start = (state.page - 1) * state.pageSize;
+  const slice = list.slice(start, start + state.pageSize);
+
+  const container = document.getElementById('patients');
+  if (list.length === 0) {
+    container.innerHTML = '<div class="empty"><div class="icon">🔍</div>未找到匹配的患者<br><span style="font-size:12px;color:#9ca3af;">试试调整搜索关键字或筛选条件</span></div>';
+    document.getElementById('pagination').style.display = 'none';
+    document.getElementById('renderMeta').textContent =
+      `渲染 0 / ${list.length} 条 · ${(performance.now() - t0).toFixed(1)} ms`;
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  const q = state.search.trim();
+  slice.forEach(p => frag.appendChild(buildPatientCard(p, q, today)));
+  container.replaceChildren(frag);
+
+  renderPagination(list.length, totalPages);
+  document.getElementById('renderMeta').textContent =
+    `渲染 ${slice.length} / ${list.length} 条 · ${(performance.now() - t0).toFixed(1)} ms`;
+  saveStateToHash();
+}
+
+function buildPatientCard(p, q, today) {
+  const since = fmtSince(p.latest);
+  const isNull = p.pn === 'NULL';
+  const isToday = p.latest && p.latest.slice(0, 10) === today;
+  const devs = p.devices.join(', ');
+  const typesHtml = Object.entries(p.types).sort((a, b) => b[1] - a[1])
+    .map(([n, c]) => `<span class="type-pill ${typeClass(n)}">${escapeHtml(n)} ${c}</span>`).join('');
+
+  let cls = 'patient-card';
+  if (isNull) cls += ' is-null';
+  else if (isToday) cls += ' has-today';
+
+  const titleHtml = isNull ? '历史数据 (无门诊号)' : highlightMatch(String(p.pn), q);
+  const devsHtml = q ? highlightMatch(devs, q) : escapeHtml(devs);
+
+  const el = document.createElement('div');
+  el.className = cls;
+  el.innerHTML = `
+    <div class="patient-header">
+      <div class="patient-no">${titleHtml}</div>
+      <div class="patient-tag">${isToday ? '今日活跃' : (isNull ? 'v9 之前' : 'v10 入组')}</div>
+    </div>
+    <div class="patient-body">
+      <div class="metric-row"><span class="key">采集条数</span><span class="val">${p.count}</span></div>
+      <div class="metric-row"><span class="key">设备 deviceId</span><span class="val muted">${devsHtml}</span></div>
+      <div class="metric-row"><span class="key">最早采集</span><span class="val muted">${fmtCST(p.earliest)}</span></div>
+      <div class="metric-row"><span class="key">最晚采集</span><span class="val">${fmtCST(p.latest)}</span></div>
+      <div class="time-since ${since.cls}">距最新数据: ${since.text}</div>
+      <div class="type-bars">${typesHtml}</div>
+    </div>
+  `;
+  return el;
+}
+
+/* ----------------- Pagination UI ----------------- */
+function renderPagination(total, totalPages) {
+  const el = document.getElementById('pagination');
+  if (total <= PAGE_SIZE_OPTIONS[0] && state.pageSize === PAGE_SIZE_OPTIONS[0]) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  const start = (state.page - 1) * state.pageSize + 1;
+  const end = Math.min(state.page * state.pageSize, total);
+
+  const pages = pageList(state.page, totalPages);
+
+  el.innerHTML = `
+    <span class="info">第 ${start}-${end} 条 / 共 ${total} 条</span>
+    <button type="button" data-act="prev" ${state.page === 1 ? 'disabled' : ''}>上一页</button>
+    ${pages.map(p => p === '...'
+      ? '<span class="ellipsis">…</span>'
+      : `<button type="button" data-page="${p}" class="${p === state.page ? 'active' : ''}">${p}</button>`
+    ).join('')}
+    <button type="button" data-act="next" ${state.page === totalPages ? 'disabled' : ''}>下一页</button>
+    <select id="pageSizeSel" title="每页条数" style="height:36px;border:1px solid #e5e7eb;border-radius:8px;padding:0 8px;background:#fff;cursor:pointer;font-size:13px;margin-left:6px;">
+      ${PAGE_SIZE_OPTIONS.map(n => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n} 条/页</option>`).join('')}
+    </select>
+    <span class="jump">
+      跳转到 <input type="number" id="pageJump" min="1" max="${totalPages}" value="${state.page}"> / ${totalPages}
+    </span>
+  `;
+}
+
+function pageList(cur, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const out = [1];
+  const lo = Math.max(2, cur - 1);
+  const hi = Math.min(total - 1, cur + 1);
+  if (lo > 2) out.push('...');
+  for (let i = lo; i <= hi; i++) out.push(i);
+  if (hi < total - 1) out.push('...');
+  out.push(total);
+  return out;
+}
+
+/* ----------------- URL hash state ----------------- */
+function saveStateToHash() {
+  const params = new URLSearchParams();
+  if (state.search) params.set('q', state.search);
+  if (state.filterStatus !== 'all') params.set('status', state.filterStatus);
+  if (state.filterType !== 'all') params.set('type', state.filterType);
+  if (state.sortBy !== 'latest') params.set('sort', state.sortBy);
+  if (state.page !== 1) params.set('page', state.page);
+  if (state.pageSize !== 20) params.set('size', state.pageSize);
+  const s = params.toString();
+  const target = s ? '#' + s : '';
+  if (location.hash !== target) {
+    history.replaceState(null, '', location.pathname + location.search + target);
+  }
+}
+
+function loadStateFromHash() {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+  state.search = params.get('q') || '';
+  state.filterStatus = params.get('status') || 'all';
+  state.filterType = params.get('type') || 'all';
+  state.sortBy = params.get('sort') || 'latest';
+  state.page = Math.max(1, parseInt(params.get('page'), 10) || 1);
+  const sz = parseInt(params.get('size'), 10);
+  state.pageSize = PAGE_SIZE_OPTIONS.includes(sz) ? sz : 20;
+
+  document.getElementById('searchInput').value = state.search;
+  document.getElementById('filterStatus').value = state.filterStatus;
+  document.getElementById('sortBy').value = state.sortBy;
+}
+
+/* ----------------- Event wiring ----------------- */
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+const debouncedSearchRender = debounce(() => {
+  state.page = 1;
+  renderPatients();
+}, 250);
+
+document.getElementById('searchInput').addEventListener('input', e => {
+  state.search = e.target.value;
+  debouncedSearchRender();
+});
+
+document.getElementById('filterStatus').addEventListener('change', e => {
+  state.filterStatus = e.target.value;
+  state.page = 1;
+  renderPatients();
+});
+
+document.getElementById('filterType').addEventListener('change', e => {
+  state.filterType = e.target.value;
+  state.page = 1;
+  renderPatients();
+});
+
+document.getElementById('sortBy').addEventListener('change', e => {
+  state.sortBy = e.target.value;
+  state.page = 1;
+  renderPatients();
+});
+
+document.getElementById('clearFilters').addEventListener('click', () => {
+  state.search = ''; state.filterStatus = 'all'; state.filterType = 'all';
+  state.sortBy = 'latest'; state.page = 1; state.pageSize = 20;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('filterStatus').value = 'all';
+  document.getElementById('filterType').value = 'all';
+  document.getElementById('sortBy').value = 'latest';
+  renderPatients();
+});
+
+document.getElementById('pagination').addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn || btn.disabled) return;
+  const totalPages = Math.max(1, Math.ceil(applyFiltersSort().length / state.pageSize));
+  const act = btn.dataset.act;
+  if (act === 'prev' && state.page > 1) state.page--;
+  else if (act === 'next' && state.page < totalPages) state.page++;
+  else if (btn.dataset.page) state.page = parseInt(btn.dataset.page, 10);
+  else return;
+  renderPatients();
+  window.scrollTo({ top: document.querySelector('.toolbar').offsetTop - 12, behavior: 'smooth' });
+});
+
+document.getElementById('pagination').addEventListener('change', e => {
+  if (e.target.id === 'pageSizeSel') {
+    state.pageSize = parseInt(e.target.value, 10);
+    state.page = 1;
+    renderPatients();
+  }
+});
+
+document.getElementById('pagination').addEventListener('keydown', e => {
+  if (e.target.id === 'pageJump' && e.key === 'Enter') {
+    const n = parseInt(e.target.value, 10);
+    const totalPages = Math.max(1, Math.ceil(applyFiltersSort().length / state.pageSize));
+    if (n >= 1 && n <= totalPages) { state.page = n; renderPatients(); }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === '/') {
+    e.preventDefault();
+    document.getElementById('searchInput').focus();
+  } else if (e.key === 'ArrowLeft' && state.page > 1) {
+    state.page--; renderPatients();
+  } else if (e.key === 'ArrowRight') {
+    const totalPages = Math.max(1, Math.ceil(applyFiltersSort().length / state.pageSize));
+    if (state.page < totalPages) { state.page++; renderPatients(); }
+  }
+});
 
 document.getElementById('refreshBtn').addEventListener('click', fetchAndRender);
 
@@ -390,7 +796,6 @@ function startAutoRefresh() {
   autoRefreshTimer = setInterval(fetchAndRender, REFRESH_INTERVAL_MS);
 }
 
-// 页面隐藏时停, 显示时立刻刷一次 + 重启定时
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
@@ -400,6 +805,7 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+loadStateFromHash();
 fetchAndRender();
 startAutoRefresh();
 </script>
