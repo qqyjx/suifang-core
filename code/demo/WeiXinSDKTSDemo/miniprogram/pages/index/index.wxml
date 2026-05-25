@@ -59,7 +59,7 @@
       <view wx:else class="btn" bindtap="closeBluetoothAdapterManager">
         <text class="btn-text">断开连接</text>
       </view>
-      <view class="footer">智能随访 · v{{buildTag}}</view>
+      <view class="footer">北京六元空间信息科技有限责任公司  sfpt01  V1.0  人工智能随访平台</view>
     </view>
 
   </view>
