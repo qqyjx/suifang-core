@@ -79,6 +79,16 @@ body {
 }
 .stat-card .num { font-size: 26px; font-weight: 700; color: #1f2937; line-height: 1.2; }
 .stat-card .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+.stat-card .stat-sub {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #c2410c;
+  font-size: 11px;
+  font-weight: 600;
+}
 .stat-card.green { border-left-color: #2faa55; }
 .stat-card.orange { border-left-color: #f59e0b; }
 .stat-card.red { border-left-color: #d04848; }
@@ -334,6 +344,7 @@ let autoRefreshTimer = null;
 let lastDataHash = '';
 let cachedPatients = [];
 let cachedTypes = {};
+let cachedTypesValid = {};  // v10 patch: 各 type "有效"全局计数 (目前只日综合)
 
 const state = {
   search: '',
@@ -453,15 +464,44 @@ async function fetchAndRender() {
   }
 }
 
+/* v10 patch: 日综合空跑判定 (与 health_server.py _is_daily_empty 对齐).
+   Veepoo SDK 回放出来的 dailyRecords 经常字段全空, 客户端兜底判 (只在 /api/data fallback 路径用). */
+const DAILY_KEY_FIELDS = ['date', 'step', 'sleepData', 'pulseReat', 'bloodPressure',
+  'bloodOxygen', 'bloodGlucose', 'HRVData', 'pressure', 'respirationRate',
+  'sleepStatus', 'bloodLiquid'];
+function isDailyEmpty(dailyRecords) {
+  if (!Array.isArray(dailyRecords) || dailyRecords.length === 0) return true;
+  const isFilled = v => v !== null && v !== undefined && v !== '' && v !== 0 &&
+    v !== '0' && v !== '0.0' && !(Array.isArray(v) && v.length === 0) &&
+    !(typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+  for (const r of dailyRecords) {
+    if (!r || typeof r !== 'object') continue;
+    for (const k of DAILY_KEY_FIELDS) {
+      if (isFilled(r[k])) return false;
+    }
+    const bt = r.bodyTemperature;
+    if (bt && typeof bt === 'object') {
+      for (const v of Object.values(bt)) {
+        if (isFilled(v)) return false;
+      }
+    }
+  }
+  return true;
+}
+
 /* v10: 服务端 summary 直接入缓存, 不需要解 records 大 JSON. */
 function ingestSummary(summary) {
   const patients = summary.patients || [];
   const globalTypes = {};
+  const globalTypesValid = {};  // v10 patch: 各 type "有效"全局计数 (目前只日综合)
   let totalRecords = 0;
 
   cachedPatients = patients.map(p => {
     Object.entries(p.types || {}).forEach(([k, v]) => {
       globalTypes[k] = (globalTypes[k] || 0) + v;
+    });
+    Object.entries(p.typesValid || {}).forEach(([k, v]) => {
+      globalTypesValid[k] = (globalTypesValid[k] || 0) + v;
     });
     totalRecords += p.count || 0;
     const devices = (p.devices || []).slice().sort((a, b) => a - b);
@@ -469,6 +509,7 @@ function ingestSummary(summary) {
       pn: p.patientNo == null ? 'NULL' : p.patientNo,
       count: p.count || 0,
       types: p.types || {},
+      typesValid: p.typesValid || {},
       latest: (p.latest || '').slice(0, 19),
       earliest: (p.earliest || '').slice(0, 19),
       devices,
@@ -477,6 +518,7 @@ function ingestSummary(summary) {
     };
   });
   cachedTypes = globalTypes;
+  cachedTypesValid = globalTypesValid;
 
   document.getElementById('totalRecords').textContent = totalRecords.toLocaleString();
   document.getElementById('patientCount').textContent = cachedPatients.length;
@@ -494,6 +536,7 @@ function aggregate(data) {
   const patientMap = new Map();
   let totalRecords = 0;
   const globalTypes = {};
+  const globalTypesValid = {};  // v10 patch: 各 type "有效"全局计数 (目前只日综合)
 
   records.forEach(row => {
     const big = row.data || {};
@@ -505,13 +548,23 @@ function aggregate(data) {
         const pn = rec['门诊号'] || 'NULL';
         if (!patientMap.has(pn)) {
           patientMap.set(pn, {
-            pn, count: 0, types: {}, latest: '', earliest: '', devices: new Set()
+            pn, count: 0, types: {}, typesValid: {},
+            latest: '', earliest: '', devices: new Set()
           });
         }
         const p = patientMap.get(pn);
         p.count++;
         p.types[typeName] = (p.types[typeName] || 0) + 1;
         p.devices.add(row.deviceId);
+        // v10 patch: 日综合有效判定 (优先用服务端 is_empty 标记, 老数据现场判)
+        if (typeName === '日综合') {
+          let isEmpty = rec.is_empty;
+          if (isEmpty === undefined) isEmpty = isDailyEmpty(rec.dailyRecords);
+          if (!isEmpty) {
+            p.typesValid['日综合'] = (p.typesValid['日综合'] || 0) + 1;
+            globalTypesValid['日综合'] = (globalTypesValid['日综合'] || 0) + 1;
+          }
+        }
         const ts = (rec['采集时间'] || '').slice(0, 19);
         if (ts) {
           if (!p.latest || ts > p.latest) p.latest = ts;
@@ -528,6 +581,7 @@ function aggregate(data) {
     typeKeys: Object.keys(p.types),
   }));
   cachedTypes = globalTypes;
+  cachedTypesValid = globalTypesValid;
 
   document.getElementById('totalRecords').textContent = totalRecords.toLocaleString();
   document.getElementById('patientCount').textContent = patientMap.size;
@@ -585,16 +639,22 @@ function renderAll() {
 
 function renderStatsGrid() {
   const total = Object.values(cachedTypes).reduce((a, b) => a + b, 0);
-  const cards = [{ label: '记录总数', num: total.toLocaleString(), cls: '' }];
+  const cards = [{ label: '记录总数', num: total.toLocaleString(), cls: '', sub: '' }];
   const keyTypes = ['血压', '心率', '血氧', '步数', '日综合', '体温'];
   keyTypes.forEach(t => {
     if (cachedTypes[t]) {
       const cls = t === '血压' ? 'red' : (t === '心率' ? 'orange' : (t === '步数' ? 'green' : ''));
-      cards.push({ label: t, num: cachedTypes[t].toLocaleString(), cls });
+      // v10 patch: 日综合显示 "有效 N" 副标 (排除 dailyRecords 全空的 SDK 空跑)
+      let sub = '';
+      if (t === '日综合') {
+        const v = cachedTypesValid[t] || 0;
+        sub = v === cachedTypes[t] ? '' : `有效 ${v.toLocaleString()}`;
+      }
+      cards.push({ label: t, num: cachedTypes[t].toLocaleString(), cls, sub });
     }
   });
   document.getElementById('statsGrid').innerHTML = cards.map(c =>
-    `<div class="stat-card ${c.cls}"><div class="num">${c.num}</div><div class="label">${c.label}</div></div>`
+    `<div class="stat-card ${c.cls}"><div class="num">${c.num}</div><div class="label">${c.label}${c.sub ? ` <span class="stat-sub">${c.sub}</span>` : ''}</div></div>`
   ).join('');
 }
 

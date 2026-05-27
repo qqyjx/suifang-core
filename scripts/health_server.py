@@ -290,6 +290,34 @@ def classify_bp(systolic, diastolic):
     if s >= 120 and d < 80:  return '偏高'
     return '正常'
 
+def _is_daily_empty(daily_records):
+    """判定 SDK readDailyData 回传的 dailyRecords 是否全空.
+
+    Veepoo SDK 经常回放出 dailyRecords=[] 或 dailyRecords=[{字段全空字符串}] 的空汇报
+    (老固件没填 / 患者没穿够 / 当日聚合未触发). 看板/统计用这个判定排除空跑.
+    """
+    if not daily_records or not isinstance(daily_records, list):
+        return True
+    key_fields = ('date', 'step', 'sleepData', 'pulseReat', 'bloodPressure',
+                  'bloodOxygen', 'bloodGlucose', 'HRVData', 'pressure',
+                  'respirationRate', 'sleepStatus', 'bloodLiquid')
+    empty_markers = (None, '', [], {}, 0, '0', '0.0')
+    for r in daily_records:
+        if not isinstance(r, dict):
+            continue
+        for k in key_fields:
+            v = r.get(k)
+            if v not in empty_markers:
+                return False
+        # 体温是嵌套 dict, 单独判 (全 0.0 也算空)
+        bt = r.get('bodyTemperature')
+        if isinstance(bt, dict):
+            for v in bt.values():
+                if v not in empty_markers:
+                    return False
+    return True
+
+
 def to_chinese_record(data_type, data, patient_no=None, recorded_at=None, uploaded_at=None):
     """单条测量 → 中文字段记录（含采集时间 + 上传时间 + 5.06-v9 门诊号）.
 
@@ -351,6 +379,9 @@ def to_chinese_record(data_type, data, patient_no=None, recorded_at=None, upload
         }
     elif data_type == 'daily':
         record = dict(data)
+        # v10 patch: 标 dailyRecords 是否全空 (老固件 / 患者没穿够 / 触发条件未达).
+        # 看板用 is_empty 算"有效日综合数", 避免 497 条空跑被当真实数据.
+        record['is_empty'] = _is_daily_empty(data.get('dailyRecords'))
     else:
         record = dict(data)
     # 采集时间: 优先用客户端 recordedAt (真实测量时刻); 缺省回退 server 收到时刻
@@ -801,6 +832,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                             entry = summary.setdefault(p_no, {
                                 'count': 0,
                                 'types': {},
+                                'typesValid': {},  # v10 patch: 各 type 的"有效"条数, 目前只日综合计入
                                 'devices': set(),
                                 'earliest': None,
                                 'latest': None,
@@ -808,6 +840,13 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                             entry['count'] += 1
                             entry['types'][type_key] = entry['types'].get(type_key, 0) + 1
                             entry['devices'].add(r[1])
+                            # v10 patch: 日综合的"有效"判定 — 排除 dailyRecords 全空的空跑
+                            if type_key == '日综合':
+                                is_empty = rec.get('is_empty')
+                                if is_empty is None:  # 老数据未标 → 现场判
+                                    is_empty = _is_daily_empty(rec.get('dailyRecords'))
+                                if not is_empty:
+                                    entry['typesValid']['日综合'] = entry['typesValid'].get('日综合', 0) + 1
                             # 时间戳: upsert_device_data 把客户端 recordedAt 落到中文字段 '采集时间' (ISO),
                             # 兼容老/异常记录回退 recordedAt/uploadedAt 字段, 最后兜底 row createTime
                             ts = rec.get('采集时间') or rec.get('recordedAt') or rec.get('uploadedAt')
@@ -828,6 +867,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                         'patientNo': None if p_no == '_NULL_' else p_no,
                         'count': entry['count'],
                         'types': entry['types'],
+                        'typesValid': entry['typesValid'],  # v10 patch: 仅日综合, 空 dict 表示无有效
                         # 设备 ID 按 desc 排, 大号在前
                         'devices': sorted(entry['devices'], reverse=True),
                         'earliest': entry['earliest'],
@@ -875,7 +915,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 'endpoints': {
                     'GET  /api/status': '服务状态',
                     'GET  /api/data': '查询所有设备 (可选 ?patientNo= 过滤; ?page=N&size=M 分页, deviceId DESC; 响应支持 gzip)',
-                    'GET  /api/patients/summary': '按门诊号聚合摘要 (count/types/devices/earliest/latest, ~50x 小于 /api/data)',
+                    'GET  /api/patients/summary': '按门诊号聚合摘要 (count/types/typesValid/devices/earliest/latest, ~50x 小于 /api/data; typesValid 仅日综合, 排除 dailyRecords 全空空跑)',
                     'POST /api/health-data': 'UPSERT 体征数据 (按 deviceId 切片, 透传 patientNo 写入大 JSON)',
                     'POST /api/device/register': '按 mac (优先) 或 device_sign UPSERT 到 wearable_device 并返回 deviceId',
                     'POST /api/device/merge': '合并 wearable_device_data 两行: {fromDeviceId, toDeviceId}',
