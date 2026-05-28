@@ -1242,10 +1242,7 @@ async function uploadToServer() {
   const btn = document.getElementById('uploadServerBtn');
   const status = document.getElementById('uploadStatus');
   const totalPatients = cachedPatients.length;
-  const tip = INCLUDE_PDF
-    ? `将 ${totalPatients} 位患者数据 + PDF 报告 + 两份顶层 Excel 入库 (zhenmaiyi 表).`
-    : `将 ${totalPatients} 位患者结构化数据 + 两份顶层 Excel 入库 (zhenmaiyi 表).\nPDF 暂不传 (待 nginx 放宽 body 后再开).`;
-  if (!confirm(tip + '\n\n继续?')) return;
+  // 不弹 confirm, 点了直接入库
 
   btn.disabled = true;
   status.textContent = '准备入库...';
