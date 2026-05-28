@@ -19,21 +19,15 @@
 
 ## 📚 在线文档
 
-所有文档均为 GitHub Pages 自动渲染 HTML，移动端友好，中文优化。
+**统一入口**：[📚 智能随访 · 文档中心](https://qqyjx.github.io/suifang/docs/) — 左侧分类 sidebar + 右侧 iframe，URL hash 记忆当前文档，移动端友好。
 
-| 文档 | 受众 | 链接 |
-|---|---|---|
-| 医院交付使用指南 | 患者本人 | [打开](https://qqyjx.github.io/suifang/docs/%E5%8C%BB%E9%99%A2%E4%BA%A4%E4%BB%98%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.html) |
-| 新设备接入手册 | 医院 PM / 护士 | [打开](https://qqyjx.github.io/suifang/docs/%E6%96%B0%E8%AE%BE%E5%A4%87%E6%8E%A5%E5%85%A5%E6%89%8B%E5%86%8C.html) |
-| 真机测试 checklist | 工程师 | [打开](https://qqyjx.github.io/suifang/docs/%E7%9C%9F%E6%9C%BA%E6%B5%8B%E8%AF%95checklist.html) |
-| 功能测试-手表数据上传 | 第三方测试 | [打开](https://qqyjx.github.io/suifang/docs/%E5%8A%9F%E8%83%BD%E6%B5%8B%E8%AF%95-%E6%89%8B%E8%A1%A8%E6%95%B0%E6%8D%AE%E4%B8%8A%E4%BC%A0.html) |
-| 服务器运维 | 运维 | [打开](https://qqyjx.github.io/suifang/docs/%E6%9C%8D%E5%8A%A1%E5%99%A8%E8%BF%90%E7%BB%B4.html) |
-| FAQ-常见问题清单 | 全员 | [打开](https://qqyjx.github.io/suifang/docs/FAQ-%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E6%B8%85%E5%8D%95.html) |
-| SDK 数据采集全景 | 工程师 | [打开](https://qqyjx.github.io/suifang/docs/SDK%E6%95%B0%E6%8D%AE%E9%87%87%E9%9B%86%E5%85%A8%E6%99%AF.html) |
-| Veepoo SDK 使用文档（5600+ 行） | 工程师 | [打开](https://qqyjx.github.io/suifang/docs/VeepooWeiXinSDK%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3.html) |
-| 业务逻辑设计 v10 | 产品 + 工程师 | [打开](https://qqyjx.github.io/suifang/docs/business-logic-v10.html) |
-| UI 原型 v10 设计稿 | 产品 + 设计 | [打开](https://qqyjx.github.io/suifang/docs/ui-prototype-v10.html) |
-| Pencil + Claude Code 工作流 | 设计 + 工程师 | [打开](https://qqyjx.github.io/suifang/docs/pencil-claude-workflow.html) |
+涵盖 11 份文档，分三大类：
+
+- **使用与流程**：医院交付使用指南 / 新设备接入手册 / FAQ 常见问题清单
+- **测试与运维**：真机测试 checklist / 功能测试-手表数据上传 / 服务器运维
+- **开发与设计**：SDK 数据采集全景 / Veepoo SDK 使用文档 / 业务逻辑设计 v10 / UI 原型 v10 / Pencil+Claude Code 工作流
+
+> 直接打开 [`docs/`](https://qqyjx.github.io/suifang/docs/) 也可以 (GitHub Pages 默认入口)。原 11 份独立 .html 文件未删, 老链接仍可用。
 
 ---
 

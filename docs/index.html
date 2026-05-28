@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>智能随访 · 在线文档中心</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+               "Microsoft YaHei", "Source Han Sans CN", sans-serif;
+  color: #1f2937;
+  background: #f5f7fa;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "header header"
+    "sidebar content";
+  height: 100vh;
+}
+
+/* Header */
+.topbar {
+  grid-area: header;
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff;
+  padding: 14px 24px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  box-shadow: 0 2px 8px rgba(44,110,242,0.2);
+  z-index: 10;
+}
+.topbar h1 { font-size: 18px; font-weight: 600; letter-spacing: 1px; flex-shrink: 0; }
+.topbar .tagline { font-size: 12px; opacity: 0.85; }
+.topbar .nav-links {
+  margin-left: auto;
+  display: flex; gap: 6px;
+}
+.topbar .nav-links a {
+  color: #fff; text-decoration: none;
+  font-size: 13px; padding: 6px 12px;
+  border-radius: 16px;
+  background: rgba(255,255,255,0.16);
+  border: 1px solid rgba(255,255,255,0.24);
+  transition: background .15s;
+}
+.topbar .nav-links a:hover { background: rgba(255,255,255,0.28); }
+.menu-btn {
+  display: none;
+  background: rgba(255,255,255,0.2); color: #fff; border: 0;
+  width: 36px; height: 36px; border-radius: 8px; cursor: pointer;
+  font-size: 18px;
+}
+
+/* Sidebar */
+.sidebar {
+  grid-area: sidebar;
+  background: #fff;
+  border-right: 1px solid #e5e7eb;
+  overflow-y: auto;
+  padding: 12px 0;
+}
+.sidebar .group { margin-bottom: 14px; }
+.sidebar .group-title {
+  padding: 8px 20px 6px;
+  font-size: 11px; font-weight: 600;
+  color: #9ca3af; text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.sidebar .doc-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 20px;
+  cursor: pointer; user-select: none;
+  font-size: 14px; color: #374151;
+  border-left: 3px solid transparent;
+  transition: background .12s, color .12s, border-color .12s;
+  text-decoration: none;
+}
+.sidebar .doc-item:hover { background: #f9fafb; color: #1f2937; }
+.sidebar .doc-item .icon { font-size: 16px; flex-shrink: 0; }
+.sidebar .doc-item .name { flex: 1; }
+.sidebar .doc-item .audience {
+  font-size: 11px; color: #9ca3af;
+  padding: 1px 8px; border-radius: 8px;
+  background: #f3f4f6;
+}
+.sidebar .doc-item.active {
+  background: #eef4ff;
+  color: #2c6ef2;
+  border-left-color: #2c6ef2;
+  font-weight: 600;
+}
+.sidebar .doc-item.active .audience {
+  background: #2c6ef2; color: #fff;
+}
+
+/* Content area */
+.content {
+  grid-area: content;
+  background: #fff;
+  overflow: hidden;
+  position: relative;
+}
+.content iframe {
+  width: 100%; height: 100%; border: 0;
+  background: #fff;
+}
+.content .welcome {
+  height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 32px;
+  background: #f5f7fa;
+}
+.welcome .icon { font-size: 72px; opacity: 0.4; margin-bottom: 16px; }
+.welcome h2 { font-size: 22px; font-weight: 600; color: #1f2937; margin-bottom: 8px; }
+.welcome p { color: #6b7280; font-size: 14px; max-width: 480px; text-align: center; line-height: 1.7; }
+.welcome .quick-links {
+  margin-top: 28px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px; width: 100%; max-width: 720px;
+}
+.welcome .quick-card {
+  background: #fff; border-radius: 12px;
+  padding: 18px 20px; cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  border-left: 3px solid #2c6ef2;
+  text-decoration: none; color: inherit;
+  transition: transform .12s, box-shadow .15s;
+}
+.welcome .quick-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(44,110,242,0.18); }
+.welcome .quick-card .qc-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.welcome .quick-card .qc-desc { font-size: 12px; color: #6b7280; }
+
+/* Content header (currently open doc) */
+.content-header {
+  padding: 10px 20px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex; align-items: center; gap: 12px;
+  font-size: 13px; color: #6b7280;
+  flex-shrink: 0;
+}
+.content-header .crumb { color: #1f2937; font-weight: 500; }
+.content-header .actions {
+  margin-left: auto;
+  display: flex; gap: 8px;
+}
+.content-header .actions a {
+  color: #2c6ef2; text-decoration: none;
+  font-size: 12px; padding: 4px 10px;
+  border-radius: 6px; background: #eef4ff;
+  border: 1px solid #dbeafe;
+  transition: background .12s;
+}
+.content-header .actions a:hover { background: #dbeafe; }
+
+/* iframe-only wrapper */
+.iframe-wrap {
+  display: flex; flex-direction: column;
+  height: 100%;
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-areas: "header" "content";
+  }
+  .sidebar {
+    position: fixed; left: 0; top: 0;
+    width: 80%; max-width: 320px; height: 100vh;
+    transform: translateX(-100%);
+    transition: transform .25s;
+    z-index: 50;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.15);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .menu-btn { display: inline-flex; align-items: center; justify-content: center; }
+  .topbar h1 { font-size: 15px; }
+  .topbar .tagline { display: none; }
+  .topbar .nav-links a { padding: 5px 10px; font-size: 12px; }
+  .sidebar-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    display: none; z-index: 40;
+  }
+  .sidebar-mask.open { display: block; }
+}
+</style>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <button class="menu-btn" onclick="toggleSidebar()" title="菜单">☰</button>
+    <div>
+      <h1>智能随访 · 文档中心</h1>
+      <div class="tagline">所有面向使用者 / 工程 / 运维 / 测试的文档统一入口</div>
+    </div>
+    <div class="nav-links">
+      <a href="../prototype/data-dashboard.html">⌚ 智能手表看板</a>
+      <a href="../prototype/pulse-dashboard.html">🩺 诊脉仪看板</a>
+      <a href="../">📂 GitHub</a>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="sidebar-mask" id="sidebarMask" onclick="toggleSidebar(false)"></div>
+  <aside class="sidebar" id="sidebar">
+
+    <div class="group">
+      <div class="group-title">使用与流程</div>
+      <a class="doc-item" data-doc="医院交付使用指南.html">
+        <span class="icon">🏥</span><span class="name">医院交付使用指南</span><span class="audience">患者</span>
+      </a>
+      <a class="doc-item" data-doc="新设备接入手册.html">
+        <span class="icon">📋</span><span class="name">新设备接入手册</span><span class="audience">护士/PM</span>
+      </a>
+      <a class="doc-item" data-doc="FAQ-常见问题清单.html">
+        <span class="icon">❓</span><span class="name">FAQ-常见问题清单</span><span class="audience">全员</span>
+      </a>
+    </div>
+
+    <div class="group">
+      <div class="group-title">测试与运维</div>
+      <a class="doc-item" data-doc="真机测试checklist.html">
+        <span class="icon">✅</span><span class="name">真机测试 checklist</span><span class="audience">工程</span>
+      </a>
+      <a class="doc-item" data-doc="功能测试-手表数据上传.html">
+        <span class="icon">📡</span><span class="name">功能测试-手表数据上传</span><span class="audience">第三方</span>
+      </a>
+      <a class="doc-item" data-doc="服务器运维.html">
+        <span class="icon">🛠️</span><span class="name">服务器运维</span><span class="audience">运维</span>
+      </a>
+    </div>
+
+    <div class="group">
+      <div class="group-title">开发与设计</div>
+      <a class="doc-item" data-doc="SDK数据采集全景.html">
+        <span class="icon">📊</span><span class="name">SDK 数据采集全景</span><span class="audience">工程</span>
+      </a>
+      <a class="doc-item" data-doc="VeepooWeiXinSDK使用文档.html">
+        <span class="icon">📚</span><span class="name">Veepoo SDK 使用文档</span><span class="audience">工程</span>
+      </a>
+      <a class="doc-item" data-doc="business-logic-v10.html">
+        <span class="icon">🧠</span><span class="name">业务逻辑设计 v10</span><span class="audience">产品/工程</span>
+      </a>
+      <a class="doc-item" data-doc="ui-prototype-v10.html">
+        <span class="icon">🎨</span><span class="name">UI 原型 v10 设计稿</span><span class="audience">产品/设计</span>
+      </a>
+      <a class="doc-item" data-doc="pencil-claude-workflow.html">
+        <span class="icon">✏️</span><span class="name">Pencil + Claude Code 工作流</span><span class="audience">设计/工程</span>
+      </a>
+    </div>
+
+    <div class="group">
+      <div class="group-title">其他附件</div>
+      <a class="doc-item" href="照片表盘传输简易流程图.pdf" target="_blank">
+        <span class="icon">📄</span><span class="name">照片表盘传输流程图</span><span class="audience">PDF</span>
+      </a>
+    </div>
+
+  </aside>
+
+  <!-- Content -->
+  <main class="content" id="content">
+    <div class="welcome" id="welcome">
+      <div class="icon">📚</div>
+      <h2>智能随访 · 文档中心</h2>
+      <p>左侧列出全部 11 份文档,按"使用与流程 / 测试与运维 / 开发与设计"分类。
+        点击任意一项在右侧打开,URL 会自动记忆当前文档,可分享。</p>
+      <div class="quick-links">
+        <a class="quick-card" data-doc="医院交付使用指南.html" href="#">
+          <div class="qc-title">🏥 医院交付指南</div>
+          <div class="qc-desc">患者本人首次拿设备时的入门</div>
+        </a>
+        <a class="quick-card" data-doc="新设备接入手册.html" href="#">
+          <div class="qc-title">📋 新设备接入</div>
+          <div class="qc-desc">医院 PM/护士批量入组流程</div>
+        </a>
+        <a class="quick-card" data-doc="FAQ-常见问题清单.html" href="#">
+          <div class="qc-title">❓ FAQ 速查</div>
+          <div class="qc-desc">出问题先翻这里</div>
+        </a>
+        <a class="quick-card" data-doc="服务器运维.html" href="#">
+          <div class="qc-title">🛠️ 服务器运维</div>
+          <div class="qc-desc">部署、重启、密码、备份</div>
+        </a>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<script>
+const items = Array.from(document.querySelectorAll('.doc-item[data-doc]'));
+const quickCards = Array.from(document.querySelectorAll('.quick-card[data-doc]'));
+const content = document.getElementById('content');
+const welcome = document.getElementById('welcome');
+
+function openDoc(filename) {
+  if (!filename) {
+    showWelcome();
+    return;
+  }
+  // 标记 active
+  items.forEach(it => it.classList.toggle('active', it.dataset.doc === filename));
+  const item = items.find(it => it.dataset.doc === filename);
+  const title = item ? item.querySelector('.name').textContent : filename;
+
+  // 渲染 iframe
+  content.innerHTML = `
+    <div class="iframe-wrap">
+      <div class="content-header">
+        <span class="crumb">📄 ${title}</span>
+        <div class="actions">
+          <a href="${encodeURIComponent(filename)}" target="_blank" title="在新标签页打开">↗ 新窗口</a>
+          <a href="javascript:history.back();" title="返回">← 返回</a>
+        </div>
+      </div>
+      <iframe src="${encodeURIComponent(filename)}" loading="lazy"></iframe>
+    </div>
+  `;
+  // URL hash 记忆
+  if (location.hash.slice(1) !== filename) {
+    history.replaceState(null, '', '#' + filename);
+  }
+  document.title = title + ' · 智能随访文档中心';
+  // 移动端关 sidebar
+  toggleSidebar(false);
+}
+
+function showWelcome() {
+  items.forEach(it => it.classList.remove('active'));
+  content.innerHTML = '';
+  content.appendChild(welcome);
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  document.title = '智能随访 · 在线文档中心';
+}
+
+items.forEach(it => {
+  it.addEventListener('click', e => {
+    e.preventDefault();
+    openDoc(it.dataset.doc);
+  });
+});
+quickCards.forEach(card => {
+  card.addEventListener('click', e => {
+    e.preventDefault();
+    openDoc(card.dataset.doc);
+  });
+});
+
+// 启动时根据 hash 直接定位
+const initialHash = decodeURIComponent(location.hash.slice(1));
+if (initialHash && items.find(it => it.dataset.doc === initialHash)) {
+  openDoc(initialHash);
+}
+
+window.addEventListener('hashchange', () => {
+  const f = decodeURIComponent(location.hash.slice(1));
+  if (f && items.find(it => it.dataset.doc === f)) openDoc(f);
+  else if (!f) showWelcome();
+});
+
+// Sidebar 抽屉 (移动端)
+function toggleSidebar(forceState) {
+  const sb = document.getElementById('sidebar');
+  const mask = document.getElementById('sidebarMask');
+  const willOpen = forceState === undefined ? !sb.classList.contains('open') : forceState;
+  sb.classList.toggle('open', willOpen);
+  mask.classList.toggle('open', willOpen);
+}
+</script>
+</body>
+</html>
