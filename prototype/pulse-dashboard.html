@@ -354,7 +354,7 @@ canvas.pulse-canvas { width: 100%; height: 160px; display: block; }
   <div class="header">
     <div>
       <h1>智能随访 · 诊脉仪数据看板</h1>
-      <div class="sub">浏览器本地解析 · 可选入库到六元服务器</div>
+      <div class="sub">浏览器本地解析 · 可入库到六元 (结构化数据 + 两个 Excel; PDF 暂不传)</div>
     </div>
     <div class="actions">
       <button class="btn-primary" id="uploadServerBtn" style="display:none;" onclick="uploadToServer()">📤 入库到六元</button>
@@ -1231,6 +1231,9 @@ async function postPatient(p, includePdf) {
   }
 }
 
+// 暂不传 PDF (nginx body 限制还没放宽); 想恢复改为 true 即可
+const INCLUDE_PDF = false;
+
 async function uploadToServer() {
   if (!cachedPatients.length) {
     showToast('请先上传 .zip 解析后再入库');
@@ -1239,14 +1242,15 @@ async function uploadToServer() {
   const btn = document.getElementById('uploadServerBtn');
   const status = document.getElementById('uploadStatus');
   const totalPatients = cachedPatients.length;
-  if (!confirm(`将 ${totalPatients} 位患者数据 + 各自 PDF 报告 + 两份顶层 Excel 入库到六元服务器 (zhenmaiyi 表). 继续?\n\n每位患者单独 POST 一次 (避开 nginx body 限制), 总耗时约 ${totalPatients * 3} 秒.`)) {
-    return;
-  }
+  const tip = INCLUDE_PDF
+    ? `将 ${totalPatients} 位患者数据 + PDF 报告 + 两份顶层 Excel 入库 (zhenmaiyi 表).`
+    : `将 ${totalPatients} 位患者结构化数据 + 两份顶层 Excel 入库 (zhenmaiyi 表).\nPDF 暂不传 (待 nginx 放宽 body 后再开).`;
+  if (!confirm(tip + '\n\n继续?')) return;
 
   btn.disabled = true;
   status.textContent = '准备入库...';
 
-  let okCount = 0, failCount = 0, downgraded = 0;
+  let okCount = 0, failCount = 0;
   const errors = [];
   try {
     for (let i = 0; i < cachedPatients.length; i++) {
@@ -1254,14 +1258,7 @@ async function uploadToServer() {
       btn.textContent = `⏳ 入库中 ${i + 1}/${totalPatients}`;
       status.textContent = `上传 ${p.id} ...`;
       try {
-        // 第一次尝试带 PDF; 失败 (413 / Failed to fetch 等大概率是 nginx body 限制)
-        // 自动降级重试一次不带 PDF — 保证结构化数据入库不被附件大小拖累
-        let resp = await postPatient(p, true);
-        if (!resp.ok && (resp.status === 413 || resp.status === 0)) {
-          status.textContent = `${p.id} body 过大, 降级重试不带 PDF...`;
-          resp = await postPatient(p, false);
-          if (resp.ok) downgraded++;
-        }
+        const resp = await postPatient(p, INCLUDE_PDF);
         if (!resp.ok) {
           const text = await resp.text().catch(() => '');
           throw new Error('HTTP ' + resp.status + ': ' + text.slice(0, 200));
@@ -1270,26 +1267,15 @@ async function uploadToServer() {
         if (!result.success) throw new Error(result.error || '服务端拒绝');
         okCount++;
       } catch (e) {
-        // 网络层错误 (Failed to fetch / TypeError) — 也试一次不带 PDF
-        if (e.message && /Failed to fetch|NetworkError|TypeError/i.test(e.message)) {
-          try {
-            const resp2 = await postPatient(p, false);
-            if (resp2.ok) {
-              const r2 = await resp2.json();
-              if (r2.success) { okCount++; downgraded++; continue; }
-            }
-          } catch (e2) { /* fallthrough */ }
-        }
         console.error('入库失败', p.id, e);
         failCount++;
         errors.push(p.id + ': ' + e.message);
       }
     }
 
-    let okMsg = `✅ 入库完成: 成功 ${okCount} / 失败 ${failCount} / 共 ${totalPatients}`;
-    if (downgraded > 0) {
-      okMsg += ` (其中 ${downgraded} 位降级不带 PDF, 服务器 nginx 加 client_max_body_size 50m 可恢复)`;
-    }
+    const okMsg = INCLUDE_PDF
+      ? `✅ 入库完成: 成功 ${okCount} / 失败 ${failCount} / 共 ${totalPatients}`
+      : `✅ 入库完成 (含 2 个 Excel, 不含 PDF): 成功 ${okCount} / 失败 ${failCount} / 共 ${totalPatients}`;
     status.textContent = okMsg + (errors.length ? ` (首个错误: ${errors[0].slice(0, 80)})` : '');
     btn.disabled = false;
     btn.textContent = '➕ 继续上传 zip';
