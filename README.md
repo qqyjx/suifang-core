@@ -8,7 +8,8 @@
 
 | 链接 | 用途 | 说明 |
 |---|---|---|
-| 📊 [**实时数据看板**](https://qqyjx.github.io/suifang/prototype/data-dashboard.html) | 给医院看数据 | **实时**拉 `/api/data`，按门诊号聚合显示，30s 自动刷新 + 手动刷新按钮 |
+| 📊 [**实时数据看板**](https://qqyjx.github.io/suifang/prototype/data-dashboard.html) | 给医院看数据 (智能手表) | **实时**拉 `/api/data`，按门诊号聚合显示，30s 自动刷新 + 手动刷新按钮 |
+| 🩺 [**诊脉仪数据看板**](https://qqyjx.github.io/suifang/prototype/pulse-dashboard.html) | 给医院看数据 (诊脉仪) | 上传诊脉仪导出的 .zip，**浏览器本地解析**体质+脉诊+答题+脉象图+报告 PDF，不上传任何服务器 |
 | 🩺 [极简患者界面](https://qqyjx.github.io/suifang/prototype/patient-demo.html) | 患者本人界面演示 | 仅"连接/断开"一个按钮，三态切换 |
 | 📋 [医护管理界面](https://qqyjx.github.io/suifang/prototype/index.html) | 4-Tab 架构原型 | 首页 / 测量 / 数据 / 我的 |
 

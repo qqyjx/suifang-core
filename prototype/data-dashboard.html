@@ -20,6 +20,26 @@ body {
 }
 .container { max-width: 1200px; margin: 0 auto; }
 
+/* Tabs (顶部设备切换) */
+.tabs {
+  display: flex; gap: 6px; margin-bottom: 12px;
+  background: #fff; border-radius: 12px; padding: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  max-width: max-content;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 8px;
+  font-size: 14px; font-weight: 500; color: #6b7280;
+  cursor: pointer; text-decoration: none; transition: all .15s;
+  user-select: none;
+}
+.tab:hover { background: #f3f4f6; color: #1f2937; }
+.tab.active {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff; box-shadow: 0 2px 8px rgba(44,110,242,0.32);
+}
+
 /* Header */
 .header {
   background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
@@ -259,6 +279,12 @@ body {
 </head>
 <body>
 <div class="container">
+
+  <!-- 设备切换 tabs -->
+  <div class="tabs">
+    <a class="tab active" href="#">⌚ 智能手表</a>
+    <a class="tab" href="pulse-dashboard.html">🩺 诊脉仪</a>
+  </div>
 
   <div class="header">
     <div>

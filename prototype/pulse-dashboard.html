@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>智能随访 · 诊脉仪数据看板</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+               "Microsoft YaHei", "Source Han Sans CN", sans-serif;
+  color: #1f2937;
+  background: #f5f7fa;
+  padding: 20px 16px 64px;
+  min-height: 100vh;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1200px; margin: 0 auto; }
+
+/* Tabs (顶部设备切换) */
+.tabs {
+  display: flex; gap: 6px; margin-bottom: 12px;
+  background: #fff; border-radius: 12px; padding: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  max-width: max-content;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 8px;
+  font-size: 14px; font-weight: 500; color: #6b7280;
+  cursor: pointer; text-decoration: none; transition: all .15s;
+  user-select: none;
+}
+.tab:hover { background: #f3f4f6; color: #1f2937; }
+.tab.active {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff; box-shadow: 0 2px 8px rgba(44,110,242,0.32);
+}
+
+/* Header */
+.header {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff;
+  border-radius: 16px;
+  padding: 24px 28px;
+  margin-bottom: 16px;
+  box-shadow: 0 4px 16px rgba(44,110,242,0.25);
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+}
+.header h1 { font-size: 22px; font-weight: 600; letter-spacing: 2px; margin-bottom: 4px; }
+.header .sub { font-size: 13px; opacity: 0.9; }
+.header .actions { display: flex; gap: 10px; align-items: center; }
+.btn-primary {
+  background: rgba(255,255,255,0.2); color: #fff;
+  padding: 8px 16px; border-radius: 20px;
+  font-size: 13px; cursor: pointer; border: 1px solid rgba(255,255,255,0.3);
+  transition: background 0.2s;
+}
+.btn-primary:hover, .btn-primary:active { background: rgba(255,255,255,0.32); }
+
+/* Status / hint bar */
+.status-bar {
+  background: #fff; border-radius: 12px;
+  padding: 14px 20px; margin-bottom: 16px;
+  display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
+  font-size: 13px; color: #6b7280;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.status-bar .item { display: flex; align-items: center; gap: 6px; }
+.status-bar .label { color: #9ca3af; }
+.status-bar .value { color: #1f2937; font-weight: 500; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: #2faa55; }
+.dot-warn { background: #f59e0b; }
+.render-meta { margin-left: auto; color: #9ca3af; font-size: 12px; }
+
+/* Upload zone */
+.upload-zone {
+  background: #fff; border-radius: 12px;
+  padding: 36px 24px; margin-bottom: 16px;
+  border: 2px dashed #d1d5db;
+  text-align: center; cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.upload-zone:hover { border-color: #2c6ef2; background: #f8fbff; }
+.upload-zone.dragging { border-color: #2c6ef2; background: #eef4ff; }
+.upload-zone .upload-icon { font-size: 36px; margin-bottom: 8px; }
+.upload-zone .upload-title { font-size: 16px; font-weight: 600; color: #1f2937; margin-bottom: 4px; }
+.upload-zone .upload-hint { font-size: 12px; color: #9ca3af; }
+.upload-zone input[type="file"] { display: none; }
+.upload-zone.compact {
+  padding: 16px 20px; text-align: left;
+  display: flex; align-items: center; gap: 14px;
+}
+.upload-zone.compact .upload-icon { font-size: 22px; margin-bottom: 0; }
+.upload-zone.compact .upload-title { font-size: 14px; margin-bottom: 0; }
+.upload-zone.compact .upload-hint { font-size: 12px; margin-left: auto; }
+
+/* Stats row */
+.stats-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.stat-card {
+  background: #fff; border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  border-left: 3px solid #2c6ef2;
+}
+.stat-card .num { font-size: 26px; font-weight: 700; color: #1f2937; line-height: 1.2; }
+.stat-card .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+.stat-card.green { border-left-color: #2faa55; }
+.stat-card.orange { border-left-color: #f59e0b; }
+.stat-card.red { border-left-color: #d04848; }
+.stat-card.purple { border-left-color: #8b5cf6; }
+
+/* Section title */
+.section-title {
+  font-size: 15px; font-weight: 600; color: #1f2937;
+  margin: 20px 0 12px; padding-left: 12px; border-left: 4px solid #2c6ef2;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+}
+.section-title .meta { font-size: 12px; color: #9ca3af; font-weight: 400; }
+
+/* Toolbar */
+.toolbar {
+  display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr auto;
+  gap: 10px; margin-bottom: 16px;
+}
+@media (max-width: 720px) { .toolbar { grid-template-columns: 1fr 1fr; }
+  .toolbar .search-wrap { grid-column: span 2; }
+}
+.search-wrap { position: relative; }
+.search-wrap .icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: #9ca3af; pointer-events: none; font-size: 14px;
+}
+.search-wrap input {
+  width: 100%; height: 38px; padding: 0 12px 0 34px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 14px; background: #fff;
+  font-family: inherit; outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.search-wrap input:focus { border-color: #2c6ef2; box-shadow: 0 0 0 3px rgba(44,110,242,0.12); }
+.toolbar select, .toolbar button {
+  height: 38px; padding: 0 12px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  background: #fff; font-size: 14px; cursor: pointer;
+  font-family: inherit; color: #374151;
+}
+.toolbar select:focus { border-color: #2c6ef2; outline: none; }
+.toolbar button:hover { background: #f9fafb; }
+
+/* Patient cards */
+.patients-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+.patient-card {
+  background: #fff; border-radius: 12px;
+  padding: 0; overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  border: 1px solid #f0f2f5;
+  cursor: pointer;
+  transition: box-shadow .15s, transform .1s;
+}
+.patient-card:hover { box-shadow: 0 4px 16px rgba(44,110,242,0.15); transform: translateY(-1px); }
+.patient-header {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff; padding: 14px 18px;
+}
+.patient-card.has-today .patient-header { background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%); }
+.patient-card.is-demo .patient-header { background: linear-gradient(135deg, #6b7280 0%, #9ca3af 100%); }
+.patient-name { font-size: 17px; font-weight: 600; margin-bottom: 2px; }
+.patient-sub { font-size: 12px; opacity: 0.85; }
+.patient-tag {
+  display: inline-block; font-size: 11px;
+  padding: 2px 8px; border-radius: 10px;
+  background: rgba(255,255,255,0.22); margin-top: 6px;
+}
+.patient-body { padding: 14px 18px; }
+.metric-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 6px 0; font-size: 13px;
+}
+.metric-row .key { color: #6b7280; }
+.metric-row .val { color: #1f2937; font-weight: 500; text-align: right; max-width: 70%; word-break: break-all; }
+.metric-row .val.muted { color: #9ca3af; font-weight: 400; }
+.conclusion-pill {
+  display: inline-block; padding: 3px 10px; border-radius: 14px;
+  background: #fef3c7; color: #92400e; font-size: 12px; font-weight: 600;
+  margin-top: 8px;
+}
+.pulse-pill {
+  display: inline-block; padding: 3px 10px; border-radius: 14px;
+  background: #ede9fe; color: #6d28d9; font-size: 12px; font-weight: 600;
+  margin-left: 6px;
+}
+
+/* Pagination (复刻 data-dashboard) */
+.pagination {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 6px; margin-top: 20px; padding: 12px 16px;
+  background: #fff; border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+.pagination .info { color: #6b7280; font-size: 13px; margin-right: auto; }
+.pagination button, .pagination .ellipsis {
+  min-width: 36px; height: 36px; padding: 0 10px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  background: #fff; cursor: pointer; font-size: 13px;
+  color: #374151; transition: all .12s;
+}
+.pagination button:hover:not(:disabled):not(.active) { background: #f3f4f6; border-color: #d1d5db; }
+.pagination button.active {
+  background: #2c6ef2; color: #fff; border-color: #2c6ef2;
+}
+.pagination button:disabled { color: #d1d5db; cursor: not-allowed; }
+
+/* Empty state */
+.empty {
+  background: #fff; border-radius: 12px;
+  padding: 60px 20px; text-align: center;
+  color: #9ca3af; font-size: 14px;
+}
+.empty .icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
+
+/* Modal (患者详情) */
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(15,23,42,0.5);
+  display: none; align-items: flex-start; justify-content: center;
+  z-index: 100; padding: 24px 12px;
+  overflow-y: auto;
+}
+.modal-mask.open { display: flex; }
+.modal {
+  background: #fff; border-radius: 16px;
+  max-width: 900px; width: 100%;
+  margin: auto; padding: 0;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  overflow: hidden;
+}
+.modal-header {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff; padding: 20px 28px;
+  display: flex; justify-content: space-between; align-items: flex-start;
+}
+.modal-header h2 { font-size: 20px; font-weight: 600; }
+.modal-header .modal-sub { font-size: 13px; opacity: 0.9; margin-top: 4px; }
+.modal-close {
+  background: rgba(255,255,255,0.2); color: #fff; border: none;
+  width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+  font-size: 18px; line-height: 1; transition: background .15s;
+}
+.modal-close:hover { background: rgba(255,255,255,0.32); }
+.modal-body { padding: 24px 28px; max-height: 75vh; overflow-y: auto; }
+.modal-section {
+  margin-bottom: 24px;
+}
+.modal-section h3 {
+  font-size: 14px; font-weight: 600; color: #1f2937;
+  margin-bottom: 10px; padding-left: 10px; border-left: 3px solid #2c6ef2;
+}
+
+.constitution-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.constitution-card {
+  background: #f9fafb; border-radius: 8px;
+  padding: 10px 12px; border-left: 3px solid #e5e7eb;
+}
+.constitution-card.danger { border-left-color: #d04848; background: #fef2f2; }
+.constitution-card.warn { border-left-color: #f59e0b; background: #fff7ed; }
+.constitution-card.normal { border-left-color: #2faa55; background: #f0fdf4; }
+.constitution-card .name { font-size: 12px; color: #6b7280; }
+.constitution-card .score { font-size: 20px; font-weight: 700; color: #1f2937; }
+
+.pulse-params {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+.pulse-params .pp {
+  background: #f9fafb; border-radius: 6px;
+  padding: 8px 10px; font-size: 12px;
+}
+.pulse-params .pp .k { color: #6b7280; }
+.pulse-params .pp .v { color: #1f2937; font-weight: 600; font-size: 14px; display: block; }
+
+.qa-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+.qa-table th { background: #f9fafb; color: #6b7280; text-align: left;
+  padding: 8px 10px; border-bottom: 1px solid #e5e7eb; font-weight: 500; }
+.qa-table td { padding: 8px 10px; border-bottom: 1px solid #f3f4f6; }
+.qa-table td.score-cell { text-align: center; font-weight: 600; color: #2c6ef2; width: 60px; }
+
+.pulse-img {
+  max-width: 100%; border-radius: 8px;
+  border: 1px solid #e5e7eb; background: #fff;
+}
+
+.attach-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.attach-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 8px;
+  background: #f3f4f6; color: #374151; font-size: 13px;
+  text-decoration: none; transition: background .15s;
+}
+.attach-btn:hover { background: #e5e7eb; }
+.attach-btn.primary { background: #2c6ef2; color: #fff; }
+.attach-btn.primary:hover { background: #1d4ed8; }
+
+/* Pulse waveform canvas */
+.pulse-canvas-wrap {
+  background: #fafafa; border-radius: 8px;
+  padding: 12px; border: 1px solid #e5e7eb;
+}
+canvas.pulse-canvas { width: 100%; height: 160px; display: block; }
+
+.kbd {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: #f3f4f6; color: #374151; font-size: 11px;
+  border: 1px solid #e5e7eb; font-family: ui-monospace, monospace;
+}
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: #1f2937; color: #fff;
+  padding: 10px 18px; border-radius: 8px;
+  font-size: 13px; opacity: 0;
+  transition: opacity .2s, transform .2s;
+  pointer-events: none; z-index: 200;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+
+.footer-hint {
+  margin-top: 32px; padding: 16px 20px;
+  background: #fff; border-radius: 12px;
+  font-size: 12px; color: #6b7280; line-height: 1.7;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.footer-hint code {
+  background: #f3f4f6; padding: 1px 6px; border-radius: 4px;
+  font-family: ui-monospace, monospace; font-size: 11px;
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- 设备切换 tabs -->
+  <div class="tabs">
+    <a class="tab" href="data-dashboard.html">⌚ 智能手表</a>
+    <a class="tab active" href="#">🩺 诊脉仪</a>
+  </div>
+
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1>智能随访 · 诊脉仪数据看板</h1>
+      <div class="sub">本地解析 · 数据不上传 · 上传 .zip 即可查看</div>
+    </div>
+    <div class="actions">
+      <button class="btn-primary" onclick="document.getElementById('fileInput').click()">📁 重新选择文件</button>
+    </div>
+  </div>
+
+  <!-- 上传区 / 状态条 -->
+  <div id="uploadZone" class="upload-zone">
+    <div class="upload-icon">📦</div>
+    <div class="upload-title">拖拽诊脉仪导出的 .zip 文件到此处</div>
+    <div class="upload-hint">或点击选择文件 · 浏览器本地解析，不上传任何数据</div>
+    <input type="file" id="fileInput" accept=".zip">
+  </div>
+
+  <!-- 解析完成后的内容 (默认隐藏) -->
+  <div id="dataView" style="display:none;">
+
+    <!-- 文件元信息 -->
+    <div class="status-bar">
+      <div class="item"><span class="dot dot-ok"></span><span class="label">已加载</span>
+        <span class="value" id="fileName">--</span></div>
+      <div class="item"><span class="label">文件大小</span><span class="value" id="fileSize">--</span></div>
+      <div class="item"><span class="label">患者数</span><span class="value" id="patientCount">--</span></div>
+      <div class="item"><span class="label">解析时间</span><span class="value" id="parseTime">--</span></div>
+      <div class="render-meta" id="renderMeta">就绪</div>
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="section-title">体检概况</div>
+    <div class="stats-grid" id="statsGrid"></div>
+
+    <!-- 患者列表 -->
+    <div class="section-title">
+      患者数据
+      <span class="meta" id="patientMeta">--</span>
+    </div>
+
+    <div class="toolbar">
+      <div class="search-wrap">
+        <span class="icon">🔍</span>
+        <input type="text" id="searchInput" placeholder="搜索姓名 / 病例 ID (按 / 聚焦)" autocomplete="off">
+      </div>
+      <select id="filterGender" title="性别">
+        <option value="all">全部性别</option>
+        <option value="男">男</option>
+        <option value="女">女</option>
+      </select>
+      <select id="filterConclusion" title="体质结论">
+        <option value="all">全部体质</option>
+      </select>
+      <select id="sortBy" title="排序方式">
+        <option value="latest">检测时间 ↓</option>
+        <option value="latest-asc">检测时间 ↑</option>
+        <option value="name">姓名 A-Z</option>
+        <option value="age">年龄 ↑</option>
+      </select>
+      <button type="button" onclick="resetFilters()">重置</button>
+    </div>
+
+    <div class="patients-grid" id="patientsGrid"></div>
+
+    <div class="pagination" id="pagination" style="display:none;"></div>
+
+  </div>
+
+  <!-- 操作提示 -->
+  <div class="footer-hint">
+    <strong>使用说明：</strong>
+    上传文件由诊脉仪软件导出 (.zip 含 <code>患者体质记录导出*.xlsx</code>、<code>患者脉诊导出*.xlsx</code>、每位患者的答题/脉象/PDF 报告)。
+    所有解析在浏览器本地完成，<strong>不会上传到任何服务器</strong>，关闭页面即清空。
+    快捷键：<span class="kbd">/</span> 聚焦搜索 · <span class="kbd">Esc</span> 关闭详情。
+  </div>
+
+</div>
+
+<!-- 患者详情 modal -->
+<div class="modal-mask" id="modalMask">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div>
+        <h2 id="modalName">--</h2>
+        <div class="modal-sub" id="modalSub">--</div>
+      </div>
+      <button class="modal-close" onclick="closeModal()" title="关闭 (Esc)">×</button>
+    </div>
+    <div class="modal-body" id="modalBody">--</div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- 依赖: JSZip + SheetJS (全部 CDN, 失败可换镜像) -->
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<script>
+/* ============================================================
+   诊脉仪数据看板 — 浏览器本地解析 .zip 导出
+   核心数据: 顶层"患者体质记录导出*.xlsx" + "患者脉诊导出*.xlsx"
+   每个患者目录下: constitution/答题记录.xlsx + pulse/*.txt|*.jpg + report/*.pdf
+   ============================================================ */
+
+const PAGE_SIZE = 12;
+
+const state = {
+  search: '',
+  filterGender: 'all',
+  filterConclusion: 'all',
+  sortBy: 'latest',
+  page: 1,
+};
+
+let cachedPatients = [];   // 合并后的患者数组 (体质 + 脉诊 + 附件 paths)
+let cachedZip = null;      // JSZip 实例 (用于按需取 jpg/txt/pdf)
+let cachedConclusions = [];
+
+/* ----------------- 文件解码工具 ----------------- */
+function gbkDecodeFileName(bytes) {
+  try {
+    return new TextDecoder('gbk').decode(bytes);
+  } catch (e) {
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+}
+
+function normalizePath(p) {
+  return p.replace(/\\/g, '/');
+}
+
+function fmtSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+
+function fmtCST(ts) {
+  if (!ts) return '--';
+  // ts 可能是 "2026-05-28 14:31:41" 或 ISO string
+  return String(ts).replace('T', ' ').slice(0, 19);
+}
+
+function showToast(msg, ms = 2200) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+/* ----------------- 上传 + 解压 ----------------- */
+const uploadZone = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+
+uploadZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+['dragenter', 'dragover'].forEach(ev => {
+  uploadZone.addEventListener(ev, e => {
+    e.preventDefault();
+    uploadZone.classList.add('dragging');
+  });
+});
+['dragleave', 'drop'].forEach(ev => {
+  uploadZone.addEventListener(ev, e => {
+    e.preventDefault();
+    uploadZone.classList.remove('dragging');
+  });
+});
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+
+async function handleFile(file) {
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    showToast('请上传 .zip 文件');
+    return;
+  }
+  const t0 = performance.now();
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent = fmtSize(file.size);
+  showToast('正在解析 ' + file.name + ' ...');
+
+  try {
+    const zip = await JSZip.loadAsync(file, { decodeFileName: gbkDecodeFileName });
+    cachedZip = zip;
+    await parseZip(zip);
+    document.getElementById('parseTime').textContent = (performance.now() - t0).toFixed(0) + ' ms';
+
+    // 收起上传区, 显示数据视图
+    uploadZone.classList.add('compact');
+    uploadZone.innerHTML =
+      '<div class="upload-icon">📦</div>' +
+      '<div><div class="upload-title">' + file.name + '</div>' +
+      '<div class="upload-hint">' + fmtSize(file.size) + ' · 已解析 ' + cachedPatients.length + ' 位患者</div></div>' +
+      '<button class="btn-primary" style="background:#2c6ef2; margin-left:auto;" onclick="document.getElementById(\'fileInput\').click()">重新选择</button>' +
+      '<input type="file" id="fileInput" accept=".zip">';
+    document.getElementById('fileInput').addEventListener('change', e => {
+      if (e.target.files[0]) handleFile(e.target.files[0]);
+    });
+
+    document.getElementById('dataView').style.display = '';
+    renderAll();
+    showToast('解析完成: ' + cachedPatients.length + ' 位患者');
+  } catch (err) {
+    console.error(err);
+    showToast('解析失败: ' + err.message);
+  }
+}
+
+/* ----------------- xlsx 解析核心 ----------------- */
+async function readXlsxFromZip(zip, path) {
+  const file = zip.file(path);
+  if (!file) return null;
+  const buf = await file.async('arraybuffer');
+  const wb = XLSX.read(buf, { type: 'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+}
+
+function findFile(zip, predicate) {
+  for (const name of Object.keys(zip.files)) {
+    if (predicate(normalizePath(name))) return name;
+  }
+  return null;
+}
+
+function findAll(zip, predicate) {
+  return Object.keys(zip.files).filter(n => predicate(normalizePath(n)));
+}
+
+async function parseZip(zip) {
+  // 1. 找两份顶层汇总 xlsx
+  const constPath = findFile(zip, n =>
+    /^患者体质记录导出.*\.xlsx$/.test(n.split('/').pop() || n));
+  const pulsePath = findFile(zip, n =>
+    /^患者脉诊导出.*\.xlsx$/.test(n.split('/').pop() || n));
+
+  if (!constPath && !pulsePath) {
+    throw new Error('未找到 "患者体质记录导出*.xlsx" 或 "患者脉诊导出*.xlsx"');
+  }
+
+  // 2. 解 xlsx → array of objects (按表头)
+  const constRows = constPath ? rowsToObjects(await readXlsxFromZip(zip, constPath)) : [];
+  const pulseRows = pulsePath ? rowsToObjects(await readXlsxFromZip(zip, pulsePath)) : [];
+
+  // 3. 按病例 ID 合并
+  const map = new Map();
+  for (const r of constRows) {
+    const id = String(r['病例ID'] || '').trim();
+    if (!id) continue;
+    map.set(id, { id, constitution: r, pulses: [], attachments: {} });
+  }
+  for (const r of pulseRows) {
+    const id = String(r['病例ID'] || '').trim();
+    if (!id) continue;
+    if (!map.has(id)) map.set(id, { id, constitution: null, pulses: [], attachments: {} });
+    map.get(id).pulses.push(r);
+  }
+
+  // 4. 扫每位患者目录, 收 constitution/pulse/report 附件
+  const patients = [...map.values()];
+  for (const p of patients) {
+    // 病例 ID 在文件路径里出现 → 该患者的目录
+    const dirFiles = findAll(zip, n => n.includes('_' + p.id + '/') || n.includes('_' + p.id + '答题'));
+    p.attachments = {
+      qaXlsx: dirFiles.find(n => n.endsWith('答题记录.xlsx')) || null,
+      pulseTxts: dirFiles.filter(n => /\/pulse\/[^/]*\.txt$/.test(normalizePath(n)) &&
+        !normalizePath(n).includes('DAT')),
+      pulseDats: dirFiles.filter(n => /\/pulse\/.*DAT.*\.txt$/.test(normalizePath(n))),
+      pulseImgs: dirFiles.filter(n => /\/pulse\/[^/]*\.(jpg|jpeg|png)$/i.test(normalizePath(n))),
+      reportPdfs: dirFiles.filter(n => /\/report\/[^/]*\.pdf$/i.test(normalizePath(n))),
+    };
+  }
+
+  cachedPatients = patients;
+  document.getElementById('patientCount').textContent = patients.length;
+
+  // 计算"全体体质结论"为 filter 选项
+  const conclSet = new Set();
+  patients.forEach(p => {
+    const c = p.constitution && p.constitution['体质结论'];
+    if (c) conclSet.add(c);
+  });
+  cachedConclusions = [...conclSet].sort();
+  populateConclusionFilter();
+}
+
+function rowsToObjects(rows) {
+  if (!rows || rows.length < 2) return [];
+  const headers = rows[0].map(h => String(h || '').trim());
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r.some(cell => cell !== '' && cell !== null && cell !== undefined)) continue;
+    const o = {};
+    headers.forEach((h, j) => { o[h] = r[j] === undefined ? '' : r[j]; });
+    out.push(o);
+  }
+  return out;
+}
+
+function populateConclusionFilter() {
+  const sel = document.getElementById('filterConclusion');
+  sel.innerHTML = '<option value="all">全部体质</option>' +
+    cachedConclusions.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+}
+
+/* ----------------- 渲染 ----------------- */
+function renderAll() {
+  renderStatsGrid();
+  renderPatients();
+}
+
+function renderStatsGrid() {
+  const ps = cachedPatients;
+  const total = ps.length;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayCount = ps.filter(p =>
+    p.constitution && String(p.constitution['检测时间'] || '').startsWith(todayStr)
+  ).length;
+  const pulseCount = ps.reduce((s, p) => s + p.pulses.length, 0);
+  // 平均年龄
+  const ages = ps.map(p => parseFloat(p.constitution && p.constitution['患者年龄'] || NaN))
+    .filter(x => !isNaN(x));
+  const avgAge = ages.length ? (ages.reduce((a, b) => a + b, 0) / ages.length).toFixed(1) : '--';
+  // 体质分布最多的一种
+  const conclCount = {};
+  ps.forEach(p => {
+    const c = p.constitution && p.constitution['体质结论'];
+    if (c) conclCount[c] = (conclCount[c] || 0) + 1;
+  });
+  const topConcl = Object.entries(conclCount).sort((a, b) => b[1] - a[1])[0];
+
+  const cards = [
+    { label: '患者总数', num: total, cls: '' },
+    { label: '脉诊次数', num: pulseCount, cls: 'purple' },
+    { label: '今日检测', num: todayCount, cls: 'green' },
+    { label: '平均年龄', num: avgAge, cls: 'orange' },
+  ];
+  if (topConcl) cards.push({ label: '高发体质: ' + topConcl[0], num: topConcl[1], cls: 'red' });
+  if (cachedConclusions.length) cards.push({ label: '体质类型数', num: cachedConclusions.length, cls: '' });
+
+  document.getElementById('statsGrid').innerHTML = cards.map(c =>
+    `<div class="stat-card ${c.cls}"><div class="num">${c.num}</div><div class="label">${escapeHtml(c.label)}</div></div>`
+  ).join('');
+}
+
+function applyFiltersSort() {
+  const q = state.search.trim().toLowerCase();
+  let out = cachedPatients.filter(p => {
+    if (q) {
+      const blob = (p.constitution && (
+        (p.constitution['患者姓名'] || '') + ' ' + (p.constitution['病例ID'] || '')
+      ) || p.id).toLowerCase();
+      if (!blob.includes(q)) return false;
+    }
+    if (state.filterGender !== 'all') {
+      const g = p.constitution && p.constitution['患者性别'];
+      if (g !== state.filterGender) return false;
+    }
+    if (state.filterConclusion !== 'all') {
+      const c = p.constitution && p.constitution['体质结论'];
+      if (c !== state.filterConclusion) return false;
+    }
+    return true;
+  });
+
+  out.sort((a, b) => {
+    const ta = (a.constitution && a.constitution['检测时间']) || '';
+    const tb = (b.constitution && b.constitution['检测时间']) || '';
+    switch (state.sortBy) {
+      case 'latest':     return String(tb).localeCompare(String(ta));
+      case 'latest-asc': return String(ta).localeCompare(String(tb));
+      case 'name': {
+        const na = (a.constitution && a.constitution['患者姓名']) || '';
+        const nb = (b.constitution && b.constitution['患者姓名']) || '';
+        return String(na).localeCompare(String(nb), 'zh-CN');
+      }
+      case 'age': {
+        const aa = parseFloat(a.constitution && a.constitution['患者年龄']) || 999;
+        const ab = parseFloat(b.constitution && b.constitution['患者年龄']) || 999;
+        return aa - ab;
+      }
+      default: return 0;
+    }
+  });
+  return out;
+}
+
+function renderPatients() {
+  const t0 = performance.now();
+  const list = applyFiltersSort();
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('patientMeta').textContent =
+    `共 ${cachedPatients.length} 位 · 筛选后 ${list.length} 位`;
+
+  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  if (state.page > totalPages) state.page = totalPages;
+  if (state.page < 1) state.page = 1;
+  const start = (state.page - 1) * PAGE_SIZE;
+  const slice = list.slice(start, start + PAGE_SIZE);
+
+  const container = document.getElementById('patientsGrid');
+  if (list.length === 0) {
+    container.innerHTML = '<div class="empty"><div class="icon">🔍</div>未找到匹配的患者</div>';
+    document.getElementById('pagination').style.display = 'none';
+    document.getElementById('renderMeta').textContent =
+      `渲染 0 / 0 · ${(performance.now() - t0).toFixed(1)} ms`;
+    return;
+  }
+
+  container.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  slice.forEach(p => frag.appendChild(buildPatientCard(p, today)));
+  container.appendChild(frag);
+
+  renderPagination(list.length, totalPages);
+  document.getElementById('renderMeta').textContent =
+    `渲染 ${slice.length} / ${list.length} 条 · ${(performance.now() - t0).toFixed(1)} ms`;
+}
+
+function buildPatientCard(p, today) {
+  const c = p.constitution || {};
+  const isToday = String(c['检测时间'] || '').startsWith(today);
+  const isDemo = (c['患者姓名'] || '').includes('演示');
+  const concl = c['体质结论'] || '--';
+  const pulse = p.pulses[0] || {};
+  const pulseLabel = pulse['脉象'] || pulse['脉型'] || '';
+
+  let cls = 'patient-card';
+  if (isDemo) cls += ' is-demo';
+  else if (isToday) cls += ' has-today';
+
+  const tag = isDemo ? '演示数据' : (isToday ? '今日检测' : '历史');
+
+  const el = document.createElement('div');
+  el.className = cls;
+  el.addEventListener('click', () => openModal(p));
+  el.innerHTML = `
+    <div class="patient-header">
+      <div class="patient-name">${escapeHtml(c['患者姓名'] || '(无姓名)')}</div>
+      <div class="patient-sub">${escapeHtml(c['患者性别'] || '--')} · ${escapeHtml(c['患者年龄'] || '--')} 岁 · ID ${escapeHtml(p.id.slice(-6))}</div>
+      <div class="patient-tag">${tag}</div>
+    </div>
+    <div class="patient-body">
+      <div class="metric-row"><span class="key">检测时间</span><span class="val muted">${escapeHtml(fmtCST(c['检测时间']))}</span></div>
+      <div class="metric-row"><span class="key">脉诊次数</span><span class="val">${p.pulses.length}</span></div>
+      <div class="metric-row"><span class="key">附件</span><span class="val muted">
+        ${p.attachments.pulseImgs.length}图 · ${p.attachments.reportPdfs.length}PDF · ${p.attachments.qaXlsx ? '问卷' : ''}
+      </span></div>
+      <div style="margin-top:10px;">
+        <span class="conclusion-pill">${escapeHtml(concl)}</span>
+        ${pulseLabel ? `<span class="pulse-pill">脉象 ${escapeHtml(pulseLabel)}</span>` : ''}
+      </div>
+    </div>
+  `;
+  return el;
+}
+
+function renderPagination(total, totalPages) {
+  const el = document.getElementById('pagination');
+  if (totalPages <= 1) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const start = (state.page - 1) * PAGE_SIZE + 1;
+  const end = Math.min(state.page * PAGE_SIZE, total);
+  const pages = pageList(state.page, totalPages);
+  el.innerHTML = `
+    <span class="info">第 ${start}-${end} 条 / 共 ${total} 条</span>
+    <button type="button" data-act="prev" ${state.page === 1 ? 'disabled' : ''}>上一页</button>
+    ${pages.map(pg => pg === '...' ? '<span class="ellipsis">…</span>'
+      : `<button type="button" data-page="${pg}" class="${pg === state.page ? 'active' : ''}">${pg}</button>`
+    ).join('')}
+    <button type="button" data-act="next" ${state.page === totalPages ? 'disabled' : ''}>下一页</button>
+  `;
+}
+
+function pageList(cur, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const out = [1];
+  const lo = Math.max(2, cur - 1);
+  const hi = Math.min(total - 1, cur + 1);
+  if (lo > 2) out.push('...');
+  for (let i = lo; i <= hi; i++) out.push(i);
+  if (hi < total - 1) out.push('...');
+  out.push(total);
+  return out;
+}
+
+/* ----------------- 详情 modal ----------------- */
+async function openModal(patient) {
+  const c = patient.constitution || {};
+  document.getElementById('modalName').textContent = c['患者姓名'] || '(无姓名)';
+  document.getElementById('modalSub').textContent =
+    `${c['患者性别'] || '--'} · ${c['患者年龄'] || '--'} 岁 · 病例 ${patient.id} · 检测时间 ${fmtCST(c['检测时间'])}`;
+
+  const body = document.getElementById('modalBody');
+  body.innerHTML = '<div style="text-align:center; padding:40px; color:#9ca3af;">载入中...</div>';
+  document.getElementById('modalMask').classList.add('open');
+
+  let html = '';
+
+  // 1. 体质得分卡片
+  if (patient.constitution) {
+    html += '<div class="modal-section"><h3>中医体质得分 (越低越健康)</h3>';
+    html += '<div class="constitution-grid">';
+    const types = ['平和质','气虚质','阳虚质','阴虚质','痰湿质','湿热质','血瘀质','气郁质','特禀质'];
+    types.forEach(t => {
+      const k = t + '得分';
+      const v = parseFloat(c[k] || 0);
+      let cls = 'normal';
+      if (v >= 80) cls = 'danger';
+      else if (v >= 50) cls = 'warn';
+      html += `<div class="constitution-card ${cls}">
+        <div class="name">${escapeHtml(t)}</div>
+        <div class="score">${v.toFixed(1)}</div>
+      </div>`;
+    });
+    html += '</div>';
+    if (c['体质结论']) {
+      html += `<div style="margin-top:12px; font-size:14px;">体质结论: <span class="conclusion-pill">${escapeHtml(c['体质结论'])}</span></div>`;
+    }
+    html += '</div>';
+  }
+
+  // 2. 脉诊参数
+  if (patient.pulses.length) {
+    html += '<div class="modal-section"><h3>脉诊数据</h3>';
+    for (const pulse of patient.pulses) {
+      html += `<div style="margin-bottom:16px; padding:12px; background:#f9fafb; border-radius:8px;">
+        <div style="font-weight:600; margin-bottom:8px;">
+          ${escapeHtml(pulse['左右手'] || '')} · ${escapeHtml(pulse['脉像位置'] || '')} · 脉象
+          <span class="pulse-pill">${escapeHtml(pulse['脉象'] || '--')}</span>
+        </div>`;
+      // 关键临床描述
+      const clinKeys = ['脉率','脉位','脉力','流利度','脉节律','紧张度','滑涩度','虚实度','压力值'];
+      html += '<div class="pulse-params" style="margin-bottom:10px;">';
+      clinKeys.forEach(k => {
+        if (pulse[k] !== undefined && pulse[k] !== '') {
+          html += `<div class="pp"><span class="k">${escapeHtml(k)}</span><span class="v">${escapeHtml(pulse[k])}</span></div>`;
+        }
+      });
+      html += '</div>';
+      // 数学波形参数 (折叠)
+      const mathKeys = ['t','t1','t2','t4','t5','w','h1','h3','h4','h5','alpha','theta','Aa','Ab','AT','As','Ad','h1/t1','h3/h1','h4/h1','h5/h1','w/t'];
+      html += '<details><summary style="font-size:12px; color:#6b7280; cursor:pointer;">展开 22 个波形参数</summary>';
+      html += '<div class="pulse-params" style="margin-top:8px;">';
+      mathKeys.forEach(k => {
+        if (pulse[k] !== undefined && pulse[k] !== '') {
+          html += `<div class="pp"><span class="k">${escapeHtml(k)}</span><span class="v">${escapeHtml(pulse[k])}</span></div>`;
+        }
+      });
+      html += '</div></details>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  // 3. 脉象图 (本地解出 jpg/png blob 直接显示)
+  if (patient.attachments.pulseImgs.length) {
+    html += '<div class="modal-section"><h3>脉象图</h3><div style="display:flex; flex-wrap:wrap; gap:12px;">';
+    for (const imgPath of patient.attachments.pulseImgs) {
+      const f = cachedZip.file(imgPath);
+      if (!f) continue;
+      const blob = await f.async('blob');
+      const url = URL.createObjectURL(blob);
+      const filename = imgPath.split(/[\\/]/).pop();
+      html += `<div><img class="pulse-img" src="${url}" alt="${escapeHtml(filename)}" style="max-width:480px;"><div style="font-size:11px; color:#9ca3af; margin-top:4px;">${escapeHtml(filename)}</div></div>`;
+    }
+    html += '</div></div>';
+  }
+
+  // 4. 脉象波形 (txt 一维数据 → canvas 画线)
+  if (patient.attachments.pulseTxts.length) {
+    html += '<div class="modal-section"><h3>脉象采样波形</h3>';
+    for (let i = 0; i < patient.attachments.pulseTxts.length; i++) {
+      const txtPath = patient.attachments.pulseTxts[i];
+      const filename = txtPath.split(/[\\/]/).pop();
+      html += `<div class="pulse-canvas-wrap" style="margin-bottom:10px;">
+        <div style="font-size:12px; color:#6b7280; margin-bottom:6px;">${escapeHtml(filename)}</div>
+        <canvas class="pulse-canvas" id="pulseCanvas${i}" width="900" height="160"></canvas>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  // 5. 体质问卷答题记录
+  if (patient.attachments.qaXlsx) {
+    try {
+      const rows = await readXlsxFromZip(cachedZip, patient.attachments.qaXlsx);
+      if (rows && rows.length > 1) {
+        html += '<div class="modal-section"><h3>中医体质问卷答题 (' + (rows.length - 1) + ' 道题)</h3>';
+        html += '<table class="qa-table"><thead><tr>';
+        rows[0].forEach((h, idx) => {
+          html += `<th${idx === 6 ? ' style="text-align:center;"' : ''}>${escapeHtml(String(h || ''))}</th>`;
+        });
+        html += '</tr></thead><tbody>';
+        for (let i = 1; i < rows.length; i++) {
+          html += '<tr>';
+          rows[i].forEach((cell, idx) => {
+            html += `<td${idx === 6 ? ' class="score-cell"' : ''}>${escapeHtml(String(cell || ''))}</td>`;
+          });
+          html += '</tr>';
+        }
+        html += '</tbody></table></div>';
+      }
+    } catch (e) { console.warn('QA xlsx 解析失败', e); }
+  }
+
+  // 6. PDF + 附件下载
+  if (patient.attachments.reportPdfs.length || patient.attachments.pulseDats.length) {
+    html += '<div class="modal-section"><h3>原始附件下载</h3><div class="attach-row">';
+    for (const pdfPath of patient.attachments.reportPdfs) {
+      const f = cachedZip.file(pdfPath);
+      if (!f) continue;
+      const blob = await f.async('blob');
+      const url = URL.createObjectURL(blob);
+      const filename = pdfPath.split(/[\\/]/).pop();
+      html += `<a class="attach-btn primary" href="${url}" target="_blank" rel="noopener" download="${escapeHtml(filename)}">📄 ${escapeHtml(filename)}</a>`;
+    }
+    for (const datPath of patient.attachments.pulseDats) {
+      const f = cachedZip.file(datPath);
+      if (!f) continue;
+      const blob = await f.async('blob');
+      const url = URL.createObjectURL(blob);
+      const filename = datPath.split(/[\\/]/).pop();
+      html += `<a class="attach-btn" href="${url}" download="${escapeHtml(filename)}">💾 ${escapeHtml(filename)}</a>`;
+    }
+    html += '</div></div>';
+  }
+
+  body.innerHTML = html || '<div class="empty">无数据</div>';
+
+  // 异步画 canvas (DOM 渲染完成后再画)
+  if (patient.attachments.pulseTxts.length) {
+    for (let i = 0; i < patient.attachments.pulseTxts.length; i++) {
+      const txtPath = patient.attachments.pulseTxts[i];
+      const text = await cachedZip.file(txtPath).async('string');
+      drawPulseWaveform('pulseCanvas' + i, text);
+    }
+  }
+}
+
+function drawPulseWaveform(canvasId, text) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const data = text.split(/\s+/).filter(x => x && !isNaN(Number(x))).map(Number);
+  if (!data.length) return;
+  // 取前 N 个采样, 避免点太多
+  const N = Math.min(data.length, 1500);
+  const arr = data.slice(0, N);
+  const min = Math.min(...arr), max = Math.max(...arr);
+  const range = max - min || 1;
+  ctx.fillStyle = '#fafafa';
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#2c6ef2';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    const x = (i / (N - 1)) * W;
+    const y = H - ((arr[i] - min) / range) * (H - 20) - 10;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  // 标注 min/max
+  ctx.fillStyle = '#9ca3af';
+  ctx.font = '11px sans-serif';
+  ctx.fillText('采样点 ' + N + ' / ' + data.length + ' · 范围 ' + min + '–' + max, 8, 14);
+}
+
+function closeModal() {
+  document.getElementById('modalMask').classList.remove('open');
+}
+document.getElementById('modalMask').addEventListener('click', e => {
+  if (e.target.id === 'modalMask') closeModal();
+});
+
+/* ----------------- 筛选事件 ----------------- */
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+document.getElementById('searchInput').addEventListener('input', debounce(e => {
+  state.search = e.target.value;
+  state.page = 1;
+  renderPatients();
+}, 200));
+document.getElementById('filterGender').addEventListener('change', e => {
+  state.filterGender = e.target.value;
+  state.page = 1;
+  renderPatients();
+});
+document.getElementById('filterConclusion').addEventListener('change', e => {
+  state.filterConclusion = e.target.value;
+  state.page = 1;
+  renderPatients();
+});
+document.getElementById('sortBy').addEventListener('change', e => {
+  state.sortBy = e.target.value;
+  renderPatients();
+});
+
+function resetFilters() {
+  state.search = '';
+  state.filterGender = 'all';
+  state.filterConclusion = 'all';
+  state.sortBy = 'latest';
+  state.page = 1;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('filterGender').value = 'all';
+  document.getElementById('filterConclusion').value = 'all';
+  document.getElementById('sortBy').value = 'latest';
+  renderPatients();
+}
+
+document.getElementById('pagination').addEventListener('click', e => {
+  const t = e.target;
+  if (t.tagName !== 'BUTTON' || t.disabled) return;
+  if (t.dataset.page) state.page = parseInt(t.dataset.page, 10);
+  else if (t.dataset.act === 'prev') state.page--;
+  else if (t.dataset.act === 'next') state.page++;
+  renderPatients();
+  window.scrollTo({ top: document.querySelector('.toolbar').offsetTop - 20, behavior: 'smooth' });
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+  if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    document.getElementById('searchInput').focus();
+  }
+});
+
+/* ----------------- 工具函数 ----------------- */
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+</script>
+</body>
+</html>
