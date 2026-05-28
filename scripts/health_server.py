@@ -149,6 +149,159 @@ def ensure_ble_event_table():
     finally:
         conn.close()
 
+def ensure_zhenmaiyi_table():
+    """v10 patch: 创建 zhenmaiyi 表 (idempotent), 收浏览器端解析的诊脉仪 zip 数据.
+
+    每条记录 = 一位患者的一次诊脉, 含结构化数据 + 三个原始附件 base64
+    (一个四诊报告 PDF + 两个顶层 Excel 汇总).
+    schema 详见 database/zhenmaiyi.sql.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS zhenmaiyi (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                case_id VARCHAR(64) NOT NULL UNIQUE COMMENT '病例ID',
+                patient_name VARCHAR(50) DEFAULT NULL COMMENT '患者姓名',
+                patient_gender VARCHAR(8) DEFAULT NULL COMMENT '患者性别',
+                patient_age INT DEFAULT NULL COMMENT '患者年龄',
+                detect_time DATETIME DEFAULT NULL COMMENT '诊脉仪检测时间',
+                conclusion VARCHAR(100) DEFAULT NULL COMMENT '体质结论',
+                pulse_label VARCHAR(32) DEFAULT NULL COMMENT '主脉象',
+                full_data JSON COMMENT '体质9得分 + 脉诊42参数 + 答题记录',
+                pdf_base64 LONGTEXT COMMENT '四诊报告 sizhen_.pdf base64',
+                constitution_xlsx_base64 LONGTEXT COMMENT '顶层 患者体质记录导出*.xlsx base64',
+                pulse_xlsx_base64 LONGTEXT COMMENT '顶层 患者脉诊导出*.xlsx base64',
+                source_zip_name VARCHAR(200) DEFAULT NULL COMMENT '上传时的源 zip 文件名',
+                uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_detect_time (detect_time),
+                INDEX idx_patient_name (patient_name),
+                INDEX idx_conclusion (conclusion),
+                INDEX idx_uploaded_at (uploaded_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        print('[启动] zhenmaiyi 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_zhenmaiyi_table 失败:', e)
+    finally:
+        conn.close()
+
+
+def upsert_zhenmaiyi(patients, constitution_xlsx_b64, pulse_xlsx_b64, source_zip_name):
+    """v10 patch: 批量 UPSERT zhenmaiyi 记录, 按 case_id 去重.
+
+    patients: list of dict, 每个含:
+      case_id (必填), patient_name, patient_gender, patient_age (int),
+      detect_time (YYYY-MM-DD HH:MM:SS), conclusion, pulse_label,
+      full_data (dict), pdf_base64 (可空)
+    constitution_xlsx_b64 / pulse_xlsx_b64: 顶层两个汇总 xlsx 的 base64,
+      所有患者共享, 每条记录都冗余存一份.
+    返回: {inserted, updated, total, errors}
+    """
+    if not patients:
+        return {'inserted': 0, 'updated': 0, 'total': 0, 'errors': []}
+
+    inserted = updated = 0
+    errors = []
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        for p in patients:
+            case_id = str(p.get('case_id') or '').strip()
+            if not case_id:
+                errors.append({'case_id': None, 'msg': '缺 case_id'})
+                continue
+            try:
+                age = int(p.get('patient_age') or 0) or None
+            except (ValueError, TypeError):
+                age = None
+            full_data = p.get('full_data') or {}
+            full_data_json = json.dumps(full_data, ensure_ascii=False)
+            # 先 SELECT 看是否存在 (兼容 mysql 5.7 没 ON DUPLICATE KEY JSON 写法分歧)
+            cur.execute('SELECT id FROM zhenmaiyi WHERE case_id = %s', (case_id,))
+            row = cur.fetchone()
+            if row:
+                cur.execute("""
+                    UPDATE zhenmaiyi SET
+                      patient_name = %s, patient_gender = %s, patient_age = %s,
+                      detect_time = %s, conclusion = %s, pulse_label = %s,
+                      full_data = %s,
+                      pdf_base64 = %s,
+                      constitution_xlsx_base64 = %s,
+                      pulse_xlsx_base64 = %s,
+                      source_zip_name = %s,
+                      uploaded_at = CURRENT_TIMESTAMP
+                    WHERE case_id = %s
+                """, (
+                    p.get('patient_name'), p.get('patient_gender'), age,
+                    p.get('detect_time') or None, p.get('conclusion'),
+                    p.get('pulse_label'), full_data_json,
+                    p.get('pdf_base64'), constitution_xlsx_b64, pulse_xlsx_b64,
+                    source_zip_name, case_id,
+                ))
+                updated += 1
+            else:
+                cur.execute("""
+                    INSERT INTO zhenmaiyi (
+                      case_id, patient_name, patient_gender, patient_age,
+                      detect_time, conclusion, pulse_label, full_data,
+                      pdf_base64, constitution_xlsx_base64, pulse_xlsx_base64,
+                      source_zip_name
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    case_id, p.get('patient_name'), p.get('patient_gender'), age,
+                    p.get('detect_time') or None, p.get('conclusion'),
+                    p.get('pulse_label'), full_data_json,
+                    p.get('pdf_base64'), constitution_xlsx_b64, pulse_xlsx_b64,
+                    source_zip_name,
+                ))
+                inserted += 1
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        traceback.print_exc()
+        errors.append({'msg': str(e)})
+    finally:
+        conn.close()
+    return {'inserted': inserted, 'updated': updated,
+            'total': inserted + updated, 'errors': errors}
+
+
+def query_zhenmaiyi_list():
+    """v10 patch: 查全部 zhenmaiyi 记录 (不含 base64 大字段, 给看板列表用)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT case_id, patient_name, patient_gender, patient_age,
+                   detect_time, conclusion, pulse_label, full_data,
+                   source_zip_name, uploaded_at,
+                   CHAR_LENGTH(IFNULL(pdf_base64,'')) > 0 AS has_pdf
+            FROM zhenmaiyi
+            ORDER BY detect_time DESC, uploaded_at DESC
+        """)
+        cols = [d[0] for d in cur.description]
+        rows = []
+        for r in cur.fetchall():
+            row = dict(zip(cols, r))
+            # detect_time / uploaded_at datetime → str
+            for k in ('detect_time', 'uploaded_at'):
+                if row.get(k) is not None and hasattr(row[k], 'strftime'):
+                    row[k] = row[k].strftime('%Y-%m-%d %H:%M:%S')
+            # full_data 在某些 driver 下是 str
+            if isinstance(row.get('full_data'), str):
+                try: row['full_data'] = json.loads(row['full_data'])
+                except Exception: pass
+            row['has_pdf'] = bool(row.get('has_pdf'))
+            rows.append(row)
+        cur.close()
+        return {'count': len(rows), 'patients': rows}
+    finally:
+        conn.close()
+
+
 def insert_ble_event(payload):
     """写入一条蓝牙连接质量埋点. 字段全可空, 仅 event_type 必填."""
     event_type = payload.get('eventType')
@@ -896,6 +1049,15 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json(200, result)
 
+        elif pathname == '/api/zhenmaiyi/list':
+            # v10 patch: 诊脉仪记录列表 (不返回 base64 大字段, 看板列表用)
+            try:
+                result = query_zhenmaiyi_list()
+                self._send_json(200, result)
+            except Exception as e:
+                traceback.print_exc()
+                self._send_json(500, {'error': str(e)})
+
         elif pathname == '/api/device/by-sign':
             sign = (query.get('sign') or [None])[0]
             try:
@@ -921,6 +1083,8 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'POST /api/device/merge': '合并 wearable_device_data 两行: {fromDeviceId, toDeviceId}',
                     'GET  /api/device/by-sign?sign=...': '按 sign 查 wearable_device（不创建）',
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
+                    'POST /api/zhenmaiyi/upload': 'v10 patch: 浏览器解析诊脉仪 zip 后批量入库 (zhenmaiyi 表, UPSERT by case_id)',
+                    'GET  /api/zhenmaiyi/list': 'v10 patch: 列全部诊脉仪记录 (不含 base64 附件)',
                 },
             })
 
@@ -1004,6 +1168,21 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(200, result)
 
+            elif pathname == '/api/zhenmaiyi/upload':
+                # v10 patch: 浏览器端 pulse-dashboard.html 解析诊脉仪 .zip 后批量入库
+                # body: { patients: [...], constitution_xlsx_b64, pulse_xlsx_b64, source_zip_name }
+                patients = body.get('patients') or []
+                if not isinstance(patients, list):
+                    self._send_json(400, {'error': 'patients 必须是数组'})
+                    return
+                result = upsert_zhenmaiyi(
+                    patients,
+                    body.get('constitution_xlsx_b64') or '',
+                    body.get('pulse_xlsx_b64') or '',
+                    body.get('source_zip_name') or '',
+                )
+                self._send_json(200, {'success': True, **result})
+
             elif pathname == '/api/device/merge':
                 from_id_raw = body.get('fromDeviceId')
                 to_id_raw = body.get('toDeviceId')
@@ -1020,7 +1199,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(200, {'success': True, **result})
 
             else:
-                self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register, POST /api/device/merge'})
+                self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register, POST /api/device/merge, POST /api/zhenmaiyi/upload'})
 
         except Exception as e:
             traceback.print_exc()
@@ -1055,6 +1234,8 @@ if __name__ == '__main__':
         print('[启动] MySQL 连接成功 → {}, 当前 {} 行体征数据'.format(DB_CONFIG['host'], info))
         # 5.06-v6: 启动时确保 wearable_device.mac 列存在 (idempotent), 后续 register 走 mac 优先匹配
         ensure_mac_column()
+        # v10 patch: 启动时确保 zhenmaiyi 表存在 (idempotent), 接收浏览器端解析诊脉仪 zip 上传
+        ensure_zhenmaiyi_table()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,

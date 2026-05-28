@@ -365,9 +365,10 @@ canvas.pulse-canvas { width: 100%; height: 160px; display: block; }
   <div class="header">
     <div>
       <h1>智能随访 · 诊脉仪数据看板</h1>
-      <div class="sub">本地解析 · 数据不上传 · 上传 .zip 即可查看</div>
+      <div class="sub">浏览器本地解析 · 可选入库到六元服务器</div>
     </div>
     <div class="actions">
+      <button class="btn-primary" id="uploadServerBtn" style="display:none;" onclick="uploadToServer()">📤 入库到六元</button>
       <button class="btn-primary" onclick="document.getElementById('fileInput').click()">📁 重新选择文件</button>
     </div>
   </div>
@@ -376,7 +377,7 @@ canvas.pulse-canvas { width: 100%; height: 160px; display: block; }
   <div id="uploadZone" class="upload-zone">
     <div class="upload-icon">📦</div>
     <div class="upload-title">拖拽诊脉仪导出的 .zip 文件到此处</div>
-    <div class="upload-hint">或点击选择文件 · 浏览器本地解析，不上传任何数据</div>
+    <div class="upload-hint">或点击选择文件 · 浏览器本地解析，预览后可一键入库到六元 MySQL</div>
     <input type="file" id="fileInput" accept=".zip">
   </div>
 
@@ -390,6 +391,7 @@ canvas.pulse-canvas { width: 100%; height: 160px; display: block; }
       <div class="item"><span class="label">文件大小</span><span class="value" id="fileSize">--</span></div>
       <div class="item"><span class="label">患者数</span><span class="value" id="patientCount">--</span></div>
       <div class="item"><span class="label">解析时间</span><span class="value" id="parseTime">--</span></div>
+      <div class="item"><span class="label">入库状态</span><span class="value" id="uploadStatus">未入库</span></div>
       <div class="render-meta" id="renderMeta">就绪</div>
     </div>
 
@@ -431,13 +433,6 @@ canvas.pulse-canvas { width: 100%; height: 160px; display: block; }
 
   </div>
 
-  <!-- 操作提示 -->
-  <div class="footer-hint">
-    <strong>使用说明：</strong>
-    上传文件由诊脉仪软件导出 (.zip 含 <code>患者体质记录导出*.xlsx</code>、<code>患者脉诊导出*.xlsx</code>、每位患者的答题/脉象/PDF 报告)。
-    所有解析在浏览器本地完成，<strong>不会上传到任何服务器</strong>，关闭页面即清空。
-    快捷键：<span class="kbd">/</span> 聚焦搜索 · <span class="kbd">Esc</span> 关闭详情。
-  </div>
 
 </div>
 
@@ -482,6 +477,13 @@ const state = {
 let cachedPatients = [];   // 合并后的患者数组 (体质 + 脉诊 + 附件 paths)
 let cachedZip = null;      // JSZip 实例 (用于按需取 jpg/txt/pdf)
 let cachedConclusions = [];
+let cachedZipName = '';    // 用户上传的源 zip 文件名 (入库时透传)
+// 顶层两个汇总 xlsx 的 base64 (入库时所有患者共享)
+let cachedConstXlsxB64 = '';
+let cachedPulseXlsxB64 = '';
+
+// 入库 API 基址: 与 data-dashboard 同口径, 走六元外网入口
+const API_BASE = 'https://dc.ncrc.org.cn/api2';
 
 /* ----------------- 文件解码工具 ----------------- */
 function gbkDecodeFileName(bytes) {
@@ -549,8 +551,10 @@ async function handleFile(file) {
     return;
   }
   const t0 = performance.now();
+  cachedZipName = file.name;
   document.getElementById('fileName').textContent = file.name;
   document.getElementById('fileSize').textContent = fmtSize(file.size);
+  document.getElementById('uploadStatus').textContent = '未入库';
   showToast('正在解析 ' + file.name + ' ...');
 
   try {
@@ -558,6 +562,8 @@ async function handleFile(file) {
     cachedZip = zip;
     await parseZip(zip);
     document.getElementById('parseTime').textContent = (performance.now() - t0).toFixed(0) + ' ms';
+    // 解析完成后, 显示入库按钮
+    document.getElementById('uploadServerBtn').style.display = '';
 
     // 收起上传区, 显示数据视图
     uploadZone.classList.add('compact');
@@ -612,9 +618,11 @@ async function parseZip(zip) {
     throw new Error('未找到 "患者体质记录导出*.xlsx" 或 "患者脉诊导出*.xlsx"');
   }
 
-  // 2. 解 xlsx → array of objects (按表头)
+  // 2. 解 xlsx → array of objects (按表头) + 同时缓存原文件 base64 给入库用
   const constRows = constPath ? rowsToObjects(await readXlsxFromZip(zip, constPath)) : [];
   const pulseRows = pulsePath ? rowsToObjects(await readXlsxFromZip(zip, pulsePath)) : [];
+  cachedConstXlsxB64 = constPath ? await zip.file(constPath).async('base64') : '';
+  cachedPulseXlsxB64 = pulsePath ? await zip.file(pulsePath).async('base64') : '';
 
   // 3. 按病例 ID 合并
   const map = new Map();
@@ -1104,6 +1112,102 @@ document.addEventListener('keydown', e => {
     document.getElementById('searchInput').focus();
   }
 });
+
+/* ----------------- 入库到六元服务器 ----------------- */
+async function uploadToServer() {
+  if (!cachedPatients.length) {
+    showToast('请先上传 .zip 解析后再入库');
+    return;
+  }
+  const btn = document.getElementById('uploadServerBtn');
+  const status = document.getElementById('uploadStatus');
+  const totalPatients = cachedPatients.length;
+  if (!confirm(`将 ${totalPatients} 位患者数据 + 各自 PDF 报告 + 两份顶层 Excel 入库到六元服务器 (zhenmaiyi 表). 继续?`)) {
+    return;
+  }
+
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = '⏳ 入库中 0/' + totalPatients;
+  status.textContent = '准备 base64...';
+
+  try {
+    // 1. 把所有患者数据 + PDF base64 准备成 payload
+    const patientsPayload = [];
+    for (let i = 0; i < cachedPatients.length; i++) {
+      const p = cachedPatients[i];
+      const c = p.constitution || {};
+      btn.textContent = '⏳ 准备 ' + (i + 1) + '/' + totalPatients;
+
+      // PDF base64 (每位患者通常 1 份 sizhen_*.pdf)
+      let pdfB64 = '';
+      if (p.attachments && p.attachments.reportPdfs && p.attachments.reportPdfs.length) {
+        const pdfFile = cachedZip.file(p.attachments.reportPdfs[0]);
+        if (pdfFile) pdfB64 = await pdfFile.async('base64');
+      }
+
+      // full_data: 结构化数据全打包 (体质 + 脉诊 + 答题)
+      let qaRows = null;
+      if (p.attachments && p.attachments.qaXlsx) {
+        try {
+          qaRows = await readXlsxFromZip(cachedZip, p.attachments.qaXlsx);
+        } catch (e) {}
+      }
+      const fullData = {
+        constitution: p.constitution || null,
+        pulses: p.pulses || [],
+        qa: qaRows ? { headers: qaRows[0], rows: qaRows.slice(1) } : null,
+        attachments_meta: {
+          pulse_imgs: (p.attachments.pulseImgs || []).map(x => x.split(/[\\/]/).pop()),
+          pulse_txts: (p.attachments.pulseTxts || []).map(x => x.split(/[\\/]/).pop()),
+          pulse_dats: (p.attachments.pulseDats || []).map(x => x.split(/[\\/]/).pop()),
+          report_pdfs: (p.attachments.reportPdfs || []).map(x => x.split(/[\\/]/).pop()),
+        },
+      };
+
+      patientsPayload.push({
+        case_id: p.id,
+        patient_name: c['患者姓名'] || null,
+        patient_gender: c['患者性别'] || null,
+        patient_age: c['患者年龄'] ? parseInt(c['患者年龄'], 10) : null,
+        detect_time: c['检测时间'] || null,
+        conclusion: c['体质结论'] || null,
+        pulse_label: (p.pulses[0] && (p.pulses[0]['脉象'] || p.pulses[0]['脉型'])) || null,
+        full_data: fullData,
+        pdf_base64: pdfB64 || null,
+      });
+    }
+
+    // 2. POST 一次发完 (附 2 个顶层 xlsx base64)
+    btn.textContent = '⏳ 上传中...';
+    status.textContent = '上传中...';
+    const resp = await fetch(API_BASE + '/api/zhenmaiyi/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patients: patientsPayload,
+        constitution_xlsx_b64: cachedConstXlsxB64,
+        pulse_xlsx_b64: cachedPulseXlsxB64,
+        source_zip_name: cachedZipName,
+      }),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 200));
+    const result = await resp.json();
+    if (!result.success) throw new Error(result.error || '入库失败');
+
+    const okMsg = `✅ 入库成功: 新增 ${result.inserted} / 更新 ${result.updated} / 共 ${result.total}`;
+    status.textContent = okMsg;
+    btn.textContent = '✅ 已入库 (再次上传可覆盖)';
+    showToast(okMsg, 4000);
+    setTimeout(() => { btn.disabled = false; btn.textContent = origText; }, 4000);
+  } catch (e) {
+    console.error(e);
+    status.textContent = '❌ ' + e.message;
+    btn.textContent = origText;
+    btn.disabled = false;
+    showToast('入库失败: ' + e.message, 5000);
+  }
+}
 
 /* ----------------- 工具函数 ----------------- */
 function escapeHtml(s) {
