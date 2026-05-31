@@ -1,0 +1,6 @@
+# iwown 接收服务依赖
+# protobuf: theproto/*_pb2.py 由 protoc 5.27.2 生成, 运行时需 >=4.25 (含 builder API)
+#   若部署机 protobuf 版本不兼容 (ImportError/descriptor 报错),
+#   用 reference/proto/*.proto 在部署机上 `protoc --python_out` 重新生成放回 theproto/
+protobuf>=4.25,<6
+PyMySQL>=1.0

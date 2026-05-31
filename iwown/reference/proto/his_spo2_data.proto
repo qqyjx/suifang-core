@@ -1,0 +1,10 @@
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+
+message HisDataSpo2 {
+    required    DateTime              time_stamp = 1;
+    repeated    fixed32               spo2_data = 2;
+}
+

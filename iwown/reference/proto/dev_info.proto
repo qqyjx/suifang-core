@@ -1,0 +1,73 @@
+syntax = "proto2";
+option go_package = "./iwown";
+
+message DevInfoManu {
+    required string date = 1;
+    required string factory = 2;
+}
+
+enum DevInfoFota {
+    NON = 0;
+    CC2540 = 1;
+    NRF51 = 2;
+    DA1468X = 3;
+    MT2523 = 4;
+    NRF52_BLE = 5;
+   GH551X_BLE = 6;
+   ATS3085_BLE = 7;
+}
+
+message DeviceInfoapn {
+    required  fixed32        mcc= 1;
+    required  fixed32        mnc= 2;
+    required string          setting_name= 3;
+    required  fixed32        auth_type= 4;
+    required  fixed32        roaming_protocol= 5;
+    required string          apn_str= 6;
+    required string          user_name= 7;
+    required string          password= 8;
+}
+
+message DeviceInfoResponse {
+    optional string          model = 1;
+    optional string          version = 2;
+    optional bytes           mac  = 3;
+    optional DevInfoFota     fota = 4;
+    optional DevInfoManu     manu = 5;
+    optional bytes        user_data = 6;
+    optional string          pb_version = 7;
+    optional fixed32         ctp_cs=8;
+    optional fixed32         program_addr = 9;
+    optional fixed32         resource_addr = 10;
+    optional bool            apn_context  = 11;
+    optional string          ble_name = 12;
+    optional fixed32        encryption_status=13;
+    optional string          bp_version = 14;
+    optional string        data_url = 15;
+    optional string        CCID_str = 16;
+
+}
+
+
+message DeviceInfoCommand {
+    optional bytes        user_data = 1;
+    optional  DeviceInfoapn apn_context = 2;
+    optional string        data_url = 3;
+    optional fixed32      Resonant_frequency = 4;
+    optional string        app_qr_url = 5;
+    optional string        ble_name = 6;
+    optional bytes        Other_info_data = 7;
+    optional fixed32      DeviceI_remaining_sum = 8;
+}
+
+enum DevInfoOperation{
+    Read = 0;
+    Write = 1;
+}
+
+message DeviceInfoRequest {
+    optional  fixed32        reserved = 1;
+    required DevInfoOperation    operation = 2;
+    optional  DeviceInfoCommand devinfo = 3;
+}
+

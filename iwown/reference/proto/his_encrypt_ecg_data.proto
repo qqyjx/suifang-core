@@ -1,0 +1,17 @@
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+import "his_ecg_data.proto";
+
+message HisECGEncrypt{
+    required  HisDataECG            ecgencrypt = 1;
+    required  bytes                 Random = 2;   //random number 
+    required  bytes                 BleMac  = 3;
+}
+
+message HisDataECGEncrypt{
+    required  HisECGEncrypt         his_ecg  = 1;
+    required  bytes                 signature_data= 2;
+}
+

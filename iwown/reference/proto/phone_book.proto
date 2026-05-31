@@ -1,0 +1,74 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+
+enum PhoneOperation {
+      ADD = 1;
+      REMOVE = 2;
+      CLEAR = 3;
+}
+
+enum PhoneResponse {
+      SUCCEED = 1;
+      FAIL = 2;
+      EXIST = 3;
+}
+
+message SOSGNSSINFO {
+    required  float                     longitude = 1;
+    required  float                     latitude = 2;
+}
+
+message HrAlarmV2 {
+   required fixed32      hr = 1;
+}
+
+message Spo2AlarmV2 {
+   required fixed32      spo2 = 1;
+}
+message ThrombusAlarmV2{
+   required bool      Thrombus_alarm = 1;
+}
+message FallAlarmConfV2 {
+   required bool      fall_alarm = 1;
+}
+
+message PhoneAlarminfo {
+     required  DateTime      time_stamp = 1;
+     optional  bool          wearstate=2;              //Not wearing status information warning report
+     optional  bool          sleepstate=3;              //sleep status information warning report
+     optional  SOSGNSSINFO   gnssinfo=4;               //SOS warning information reporting
+     optional  fixed32       lowpowerPercentage=5;    //Low battery warning information reporting
+     optional  fixed32       poweroffPercentage=6;    //Report shutdown information
+     optional  string        Phone_intercept_number=7;//Unknown number blocking
+} 
+
+message HealthAlarmV2
+{
+    required  DateTime      time_stamp = 1;
+    optional HrAlarmV2         alarm_hr = 2;
+    optional Spo2AlarmV2       alarm_spo2 = 3; 
+    optional ThrombusAlarmV2   alarm_Thrombus = 4; 
+    optional FallAlarmConfV2   alarm_fall = 5; 
+}
+
+message PhoneBookInfo {
+     required  fixed32     id=1;
+     required  bool        is_sos=2;
+     required  string      name=3;
+     required  string      number=4;
+}
+
+message PhoneBookNotify {
+     required  PhoneOperation     opt=1;
+     repeated  PhoneBookInfo      info=2;
+     optional  bool  PhoneIntercept=3;
+}
+
+message PhoneBookConfirm {
+    required  PhoneResponse       res=1;
+    required  fixed32             num=2;
+    optional  PhoneAlarminfo      Alarminfo = 3;
+    optional  HealthAlarmV2       alarm = 4;
+}
+

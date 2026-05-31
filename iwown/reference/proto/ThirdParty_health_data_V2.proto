@@ -1,0 +1,55 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+
+message MattressDataHealth {
+    required   bytes         Physical_SignsData = 1;   // Physical signs
+    required DateTime        Acquisition_time = 2;
+
+}
+
+message MattressHealthSummary  {
+    required  fixed32           serial_number = 1;
+    required DateTime        HealthSummary_time = 2;
+    required  fixed32           Bed = 3;
+    required  fixed32           HeartRate = 4;
+    required  fixed32           BreathRate = 5;
+    required  fixed32           Motion = 6;
+
+}
+
+message BIAOutput {
+    required	float body_fat_percentage = 1;  
+    required	float body_fat_kg = 2;          
+    required	float muscle_mass_kg = 3;       
+    required	float body_water_percentage = 4;
+    required	float body_water_kg = 5;        
+    required	float visceral_fat_level = 6;   
+    required	float bone_mass_kg = 7;         
+    required	float protein_kg = 8;           
+    required	float bmr_kcal = 9;             
+    required	float phase_angle_deg = 10;      
+    required	float impedance_ohm = 11;        
+	
+    required	float icw_kg = 12;               
+    required	float ecw_kg = 13;               
+    required	float fat_free_mass_kg = 14;     
+    required	float body_cell_mass_kg = 15;    
+    required	float intracellular_mass_kg = 16;
+    required	float extracellular_mass_kg = 17;
+    required	float na_k_ratio = 18;           
+    required	float bmi = 19;                  
+    required	float body_cell_mass_index = 20; 
+    required	float protein_factor = 21;       
+    required	float ideal_weight_kg = 22;   
+}
+
+message HisDataThirdPartyV2 {
+    oneof data {
+         MattressDataHealth        MattressData=1;
+         MattressHealthSummary       MattressDataSummary=2;
+         BIAOutput     BIAOutputData=3;
+   }
+}
+
+

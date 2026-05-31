@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>iwown 4G 手表接入方案</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #1f2937; background: #f5f7fa; line-height: 1.7; font-size: 15px; padding: 24px 16px 80px; }
+.container { max-width: 1000px; margin: 0 auto; }
+.header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%); color: #fff;
+  border-radius: 16px; padding: 28px 32px; margin-bottom: 20px; box-shadow: 0 4px 16px rgba(8,145,178,0.25); }
+.header h1 { font-size: 24px; font-weight: 600; letter-spacing: 1px; margin-bottom: 6px; }
+.header .sub { font-size: 14px; opacity: 0.92; }
+.header .src { font-size: 12px; opacity: 0.78; margin-top: 8px; word-break: break-all; }
+.card { background: #fff; border-radius: 12px; padding: 22px 26px; margin-bottom: 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+h2 { font-size: 18px; font-weight: 600; margin-bottom: 14px; padding-left: 12px; border-left: 4px solid #0891b2; }
+h3 { font-size: 15px; font-weight: 600; margin: 16px 0 8px; color: #374151; }
+table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+th { background: #f9fafb; text-align: left; padding: 9px 12px; border-bottom: 2px solid #e5e7eb; font-weight: 600; color: #4b5563; }
+td { padding: 9px 12px; border-bottom: 1px solid #f0f2f5; vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+code { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; color: #0e7490; }
+pre { background: #1f2937; color: #e5e7eb; padding: 16px 18px; border-radius: 10px; overflow-x: auto; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+pre code { background: none; color: inherit; padding: 0; }
+.tag { display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 10px; font-weight: 600; }
+.tag-ok { background: #dcfce7; color: #15803d; }
+.tag-todo { background: #fef3c7; color: #b45309; }
+.tag-req { background: #fee2e2; color: #b91c1c; }
+.tag-opt { background: #e0e7ff; color: #4338ca; }
+.callout { border-radius: 10px; padding: 14px 18px; margin: 14px 0; font-size: 14px; }
+.callout-warn { background: #fffbeb; border-left: 4px solid #f59e0b; }
+.callout-info { background: #ecfeff; border-left: 4px solid #06b6d4; }
+.callout-ok { background: #f0fdf4; border-left: 4px solid #22c55e; }
+ul, ol { margin: 8px 0 8px 22px; } li { margin: 4px 0; }
+.legend { font-size: 13px; color: #6b7280; margin-top: 8px; } .legend span { margin-right: 16px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>iwown 4G 智能手表 · 接入方案</h1>
+    <div class="sub">随访项目第 2 款手表 — 4G 云端直收（区别于 S101 BLE 桥接）</div>
+    <div class="src">文档源: api8.iwown.com/iot_platform (Sphinx, 正文/27 proto/Flask 示例已全量下载) · 整理 2026-05-31</div>
+  </div>
+
+  <div class="callout callout-ok">
+    <strong>✅ 状态:</strong> 协议已依官方 Flask 示例 + proto 核对清楚；接收服务
+    <code>server/</code> 已建好并自测通过（解帧逻辑全绿）。待 git 落位 → 部署 →
+    六元加反代 → 域名烧录真机联调。标 <span class="tag tag-todo">待确认</span> 的点需真机样本核实，不杜撰。
+  </div>
+
+  <div class="card">
+    <h2>一、与 S101 的根本区别 <span class="tag tag-ok">已确认</span></h2>
+    <table>
+      <tr><th>维度</th><th>S101 (Veepoo)</th><th>iwown 4G</th></tr>
+      <tr><td>联网</td><td>BLE 蓝牙（无 4G）</td><td><b>自带 4G 蜂窝</b></td></tr>
+      <tr><td>数据桥</td><td>微信小程序</td><td><b>无桥，手表直连</b></td></tr>
+      <tr><td>协议</td><td>Veepoo 私有 BLE</td><td><b>二进制 protobuf + 自定义帧（HTTP）</b></td></tr>
+      <tr><td>客户端</td><td>重（57 页小程序）</td><td><b>零</b>（厂商固件）</td></tr>
+      <tr><td>服务端</td><td>收 JSON <code>:3000</code></td><td><b>收二进制 <code>:8099</code></b></td></tr>
+      <tr><td>指向我们</td><td>小程序配 URL</td><td><b>域名烧录</b>（蓝牙 APK 改址）</td></tr>
+    </table>
+    <p style="margin-top:10px;">一句话：<b>S101 端上桥接，iwown 云端直收。</b></p>
+  </div>
+
+  <div class="card">
+    <h2>二、数据链路 <span class="tag tag-ok">已确认</span></h2>
+    <pre><code>iwown 手表 ──4G POST 二进制──→ dc.ncrc.org.cn/iwown/ ──反代──→ 192.168.4.104:8099 ──→ 六元 MySQL
+  (前15字节 device_id        (六元 nginx 加 location)    (iwown_server.py)     (iwown_data 表)
+   + 多个 0x4454 帧)          处理完返回单字节 0x00</code></pre>
+    <div class="callout callout-info">与 S101 共用同一台服务器 + 反代 + 六元 MySQL，iwown 独立进程/端口 + 新 <code>/iwown/</code> location + 新表，互不影响。</div>
+  </div>
+
+  <div class="card">
+    <h2>三、二进制帧格式 <span class="tag tag-ok">已确认（app.py 实证）</span></h2>
+    <pre><code>body = device_id(15 字节 ASCII) + 帧1 + 帧2 + ... (多帧拼接, 小端)
+
+每帧:
+  prefix   uint8[2]   固定 0x44 0x54 ("DT")
+  length   uint16     payload 长度 (小端)
+  crc      uint16     payload CRC (见下)
+  opt      uint16     协议编码 (小端): 0x80 / 0x0A / 0x12
+  payload  uint8[len] protobuf 序列化内容
+
+读到末尾无多余字节即结束。处理成功返回单字节 0x00 (0x02 长度不足 / 0x03 帧头错)</code></pre>
+    <div class="callout callout-warn">
+      <strong>CRC <span class="tag tag-todo">待确认</span>:</strong> 官方 Flask 示例
+      <b>提取 crc 字段但未校验</b>，算法（多项式/初值）文档未明给。我方服务当前与示例一致
+      <b>不校验 CRC</b>（先收数据），需要时向 iwown 要算法。
+    </div>
+    <div class="callout callout-info">
+      <strong>Content-Type 坑（已规避）:</strong> 手表上报 Content-Type 写
+      <code>x-www-form-urlencoded</code> 但实为二进制。我方用 Python 原生读原始字节流，
+      <b>不做表单解析，无需 nginx 改写 Content-Type</b>（Spring Boot 才需要）。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>四、6 端点契约 <span class="tag tag-ok">已确认（app.py 路由）</span></h2>
+    <p class="legend"><span><span class="tag tag-req">必需</span></span><span><span class="tag tag-opt">可选</span></span></p>
+    <table>
+      <tr><th>端点（结尾固定，前缀任意）</th><th>body</th><th>必需</th><th>处理</th></tr>
+      <tr><td><code>POST /pb/upload</code></td><td>二进制</td><td><span class="tag tag-req">必需</span></td><td>opt 0x80 健康 / 0x0A 实时</td></tr>
+      <tr><td><code>POST /alarm/upload</code></td><td>二进制</td><td><span class="tag tag-req">必需</span></td><td>opt 0x12 报警</td></tr>
+      <tr><td><code>POST /call_log/upload</code></td><td>JSON</td><td><span class="tag tag-req">必需</span></td><td>SOS + 通话记录</td></tr>
+      <tr><td><code>POST /deviceinfo/upload</code></td><td>JSON</td><td><span class="tag tag-opt">可选</span></td><td>设备信息</td></tr>
+      <tr><td><code>POST /status/notify</code></td><td>JSON</td><td><span class="tag tag-opt">可选</span></td><td>在线/离线</td></tr>
+      <tr><td><code>GET /health/sleep</code></td><td>→JSON</td><td><span class="tag tag-opt">可选</span></td><td>设备拉睡眠结果（算法待接，暂 10404）</td></tr>
+    </table>
+    <p style="margin-top:8px;">烧录地址示例：<code>https://dc.ncrc.org.cn/iwown/pb/upload</code></p>
+  </div>
+
+  <div class="card">
+    <h2>五、opt → protobuf 与体征字段 <span class="tag tag-ok">已确认（proto + 示例）</span></h2>
+    <table>
+      <tr><th>opt</th><th>顶层 message</th><th>含义</th></tr>
+      <tr><td><code>0x80</code></td><td><code>HisNotification</code> → <code>HisDataHealth</code></td><td>分钟级历史健康（也含 ecg/rri/spo2/3rd-party 等子类型）</td></tr>
+      <tr><td><code>0x0A</code></td><td><code>OM0Report</code></td><td>实时：电量/信号/步数距离卡路里/GNSS 定位（最近5条）</td></tr>
+      <tr><td><code>0x12</code></td><td><code>Alarm_infokConfirm</code></td><td>报警：心率/血氧/跌倒/SOS-GNSS/血压/久坐/血糖…</td></tr>
+    </table>
+    <h3>0x80 健康单条含（HisDataHealth，均为当分钟值）</h3>
+    <table>
+      <tr><th>字段</th><th>内容</th><th>换算</th></tr>
+      <tr><td>pedo_data</td><td>步数/距离/卡路里</td><td>距离、卡路里 <b>÷10</b></td></tr>
+      <tr><td>hr_data</td><td>心率 min/max/avg</td><td>—</td></tr>
+      <tr><td>bxoy_data</td><td>血氧 min/max/avg</td><td>—</td></tr>
+      <tr><td>bp_data</td><td>血压 sbp/dbp</td><td>—</td></tr>
+      <tr><td>hrv_data</td><td>fatigue 疲劳</td><td><b>压力 = 100 − fatigue</b></td></tr>
+      <tr><td>temperature_data</td><td>体温（esti_arm/evi_body 各打包2值）</td><td>高/低 16 位 <b>÷100</b></td></tr>
+      <tr><td colspan="3" style="color:#6b7280;">另有 sleep / af 房颤 / mdt / bioz 体成分 / blood_sugar / mood / breath … 共 23 个可选子字段</td></tr>
+    </table>
+    <div class="callout callout-info">时间戳 <code>DateTime.seconds</code>（fixed64，Unix 秒；data.rst 注明按 UTC 表示）。我方入库 <code>decoded_json</code> 用 MessageToDict 全量保留，抽常用体征做索引列，<code>raw_hex</code> 兜底可重算。</div>
+  </div>
+
+  <div class="card">
+    <h2>六、设备接入与域名烧录 <span class="tag tag-ok">已确认</span></h2>
+    <ol>
+      <li>部署我方接收服务 + 六元加 <code>/iwown/</code> 反代</li>
+      <li>用 iwown Android 调试 APK（<code>IWBle_debug_1.28.0920.apk</code>）<b>蓝牙连手表写入上传地址</b> → <code>https://dc.ncrc.org.cn/iwown/pb/upload</code>（操作见官方 <code>domain_burning.pdf</code> + 视频）</li>
+      <li>测试工具 <code>search.iwown.com/connect4g</code> 填 /pb/upload 地址验证（应回 0x00）</li>
+      <li>手表唯一标识 = body 前 15 字节 device_id（ASCII）；患者归属靠后台 <code>iwown_device.patient_no</code> 绑定（类比 S101 门诊号）</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>七、我方接收服务（已建） <span class="tag tag-ok">server/</span></h2>
+    <p>移植官方 Flask 示例为 stdlib http.server（无 Flask 依赖，风格对齐 S101 <code>health_server.py</code>）：</p>
+    <ul>
+      <li><code>iwown_server.py</code> — 6 端点 + 建表 + 入库 + <b>落盘兜底（不丢数据三重保障）</b> + <code>/api/status</code> + <code>/api/iwown/list</code></li>
+      <li><code>iwown_parser.py</code> — 解帧 + 按 opt 解 protobuf（MessageToDict 无损）。<b>解帧逻辑已合成帧自测：device_id/多帧/0x02/0x03/降级 全绿</b></li>
+      <li><code>theproto/</code> 38 个 <code>_pb2.py</code> · <code>schema.sql</code> · <code>iwown.service</code> · <code>nginx-iwown.conf</code> · <code>deploy-iwown.ps1</code></li>
+    </ul>
+    <h3>入库表 iwown_data</h3>
+    <p>一行一帧：device_id + data_type + opt + recorded_at + 抽取体征列（hr/spo2/bp/温度/压力/步数…）+ <code>decoded_json</code>（全量）+ <code>raw_hex</code>（兜底）。另 <code>iwown_device</code> 存 device→患者绑定。</p>
+    <h3>部署</h3>
+    <pre><code># Windows PowerShell, 连 VPN 后
+cd &lt;iwown&gt;\server
+.\deploy-iwown.ps1          # 建 /opt/iwown → scp → pip → systemd → 探活 :8099
+
+# 六元同事: 在 dc.ncrc.org.cn 443 server 加 nginx-iwown.conf 那段 location, reload</code></pre>
+  </div>
+
+  <div class="card">
+    <h2>八、待真机/向 iwown 确认 <span class="tag tag-todo">不杜撰</span></h2>
+    <ol>
+      <li><b>CRC 算法</b> — 示例未校验，文档未给；当前不校验</li>
+      <li><b>device_id → 患者绑定</b> — 绑定方式待定（扫码/管理界面/登记）</li>
+      <li><b>字段语义/单位</b> — 需真机一条样本核对（raw_hex 已兜底，可重算）</li>
+      <li><b>JSON 端点 schema</b> — call_log/deviceinfo/status 字段未给全，当前整包存 decoded_json</li>
+      <li><b>睡眠算法</b> — /health/sleep 需调 iwown 算法 API，当前暂返 10404</li>
+      <li><b>protobuf 运行时兼容</b> — _pb2 为 protoc 5.27.2 生成，部署机不兼容则用 reference/proto 重新生成</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>九、下一步</h2>
+    <ol>
+      <li>git 落位（并入 qqyjx/suifang 仓）</li>
+      <li>PowerShell 部署到 192.168.4.104</li>
+      <li>六元同事加 <code>/iwown/</code> 反代</li>
+      <li>域名烧录一台真机 → 看 <code>/api/iwown/list</code> 出数据 + fallback 有 raw</li>
+      <li>抽 raw 核字段 → 绑患者 → 接睡眠算法 → 按需做看板</li>
+    </ol>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,17 @@
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+
+message SensorVec {
+    required     fixed32                 x = 1;
+    required     fixed32                 y = 2;    
+    required     fixed32                 z = 3;
+}
+
+message HisDataSwim {
+    required    DateTime              time_stamp = 1;
+    repeated    SensorVec             acc_gyro_data = 2;
+    required    SensorVec             mag_data = 3;
+}
+

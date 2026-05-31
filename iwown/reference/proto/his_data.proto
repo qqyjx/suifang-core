@@ -1,0 +1,145 @@
+
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+import "his_health_data.proto";
+import "his_gnss_data.proto";
+import "his_ecg_data.proto";
+import "his_ppg_data.proto";
+import "his_rri_data.proto";
+import "his_medic_data.proto";
+import "his_spo2_data.proto";
+import "his_swim_data.proto";
+import "his_temperature_data.proto";
+import "his_encrypt_health_data.proto";
+import "his_encrypt_ecg_data.proto";
+import "his_encrypt_ppg_data.proto";
+import "his_encrypt_rri_data.proto";
+import "ThirdParty_health_data.proto";
+import "ThirdParty_health_data_V2.proto";
+import "ACCelerometer_data.proto";
+import "Gyroscope_data.proto";
+import "his_yylpfe_data.proto";
+import "his_multi_leads_ecg.proto";
+import "his_bp_Original_data.proto";
+
+enum HisOperation {
+    IT_SYNC = 0; // get index table
+    START_SYNC = 1; // start sync
+    STOP_SYNC = 2; // stop sync
+}
+
+enum HisDataType {
+    HEALTH_DATA = 0;
+    GNSS_DATA = 1;
+    ECG_DATA = 2;
+    PPG_DATA = 3;
+    RRI_DATA = 4;
+    MEDIC_DATA = 5;
+    SPO2_DATA = 6;
+    SWIM_DATA = 7;
+    TEMPERATURE_DATA = 8;
+    HEALTH_DATA_ENCRYPT = 9;
+    ECG_DATA_ENCRYPT = 10;
+    PPG_DATA_ENCRYPT = 11;
+    RRI_DATA_ENCRYPT = 12;
+    LONG_ECG_DATA = 13;
+    THIRDPARTY_DATA = 14;
+    THIRDPARTY_DATA_V2 = 15;
+    GYROSCOPE_DATA = 16;
+   ACCELEROMETER_DATA = 17;
+   YYLPFE_DATA = 18;
+   MULTI_LEADS_ECG_DATA = 19;
+   BP_ORIGINAL_DATA = 20;
+}
+
+enum HisDataStatus {
+    STATUS_OK = 0;
+    STATUS_INNER_ERROR = 1;
+    STATUS_NV_ERROR = 2;
+    STATUS_CRC_ERROR = 3;
+    STATUS_TYPE_ERROR = 4;
+    STATUS_NOT_SUPPORTED = 5;
+}
+
+message HisBlock {
+    required  fixed32           start_seq = 1;
+    required  fixed32           end_seq = 2;
+}
+
+message HisITSync {
+    required  HisDataType       type = 1;
+}
+
+message HisStartSync {
+    required  HisDataType       type = 1;
+    repeated  HisBlock          block = 2;
+}
+
+message HisStopSync {
+    required  HisDataType       type = 1;
+}
+
+message HisSubscriber {
+    required  HisOperation      operation = 1;
+    
+    oneof data {
+        HisITSync               it_sync = 2;
+        HisStartSync            start_sync = 3;
+        HisStopSync             stop_sync = 4;
+    }
+}
+
+message HisIndex {
+    required  RtTime            time = 1;
+    required  fixed32           start_seq = 2;
+    required  fixed32           end_seq = 3;
+}
+
+message HisIndexTable {
+    repeated  HisIndex          index = 1;
+}
+
+message HisData {
+    required  fixed32           seq = 1;
+    oneof data {
+        HisDataStatus           status = 2;
+        HisDataHealth           health = 3;
+        HisDataGNSS             gnss = 4;
+        HisDataECG              ecg = 5;
+        HisDataPPG              ppg = 6;
+        HisDataRRI              rri = 7;
+        HisDataMedic            medic = 8;
+        HisDataSpo2             spo2 = 9;
+        HisDataSwim             swim = 10;
+        HisDataTemperature      temp = 11;
+        HisDataHealthEncrypt    healthencrypt = 12;
+        HisDataECGEncrypt       ecgencrypt = 13;
+        HisDataPPGEncrypt       ppgencrypt = 14;
+        HisDataRRIEncrypt       rriencrypt = 15;
+        HisDataThirdParty       ThirdParty_data = 16;
+        HisDataThirdPartyV2     ThirdParty_data_V2 = 17;
+        HisACCelerometer        ACCelerometer_data = 18;
+        HisGyroscope            Gyroscope_data = 19;
+        HisDataYYLPFE           YYLPFE = 20;
+        HisDataMultiLeadsECG    MultiLeadsECG = 21;
+        HisData_BP_Original    BP_Original_data = 22;
+    }
+}
+
+message HisConfirm {
+    required  HisOperation      operation = 1;
+    required  bool              ret = 2;
+}
+
+message HisNotification {
+    required  HisDataType       type = 1;
+    
+    oneof data {
+        HisConfirm              confirm = 2;
+        HisIndexTable           index_table = 3;
+        HisData                 his_data = 4;
+    }
+}
+

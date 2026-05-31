@@ -1,0 +1,191 @@
+syntax = "proto2";
+option go_package = "./iwown";
+
+enum RtMode {
+    RT_MODE_BACK_NORMAL = 0;
+    RT_MODE_ENTER_CAMERA = 1;
+    RT_START_FIND_WATCH = 2;
+    RT_START_DFU_MODE = 3;
+    RT_MODE_HR_MEASURE = 4;
+    RT_MODE_FATIGUE_MEASURE = 5;
+    RT_MODE_PRESSURE_MEASURE = 6;
+    RT_VIEW_MEASURE_STATE = 7;
+    RT_MODE_BREATH_MEASURE = 8;
+}
+
+enum RtKeyEvent {
+    RT_KEY_CAMERA = 0;
+    RT_KEY_AUDIO_PLAY = 1;
+    RT_KEY_AUDIO_PRE = 2;
+    RT_KEY_AUDIO_NEXT = 3;
+    RT_KEY_AUDIO_VOLUME_UP = 4;
+    RT_KEY_AUDIO_VOLUME_DOWN = 5;
+    RT_START_FIND_PHONE= 6;
+    RT_STOP_FIND_DEVICE = 7;
+    RT_LN_HEALTH_MEASURE = 8;
+    RT_NONE_MEASURE = 9;
+}
+
+enum RtSync {
+    STOP_ALL = 0;
+    ONLY_ONCE = 1;
+    ON_VALUE_CHANGE = 2;
+    ON_SECOND_CHANGE = 3;
+    ON_MINUTE_CHANGE = 4;
+    ON_HOUR_CHANGE = 5;
+    ON_DAY_CHANGE = 6;
+    ON_TEN_MINUTE_CHANGE = 7;
+}
+
+message RtTime {
+    required  fixed32                   seconds = 1;
+}
+
+message DateTime {
+    required  RtTime                    date_time = 1;
+    required  sfixed32                  time_zone = 2;
+}
+
+message RtBattery {
+    required  fixed32                   level = 1;//0~9
+    required  bool                      charging = 2;
+}
+
+message RtHealth {
+    required  fixed32                   steps = 1;
+    required  fixed32                   distance = 2;
+    required  fixed32                   calorie = 3;
+}
+
+message BPresult  {
+    required  fixed32                   sbp= 1;
+    required  fixed32                   dbp= 2;
+}
+
+message RtHealthResult  {
+    optional  fixed32                   fatigue = 1;
+    optional  fixed32                   stress = 2;
+    optional  fixed32                   spo2 = 3;
+    optional  fixed32                   hr = 4;
+    optional  BPresult                   bp = 5;
+    optional  fixed32                   breathrate = 6;
+    optional  fixed32                   temperatur = 7;
+}
+
+message RtGNSS {
+    required  float                     longitude = 1;
+    required  float                     latitude = 2;
+    required  float                     speed = 3; // m/s
+    required  float                     altitude = 4; // m
+}
+
+enum SensorType {
+    NONE = 0;
+    ECG = 0x00000001;
+    PPG = 0x00000002;
+    MAG = 0x00000004;
+    GYRO = 0x00000008;
+    ACC = 0x00000010;
+    BP = 0x00000020;
+    BPRESULT = 0x00000040;
+    TEMPERATURE = 0x00000080;
+    TWO_ECG = 0x00000100;
+    BIOZ = 0x00000200;
+    ECG_DETECT = 0x00000400;
+    FACTORY_ECG = 0x00000800;
+    FACTORY_BIOZ = 0x00001000;
+    HR_LEAK = 0x00002000;
+    BP_LEAK = 0x00004000;
+    SPO2 = 0x00008000;
+    OAQ = 0x00010000;
+    IAQ = 0x00020000;
+    HUMITURE = 0x00040000;
+    ULTRASONIC = 0x00080000;
+    AIR_PRESSURE = 0x00100000;
+}
+
+enum SensorOperation {
+    SENSOR_START_SYNC = 0; // start sync
+    SENSOR_PAUSE_SYNC = 1; // pause sync
+    SENSOR_STOP_SYNC = 2; // stop sync
+}
+
+
+message RtSensor {
+    required  SensorOperation  operation = 1;
+    required  fixed32  type = 2;
+}
+
+enum SportOperation {
+    SPORT_START = 0; // start sync
+    SPORT_PAUSE = 1; // pause sync
+    SPORT_STOP = 2; // stop sync
+}
+
+message Rtsport {
+    required  SportOperation operation = 1;
+    required  fixed32  sport_type = 2;
+}
+
+message RtSubscriber {
+    optional  RtSync                    time = 1;
+    optional  RtSync                    battery = 2;
+    optional  RtSync                    health = 3;
+    optional  RtMode                    mode = 4;
+    optional  RtSensor                  sensor= 5;
+    optional  Rtsport                   sport= 6;
+ }
+
+
+message RtData {
+    optional  RtTime                    time = 1;
+    optional  RtBattery                 battery = 2;
+    optional  RtHealth                  health = 3;
+    optional  RtKeyEvent                key = 4;
+    optional  sfixed32                  time_zone = 5;
+    optional  RtHealthResult            healthresult = 6;
+}
+
+message RtState {
+    optional  RtSync                    time = 1;
+    optional  RtSync                    battery = 2;
+    optional  RtSync                    health = 3;
+    optional  RtMode                    mode = 4;
+}
+
+message RtSensorData{
+    required fixed32                    type = 1;
+    required  RtTime                    time = 2;
+    required fixed32                    seq = 3;
+    repeated fixed32                    data= 4;
+}
+
+message RtDtda_Summary{
+    required  fixed32                    time = 1;
+    required fixed32                     steps = 2;
+    required fixed32                     distance = 3;
+    required fixed32                     calorie = 4;
+}
+
+message  RtSportData{
+    required fixed32                 sd_sportType = 1;
+    required fixed32                 hr_total = 2;
+    required fixed32                 hr_count = 3;
+    required fixed32                 realtime_pace = 4;
+    required fixed32                 realtime_spm = 5;
+    required fixed32                 realtime_hr = 6;
+    required fixed32                 swim_circle = 7;
+    required fixed32                 swim_stroke = 8;
+    required RtDtda_Summary          data_total = 9;
+    required RtDtda_Summary          data_sport = 10;
+}
+
+message RtNotification {
+    oneof data {
+        RtData                rt_data = 1;
+        RtState               rt_state = 2;
+        RtSensorData          rt_sensordata = 3;
+        RtSportData          rt_sport_data = 4;
+    }
+}
+

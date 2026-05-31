@@ -1,0 +1,18 @@
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+import "his_rri_data.proto";
+
+
+message HisRRIEncrypt {
+    required    HisDataRRI            rriencrypt = 1;
+    required    bytes                 Random = 2; //random number 
+    required    bytes                 BleMac = 3;
+}
+
+message HisDataRRIEncrypt {
+    required    HisRRIEncrypt         his_rri  = 1;
+    required    bytes                 signature_data = 2;
+}
+

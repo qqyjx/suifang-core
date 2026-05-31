@@ -1,0 +1,12 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+
+message HisACCelerometer  {
+    required  DateTime              time_stamp = 1;
+    required  fixed32          acc_data_count = 2;
+    required   bytes         acc_x = 3;   
+    required   bytes         acc_y = 4;   
+    required   bytes         acc_z = 5;   
+}
+

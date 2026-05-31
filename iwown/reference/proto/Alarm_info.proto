@@ -1,0 +1,93 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+import "om0_command.proto";
+
+
+message SOSGNSSINFOV3 {
+    required DateTime         time_stamp = 1;
+    required  float           longitude = 2;
+    required  float           latitude = 3;
+    required  GPSTYPE        gps_type  = 4; 
+}
+
+message HrAlarmV3 {
+   required  DateTime    time_stamp = 1;
+   required fixed32      hr = 2;
+}
+
+message Spo2AlarmV3 {
+   required DateTime    time_stamp = 1;
+   required fixed32     spo2 = 2;
+}
+message ThrombusAlarmV3{
+   required  DateTime      time_stamp = 1;
+   required  bool          Thrombus_alarm = 2;
+}
+message FallAlarmConfV3 {
+   required DateTime  time_stamp = 1;
+   required bool      fall_alarm = 2;
+}
+
+message TemperatureConf {
+   required DateTime     time_stamp = 1;
+   required fixed32      temperature = 2;
+}
+
+message BpConf {
+   required  DateTime    time_stamp = 1;
+   required fixed32      sbp= 2;
+   required fixed32      dbp= 3;
+}
+
+message SedentaryConf{
+   required  DateTime    time_stamp = 1;
+}
+
+message Blood_sugar_Conf {
+   required  DateTime    time_stamp = 1;
+   required float      Blood_sugar = 2;
+}
+message Blood_potassium_Conf  {
+   required  DateTime    time_stamp = 1;
+   required float      Blood_potassium = 2;
+}
+
+message ecg_Conf  {
+   required  DateTime    time_stamp = 1;
+   required float      ecg = 2;
+}
+message AlarminfoV3 {
+    required  DateTime       time_stamp = 1;
+     optional  bool          wearstate=2;              //Not wearing status information warning report
+     optional  bool          sleepstate=3;              //sleep status information warning report
+     optional  fixed32       lowpowerPercentage=4;    //Low battery warning information reporting
+     optional  fixed32       poweroffPercentage=5;    //Report shutdown information
+     optional  string        intercept_number=6;//Unknown number blocking
+} 
+
+message HealthAlarmV3
+{
+     repeated  HrAlarmV3         alarm_hr = 1;
+     repeated  Spo2AlarmV3       alarm_spo2 = 2; 
+     repeated  ThrombusAlarmV3   alarm_Thrombus = 3; 
+     repeated  FallAlarmConfV3   alarm_fall = 4; 
+     repeated  TemperatureConf   alarm_Temperature = 5; 
+     repeated  BpConf            alarm_Bp = 6; 
+     repeated  SOSGNSSINFOV3     gnssinfo = 7;               //SOS warning information reporting
+     repeated  SedentaryConf     alarm_Sedentary = 8; 
+     optional  DateTime             SOS_Notification_time = 9;    
+     repeated  Blood_sugar_Conf      alarm_Blood_sugar  = 10;        
+     repeated  Blood_potassium_Conf      alarm_Blood_potassium  = 11;      
+     repeated  ecg_Conf      alarm_ecg  = 12;      
+}
+
+message Alarm_infokConfirm {
+    optional  AlarminfoV3      Alarminfo = 1;
+    optional  HealthAlarmV3    alarm = 2;
+}
+
+message Alarm_infokNotification {
+    optional bool     Alarm_infok_report  = 1;
+}
+

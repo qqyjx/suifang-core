@@ -1,0 +1,118 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+
+enum MEASURE_MODE {
+    MANUAL = 0;
+    AUTO = 1;
+}
+
+message ThirdPartyHealthBp {
+     required  fixed32     sbp=1;
+     required  fixed32     dbp=2;
+     required  fixed32     hr=3;
+     required  fixed32     pulse=4;
+     required  DateTime    time = 5;
+     required  MEASURE_MODE  MODE = 6; 
+}
+
+
+message ThirdPartyHealthScale {
+     required  fixed32     weight=1;
+     required  fixed32     impedance=2;
+     required  fixed32     uints=3;
+     required  fixed32     body_fat_percentage=4;
+     required  DateTime    time = 5;
+}
+
+
+message ThirdPartyHealthSpo2 {
+     required  fixed32     bpm=1;
+     required  fixed32     spo2=2;
+     required  fixed32     pi=3;
+     required  DateTime    time = 4;
+}
+
+message ThirdPartyHealthTemp {
+     required  fixed32     body_temp=1;
+     required  DateTime    time = 2;
+}
+
+message ThirdPartyHealthGlu {
+     required  fixed32     glu = 1;
+     required  DateTime    time = 2;
+}
+
+message ThirdPartyHealthBloodKetones {
+     required  fixed32     BloodKetones = 1;
+     required  DateTime    time = 2;
+}
+
+message ThirdPartyHealthUricAcid {
+     required  fixed32      UricAcid = 1;
+     required  DateTime    time = 2;
+}
+
+message ThirdPartyHealthFluorescence {
+     required  fixed32      if_value = 1;
+     required  DateTime    time = 2;
+}
+
+message ThirdPartyHealthsaccharify {
+     required  fixed32     ngsp_value = 1;
+     required  fixed32     ifcc_value = 2;
+     required  DateTime    time = 3;
+}
+
+message ThirdPartyHealthblood_lipids {
+     required  fixed32     TC = 1;
+     required  fixed32     TG = 2;
+     required  fixed32     HDL_C = 3;
+     required  fixed32     LDL_C = 4;
+     required  fixed32     C_H = 5;
+     required  DateTime    time = 6;
+}
+
+message ThirdPartyHealthUrine {
+     required  fixed32     leu = 1;
+     required  fixed32     nit = 2;
+     required  fixed32     ubg = 3;
+     required  fixed32     pro = 4;
+     required  fixed32     ph = 5;
+     required  fixed32     bld = 6;
+     required  fixed32     sg = 7;
+     required  fixed32     ket = 8;
+     required  fixed32     vc = 9;
+     required  fixed32     glu = 10;
+     required  fixed32     bil = 11;
+     required  fixed32     ma = 12;
+     required  fixed32     cr = 13;
+     required  fixed32     ca = 14;
+     required  DateTime    time = 15;
+}
+
+
+message ThirdPartyDataHealth {
+     required  string      dev_name=1;
+     required  string      mac_addr=2;
+     required  fixed32     dev_type=3;
+     required  fixed32     user=4;
+     optional  ThirdPartyHealthBp      bp_data=5;
+     optional  ThirdPartyHealthScale   scale_data=6;
+     optional  ThirdPartyHealthSpo2    Spo2_data=7;
+     optional  ThirdPartyHealthTemp    Temp_data=8;
+     optional  ThirdPartyHealthGlu    Glu_data=9;
+     optional  ThirdPartyHealthBloodKetones    BloodKetones_data=10;
+     optional  ThirdPartyHealthUricAcid    UricAcid_data=11;
+     optional  ThirdPartyHealthFluorescence    Fluorescence_data=12;
+     optional  ThirdPartyHealthsaccharify   saccharify_data=13;
+     optional  ThirdPartyHealthblood_lipids   blood_lipids_data=14;
+     optional  ThirdPartyHealthUrine   Urine_data=15;
+}
+
+
+message HisDataThirdParty {
+     optional  ThirdPartyDataHealth     DataHealth=1;
+}
+
+

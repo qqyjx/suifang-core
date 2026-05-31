@@ -1,0 +1,24 @@
+[Unit]
+Description=iwown 4G Watch Data Receiver (随访 iwown 接收服务)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/iwown
+# 用与 S101 health_server 同一个 miniconda python3 (已装 pymysql; 部署脚本再装 protobuf)
+# 若该路径不存在, 改成服务器上实际带 pymysql+protobuf 的 python3 绝对路径
+ExecStart=/bin/sh -c 'exec /root/miniconda3/bin/python3 /opt/iwown/iwown_server.py >> /opt/iwown/iwown.log 2>&1'
+Restart=on-failure
+RestartSec=3
+# 非密配置内联; 密码走 EnvironmentFile (不入 git), 部署脚本写 /opt/iwown/iwown.env
+Environment="IWOWN_PORT=8099"
+Environment="IWOWN_FALLBACK_DIR=/opt/iwown/fallback"
+Environment="SUIFANG_DB_HOST=192.168.4.174"
+Environment="SUIFANG_DB_PORT=3306"
+Environment="SUIFANG_DB_USER=developer"
+Environment="SUIFANG_DB_NAME=h6dp_suifang"
+EnvironmentFile=-/opt/iwown/iwown.env
+
+[Install]
+WantedBy=multi-user.target

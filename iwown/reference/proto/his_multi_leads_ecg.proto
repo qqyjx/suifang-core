@@ -1,0 +1,11 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+
+message HisDataMultiLeadsECG {
+    required  DateTime             time_stamp = 1;
+    required  fixed32           Number_of_channels = 2;
+    required  fixed32           Single_data_byte_len = 3;
+    required   bytes        raw_data = 4; 
+}
+

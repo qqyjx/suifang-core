@@ -1,0 +1,172 @@
+
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+
+message HisHealthPedo {
+    required  fixed32           type = 1;
+    required  fixed32           state = 2;
+    required  fixed32           calorie = 3;
+    required  fixed32           step = 4;
+    required  fixed32           distance = 5;
+}
+
+message HisHealthHr {
+    required  fixed32           min_bpm = 1;
+    required  fixed32           max_bpm = 2;
+    required  fixed32           avg_bpm = 3;
+}
+
+message HisHealthbloodPotassium{
+    required  fixed32           bloodPotassium = 1;
+}
+message HisHealthUric_acid{
+    required  fixed32           Uric_acid = 1;
+}
+
+message HisHealthBlood_fat{
+    required  fixed32           totalCholesterol= 1;
+    required  fixed32           triglyceride= 2;
+    required  fixed32           highCholesterol= 3;
+    required  fixed32           lowCholesterol= 4;
+    required  fixed32           densityOfCholesterol= 5;
+}
+
+message HisHealthBlood_sugar{
+    required  fixed32           Blood_sugar = 1;
+}
+message HisHealthOutAct {
+    required  fixed32           out_act = 1;
+}
+
+message HisHealthHrv {
+    required  float             SDNN = 1;
+    required  float             RMSSD = 2;
+    required  float             PNN50 = 3;
+    required  float             MEAN = 4;
+    required  float             fatigue = 5;
+}
+
+enum HisMdtState {
+    PREPARE = 0;
+    ONGOING = 1;
+    RELAX = 2;
+}
+
+message HisHealthMdt {
+    required  float             SDNN = 1;
+    required  float             RMSSD = 2;
+    required  float             PNN50 = 3;
+    required  float             MEAN = 4;
+    required  HisMdtState       status = 5;
+    required  float             RESULT= 6;
+    required  float             RELAX= 7;
+}
+
+message HisHealthBp {
+    required fixed32            sbp = 1;
+    required fixed32            dbp = 2;
+    optional fixed32            time = 3;
+}
+message HisHealthbp_bpm {
+    required  fixed32           bpm = 1;
+}
+message HisHealthAf {
+    required sfixed32           af = 1;
+    optional bool               manual = 2; // true for manual measurement
+}
+
+message HisHealthSleep {
+    repeated  fixed32           sleep_data = 1 [packed = true];
+    required  bool              shut_down = 2;
+    required  bool              charge  = 3;
+}
+
+message HisHealthMood {
+    required  fixed32             mood_level = 1;
+}
+
+message HisHealthBreath {
+    required  fixed32             breathrate = 1;
+}
+
+message HisHealthBioz   {
+    required  fixed32             R = 1;
+    required  fixed32             X = 2;
+    required  fixed32             fat = 3;
+    required  fixed32             bmi = 4;
+    required  fixed32             type = 5;
+}
+
+message HisHealthBOxy   {
+    required  fixed32             min_oxy = 1;
+    required  fixed32             max_oxy = 2;
+    required  fixed32             agv_oxy = 3;
+}
+
+enum TPAMeasureType{
+    TPA_MEASURE_TYPE_NULL = 0;
+    TPA_MEASURE_TYPE_AUTO = 1;
+    TPA_MEASURE_TYPE_ARMPIT = 2;
+} 
+
+message HisHealthTemp   {
+    required  TPAMeasureType      type = 1;
+    required  fixed32             evi_body = 2;
+    required  fixed32             esti_arm = 3;
+}
+
+message HisHealthOAQ{
+    required  float             O3_conc_ppb= 1;
+    required  fixed32           FAST_AQI = 2;
+    required  fixed32           EPA_AQI = 3;
+}
+
+message HisHealthIAQ{
+    required  float             iaq= 1;
+    required  float             tvoc= 2;
+    required  float             etoh= 3;
+    required  float             eco2= 4;
+}
+
+message HisHealthHuMiTure{
+    required  float             Humidity= 1;
+    required  float             temperature= 2;
+}
+
+message HisHealthFall_risk{
+    required  fixed32           data0= 1;
+    required  fixed32           data1= 2;
+    required  fixed32           data2= 3;
+    required  fixed32           data3= 4;
+    required  fixed32           data4= 5;
+    required  fixed32           data5= 6;
+}
+
+
+message HisDataHealth {
+    required  DateTime          time_stamp = 1;
+    optional  HisHealthSleep    sleep_data = 2;
+    optional  HisHealthPedo     pedo_data = 3;
+    optional  HisHealthHr       hr_data = 4;
+    optional  HisHealthHrv      hrv_data = 5;
+    optional  HisHealthBp       bp_data = 6;
+    optional  HisHealthAf       af_data  = 7;
+    optional  HisHealthMdt      mdt_data = 8;
+    optional  HisHealthMood     mood_data = 9;
+    optional  HisHealthBreath   breath_data = 10;
+    optional  HisHealthBioz     bioz_data = 11;
+    optional  HisHealthBOxy     bxoy_data = 12;
+    optional  HisHealthTemp     temperature_data = 13;
+    optional  HisHealthOutAct   out_act_data = 14;
+    optional  HisHealthOAQ      oaq_data = 15;
+    optional  HisHealthIAQ      iaq_data = 16;
+    optional  HisHealthHuMiTure         humiture_data = 17;
+    optional  HisHealthBlood_sugar      Blood_sugar_data = 18;
+    optional  HisHealthbp_bpm           bp_bpm_data = 19;
+    optional  HisHealthbloodPotassium   bloodPotassium_data = 20;
+    optional  HisHealthUric_acid         Uric_acid_data = 21;
+    optional  HisHealthBlood_fat         Blood_fat_data = 22;
+    optional  HisHealthFall_risk         Fall_risk_data = 23;  // Fall risk assessment
+}

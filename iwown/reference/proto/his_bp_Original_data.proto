@@ -1,0 +1,9 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+
+message HisData_BP_Original {
+    required  DateTime             time_stamp = 1;
+    required  bytes                raw_data = 2; 
+}
+

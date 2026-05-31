@@ -1,0 +1,18 @@
+
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+import "his_health_data.proto";
+
+message HisHealthEncrypt {
+    required    HisDataHealth           health = 1;
+    required    bytes                   Random = 2;  //random number 
+    required    bytes                   BleMac  = 3;
+}
+
+
+message HisDataHealthEncrypt {
+    required    HisHealthEncrypt      his_Health  = 1;
+    required    bytes                 signature_data= 2;
+}
+

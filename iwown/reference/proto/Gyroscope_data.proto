@@ -1,0 +1,13 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+
+message HisGyroscope {
+    required  DateTime              time_stamp = 1;
+    required  fixed32          Gyroscope_data_count = 2;
+    required   bytes        Gyroscope_x = 3;   
+    required   bytes        Gyroscope_y = 4;   
+    required   bytes        Gyroscope_z = 5;   
+}
+
+

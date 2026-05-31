@@ -1,0 +1,10 @@
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+
+message HisDataPPG {
+    required  DateTime              time_stamp = 1;
+    repeated  sfixed32              raw_data = 2 [packed = true];
+}
+

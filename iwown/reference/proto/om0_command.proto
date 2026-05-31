@@ -1,0 +1,82 @@
+
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+
+enum Mc30Powermode {
+    HIGH = 0;
+    MID  = 1;
+    LOW = 2;
+    ULTRA_LOW = 3;
+}
+
+enum GPSTYPE {
+    NULL = 0;    
+    TYPE_BTS = 1;
+    TYPE_WIFI  = 2;
+    TYPE_GPS = 3;
+    TYPE_BLE = 4;
+}
+
+message OM0TrackConf {
+    required  fixed32       hash = 1;
+    required  bool          auto_run = 2;
+    required  fixed32       interval = 3 [default = 30];
+    optional  string         model = 4;
+    optional  string         version = 5;
+    optional  bool           force_upgrade = 6;
+    optional  Mc30Powermode     mc30_power_mode  = 7; 
+    optional  bool          gps_auto_check = 8;
+    optional  fixed32       gps_interval_time = 9;
+    optional  bool       GPS_locates_every_time = 10;
+}
+
+message OM0SleepData {
+	required  RtTime        sleep_date = 1; 	// date of sleep data		
+	required  RtTime        start_time = 2; 	// sleep start time		
+	required  RtTime        end_time = 3; 		// sleep end time	
+	required  fixed32       deep_sleep = 4; 	// minutes
+	required  fixed32       light_sleep = 5; 	// minutes
+	required  fixed32       weak_sleep = 6; 	// minutes	
+	required  fixed32       eyemove_sleep = 7; 	// minutes	
+	required  fixed32       score = 8; 			// minutes	
+	required  fixed32       osahs_risk = 9; 	// minutes	
+	required  fixed32       spo2_score = 10; 	// minutes	
+	required  fixed32       avg_respiration_rate = 11; 	// minutes	
+	required  fixed32       max_respiration_rate = 12; 	// minutes	
+	required  fixed32       min_respiration_rate = 13; 	// minutes	
+	required  fixed32       sleep_hr = 14; 				// minutes	
+	required  fixed32       completed = 15; 			// minutes	
+}
+
+message OM0Command {
+    optional  OM0TrackConf  track_conf = 1;
+    optional  OM0SleepData  sleep_data = 2;
+}
+
+message OM0TrackData {
+    required  DateTime      time = 1;
+    optional  RtGNSS        gnss = 2;
+    optional  fixed32       hr = 3;
+    optional  GPSTYPE     gps_type  = 4; 
+}
+
+message OM0Response {
+   required  bool         ret = 1;
+}
+
+message OM0Report {
+    optional  bool          sos_signal = 1;
+    optional  bool          wake_up = 2;
+    repeated  OM0TrackData  track_data = 3;
+    optional  RtBattery     battery = 4;
+    optional  RtHealth      health = 5;
+    optional  DateTime      date_time = 6;
+    optional  fixed32       rssi = 7;
+    optional  OM0SleepData  sleep_data = 8;
+    optional  fixed32       sport_type = 9;
+   optional  OM0Command     Report_OM0  = 10;
+}
+
+

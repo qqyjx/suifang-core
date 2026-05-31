@@ -1,0 +1,12 @@
+
+syntax = "proto2";
+option go_package = "./iwown";
+
+import "realtime_data.proto";
+
+message HisDataGNSS {
+    required  DateTime              time_stamp = 1;
+    required  fixed32               frequency = 2;
+    repeated  RtGNSS                gnss = 3;
+}
+

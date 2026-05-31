@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>智能随访 · iwown 4G 手表看板</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { -webkit-text-size-adjust: 100%; }
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+  "Microsoft YaHei", sans-serif; color: #1f2937; background: #f5f7fa;
+  padding: 20px 16px 64px; min-height: 100vh; font-size: 15px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased; }
+.container { max-width: 1200px; margin: 0 auto; }
+
+/* Tabs */
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; background: #fff;
+  border-radius: 12px; padding: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); max-width: max-content; }
+.tab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px;
+  border-radius: 8px; font-size: 14px; font-weight: 500; color: #6b7280;
+  cursor: pointer; text-decoration: none; transition: all .15s; user-select: none; }
+.tab:hover { background: #f3f4f6; color: #1f2937; }
+.tab.active { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%);
+  color: #fff; box-shadow: 0 2px 8px rgba(8,145,178,0.32); }
+
+/* Header */
+.header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%); color: #fff;
+  border-radius: 16px; padding: 24px 28px; margin-bottom: 16px;
+  box-shadow: 0 4px 16px rgba(8,145,178,0.25);
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.header h1 { font-size: 22px; font-weight: 600; letter-spacing: 2px; margin-bottom: 4px; }
+.header .sub { font-size: 13px; opacity: 0.9; }
+.header .actions { display: flex; gap: 10px; align-items: center; }
+.refresh-btn { background: rgba(255,255,255,0.2); color: #fff; padding: 8px 16px;
+  border-radius: 20px; font-size: 13px; cursor: pointer; border: 1px solid rgba(255,255,255,0.3); transition: background 0.2s; }
+.refresh-btn:hover { background: rgba(255,255,255,0.32); }
+.refresh-btn .spinner { display: inline-block; transition: transform 0.5s; }
+.refresh-btn.spinning .spinner { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.auto-tag { font-size: 12px; opacity: 0.85; background: rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 12px; }
+
+/* Status bar */
+.status-bar { background: #fff; border-radius: 12px; padding: 14px 20px; margin-bottom: 16px;
+  display: flex; flex-wrap: wrap; gap: 18px; align-items: center; font-size: 13px; color: #6b7280;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.status-bar .item { display: flex; align-items: center; gap: 6px; }
+.status-bar .label { color: #9ca3af; }
+.status-bar .value { color: #1f2937; font-weight: 500; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: #2faa55; } .dot-err { background: #d04848; } .dot-warn { background: #f59e0b; }
+.render-meta { margin-left: auto; color: #9ca3af; font-size: 12px; }
+
+/* Stats */
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat-card { background: #fff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); border-left: 3px solid #0891b2; }
+.stat-card .num { font-size: 26px; font-weight: 700; color: #1f2937; line-height: 1.2; }
+.stat-card .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+.stat-card.green { border-left-color: #2faa55; } .stat-card.orange { border-left-color: #f59e0b; }
+.stat-card.red { border-left-color: #d04848; } .stat-card.purple { border-left-color: #8b5cf6; }
+
+.section-title { font-size: 15px; font-weight: 600; color: #1f2937; margin: 20px 0 12px;
+  padding-left: 12px; border-left: 4px solid #0891b2; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.section-title .meta { font-size: 12px; color: #9ca3af; font-weight: 400; }
+
+/* Toolbar */
+.toolbar { display: grid; grid-template-columns: 1.5fr 1fr 1fr auto; gap: 10px; margin-bottom: 16px; }
+@media (max-width: 720px) { .toolbar { grid-template-columns: 1fr 1fr; } .toolbar .search-wrap { grid-column: span 2; } }
+.search-wrap { position: relative; }
+.search-wrap .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #9ca3af; pointer-events: none; font-size: 14px; }
+.search-wrap input { width: 100%; height: 38px; padding: 0 12px 0 34px; border: 1px solid #e5e7eb;
+  border-radius: 8px; font-size: 14px; background: #fff; font-family: inherit; outline: none; transition: border-color .15s, box-shadow .15s; }
+.search-wrap input:focus { border-color: #0891b2; box-shadow: 0 0 0 3px rgba(8,145,178,0.12); }
+.toolbar select, .toolbar button { height: 38px; padding: 0 12px; border: 1px solid #e5e7eb;
+  border-radius: 8px; background: #fff; font-size: 14px; cursor: pointer; font-family: inherit; color: #374151; }
+.toolbar select:focus { border-color: #0891b2; outline: none; }
+.toolbar button:hover { background: #f9fafb; }
+
+/* Data table */
+.table-wrap { background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.data th { background: #f9fafb; color: #6b7280; text-align: left; padding: 10px 12px;
+  border-bottom: 2px solid #e5e7eb; font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
+table.data td { padding: 9px 12px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
+table.data tr:last-child td { border-bottom: none; }
+table.data tr:hover td { background: #f8fbfc; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.pill-health { background: #ecfeff; color: #0e7490; }
+.pill-realtime { background: #f0fdf4; color: #15803d; }
+.pill-alarm { background: #fef2f2; color: #b91c1c; }
+.pill-other { background: #f3f4f6; color: #6b7280; }
+.muted { color: #9ca3af; }
+
+/* Empty / banner */
+.empty { background: #fff; border-radius: 12px; padding: 56px 20px; text-align: center; color: #9ca3af; font-size: 14px; }
+.empty .icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
+.banner { border-radius: 10px; padding: 13px 18px; margin-bottom: 16px; font-size: 13px; }
+.banner-warn { background: #fffbeb; border-left: 4px solid #f59e0b; color: #92400e; }
+.banner code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px; }
+
+.footer-note { margin-top: 24px; font-size: 12px; color: #9ca3af; text-align: center; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- 设备切换 tabs (三模块) -->
+  <div class="tabs">
+    <a class="tab" href="data-dashboard.html">⌚ S101</a>
+    <a class="tab" href="pulse-dashboard.html">🩺 诊脉仪</a>
+    <a class="tab active" href="#">📶 iwown 4G</a>
+  </div>
+
+  <div class="header">
+    <div>
+      <h1>智能随访 · iwown 4G 手表看板</h1>
+      <div class="sub">4G 直连 · 设备上报二进制 protobuf · 自动入库六元 MySQL</div>
+    </div>
+    <div class="actions">
+      <span class="auto-tag" id="autoTag">自动刷新 30s</span>
+      <div class="refresh-btn" id="refreshBtn"><span class="spinner">⟳</span> 立即刷新</div>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <div class="item"><span class="dot" id="dot"></span><span class="label">服务</span><span class="value" id="svcState">检测中…</span></div>
+    <div class="item"><span class="label">MySQL</span><span class="value" id="dbState">--</span></div>
+    <div class="item"><span class="label">protobuf</span><span class="value" id="pbState">--</span></div>
+    <div class="item"><span class="label">最后刷新</span><span class="value" id="lastRefresh">--</span></div>
+    <div class="render-meta" id="renderMeta">就绪</div>
+  </div>
+
+  <!-- 服务未部署/不可达时的提示 -->
+  <div id="offlineBanner" class="banner banner-warn" style="display:none;">
+    ⚠ 暂时连不到 iwown 接收服务。可能：服务还没部署到 192.168.4.104:8099，或六元 nginx 还没加
+    <code>/iwown/</code> 反代，或还没域名烧录真机上报。部署步骤见 <code>iwown/server/README.md</code>。
+  </div>
+
+  <div class="section-title">体征概况</div>
+  <div class="stats-grid" id="statsGrid">
+    <div class="stat-card"><div class="num">--</div><div class="label">数据条数</div></div>
+  </div>
+
+  <div class="section-title">上行数据 <span class="meta" id="dataMeta">--</span></div>
+
+  <div class="toolbar">
+    <div class="search-wrap">
+      <span class="icon">🔍</span>
+      <input type="text" id="searchInput" placeholder="搜索设备 ID（按 / 聚焦）" autocomplete="off">
+    </div>
+    <select id="filterType" title="数据类型">
+      <option value="all">全部类型</option>
+      <option value="health">健康(0x80)</option>
+      <option value="realtime">实时(0x0A)</option>
+      <option value="alarm">报警(0x12)</option>
+    </select>
+    <select id="limitSel" title="拉取条数">
+      <option value="100">最近 100 条</option>
+      <option value="200">最近 200 条</option>
+      <option value="500">最近 500 条</option>
+    </select>
+    <button type="button" onclick="resetFilters()">重置</button>
+  </div>
+
+  <div id="content"></div>
+
+  <div class="footer-note">
+    数据来源 <code>https://dc.ncrc.org.cn/iwown/api/iwown/list</code> · 服务端解二进制 protobuf 入库 ·
+    设备 device_id ↔ 患者绑定见 <code>iwown_device</code> 表
+  </div>
+
+</div>
+
+<script>
+const API_BASE = 'https://dc.ncrc.org.cn/iwown';
+const REFRESH_MS = 30000;
+const state = { search: '', filterType: 'all', limit: 100 };
+let cachedRows = [];
+let timer = null;
+
+function fmt(v) { return (v === null || v === undefined || v === '') ? '<span class="muted">--</span>' : v; }
+function escapeHtml(s) { return String(s == null ? '' : s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function typePill(t) {
+  const map = { health:'pill-health', realtime:'pill-realtime', alarm:'pill-alarm' };
+  const label = { health:'健康', realtime:'实时', alarm:'报警', calllog:'通话', deviceinfo:'设备', status:'状态' };
+  return `<span class="pill ${map[t]||'pill-other'}">${label[t]||escapeHtml(t)}</span>`;
+}
+
+async function fetchAll() {
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('spinning');
+  const t0 = performance.now();
+  let online = false;
+  try {
+    const [statusRes, listRes] = await Promise.allSettled([
+      fetch(API_BASE + '/api/status', { cache: 'no-store' }),
+      fetch(API_BASE + '/api/iwown/list?limit=' + state.limit, { cache: 'no-store' }),
+    ]);
+    if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+      const st = await statusRes.value.json();
+      online = true;
+      document.getElementById('svcState').textContent = st.status || 'running';
+      document.getElementById('dbState').textContent = st.mysql || '--';
+      document.getElementById('pbState').textContent = (st.protobuf ? '可用' : '降级') ;
+      document.getElementById('dot').className = 'dot ' + (st.mysql === 'connected' ? 'dot-ok' : 'dot-warn');
+    }
+    if (listRes.status === 'fulfilled' && listRes.value.ok) {
+      const data = await listRes.value.json();
+      online = true;
+      cachedRows = data.rows || [];
+    }
+  } catch (e) { /* offline */ }
+
+  document.getElementById('offlineBanner').style.display = online ? 'none' : '';
+  if (!online) {
+    document.getElementById('svcState').textContent = '未连接';
+    document.getElementById('dot').className = 'dot dot-err';
+  }
+  document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString('zh-CN');
+  render();
+  document.getElementById('renderMeta').textContent =
+    `${cachedRows.length} 条 · ${(performance.now() - t0).toFixed(0)} ms`;
+  setTimeout(() => btn.classList.remove('spinning'), 400);
+}
+
+function applyFilter() {
+  const q = state.search.trim().toLowerCase();
+  return cachedRows.filter(r => {
+    if (state.filterType !== 'all' && r.data_type !== state.filterType) return false;
+    if (q && !String(r.device_id || '').toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function renderStats() {
+  const rows = cachedRows;
+  const devices = new Set(rows.map(r => r.device_id)).size;
+  const health = rows.filter(r => r.data_type === 'health').length;
+  const alarm = rows.filter(r => r.data_type === 'alarm').length;
+  const cards = [
+    { label: '数据条数', num: rows.length, cls: '' },
+    { label: '设备数', num: devices, cls: 'purple' },
+    { label: '健康记录', num: health, cls: 'green' },
+    { label: '报警记录', num: alarm, cls: 'red' },
+  ];
+  document.getElementById('statsGrid').innerHTML = cards.map(c =>
+    `<div class="stat-card ${c.cls}"><div class="num">${c.num}</div><div class="label">${c.label}</div></div>`).join('');
+}
+
+function render() {
+  renderStats();
+  const list = applyFilter();
+  document.getElementById('dataMeta').textContent = `共 ${cachedRows.length} 条 · 筛选后 ${list.length} 条`;
+  const c = document.getElementById('content');
+  if (!list.length) {
+    c.innerHTML = '<div class="empty"><div class="icon">📭</div>暂无数据'
+      + '<br><span style="font-size:12px;">服务部署 + 反代 + 域名烧录真机上报后，这里会出现 iwown 手表数据</span></div>';
+    return;
+  }
+  const head = ['设备 ID','类型','测量时间','心率','血氧','血压','体温','压力','步数','电量','入库时间'];
+  let html = '<div class="table-wrap"><table class="data"><thead><tr>'
+    + head.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+  list.forEach(r => {
+    const bp = (r.sbp || r.dbp) ? `${fmt(r.sbp)}/${fmt(r.dbp)}` : '<span class="muted">--</span>';
+    html += '<tr>'
+      + `<td>${escapeHtml(r.device_id||'')}</td>`
+      + `<td>${typePill(r.data_type)}</td>`
+      + `<td class="muted">${fmt(r.recorded_at)}</td>`
+      + `<td>${fmt(r.hr_avg)}</td>`
+      + `<td>${fmt(r.spo2_avg)}</td>`
+      + `<td>${bp}</td>`
+      + `<td>${fmt(r.temperature)}</td>`
+      + `<td>${fmt(r.pressure)}</td>`
+      + `<td>${fmt(r.step)}</td>`
+      + `<td>${fmt(r.battery)}</td>`
+      + `<td class="muted">${fmt(r.uploaded_at)}</td>`
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  c.innerHTML = html;
+}
+
+function resetFilters() {
+  state.search = ''; state.filterType = 'all';
+  document.getElementById('searchInput').value = '';
+  document.getElementById('filterType').value = 'all';
+  render();
+}
+
+document.getElementById('searchInput').addEventListener('input', e => { state.search = e.target.value; render(); });
+document.getElementById('filterType').addEventListener('change', e => { state.filterType = e.target.value; render(); });
+document.getElementById('limitSel').addEventListener('change', e => { state.limit = parseInt(e.target.value,10); fetchAll(); });
+document.getElementById('refreshBtn').addEventListener('click', fetchAll);
+document.addEventListener('keydown', e => {
+  if (e.key === '/' && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); document.getElementById('searchInput').focus(); }
+});
+
+fetchAll();
+timer = setInterval(fetchAll, REFRESH_MS);
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+syntax = "proto2";
+option go_package = "./iwown";
+
+enum yyl_report_type{
+	YYL_REPORT_AUTO= 0;
+	YYL_REPORT_MANUAL= 1;
+}
+
+message yyl_wuqi_report{
+    required  bytes        wq= 1;
+    required  bytes        score = 2;
+}
+
+message yyl_body_report{
+    required  bytes        tz_name= 1;
+    required  bytes        tz_score= 2;
+    required  bytes        pre_tz_name= 3;
+    required  bytes        pre_tz_score= 4;
+}
+
+message yyl_notify{
+    optional   bool              has_report = 1;
+    optional  yyl_report_type    report_type= 2;
+}
+
+message yyl_Command{
+    optional   bool              modeling= 1;
+    optional  yyl_wuqi_report    wuqi_report = 4;
+    optional  yyl_body_report    body_report = 5;
+}
+

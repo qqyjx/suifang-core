@@ -1,0 +1,14 @@
+syntax = "proto2";
+option go_package = "./iwown";
+import "realtime_data.proto";
+
+message SensorTemp {
+    required     fixed32                 evi_body = 1;
+    required     fixed32                 esti_arm = 2;
+}
+
+message HisDataTemperature {
+    required    DateTime              time_stamp = 1;
+    required    SensorTemp            temperature= 2;
+}
+
