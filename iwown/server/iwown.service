@@ -18,6 +18,9 @@ Environment="SUIFANG_DB_HOST=192.168.4.174"
 Environment="SUIFANG_DB_PORT=3306"
 Environment="SUIFANG_DB_USER=developer"
 Environment="SUIFANG_DB_NAME=h6dp_suifang"
+# protobuf 5.29+ 默认 C++ 实现与本仓 _pb2.py(旧 protoc 生成)冲突 → 服务起来但 protobuf:false。
+# 强制纯 python 实现解决。仅本服务进程, 不影响 S101。生产已验证 protobuf:true。
+Environment="PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python"
 EnvironmentFile=-/opt/iwown/iwown.env
 
 [Install]
