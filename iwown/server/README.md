@@ -8,6 +8,18 @@ iwown 手表 ──4G POST 二进制──→ dc.ncrc.org.cn/iwown/ ──反代
                               (六元 nginx 加 location)   (iwown_server.py)      (iwown_data 表)
 ```
 
+## ✅ 生产部署状态（2026-05-31 已上线）
+
+- **服务**：`192.168.4.104:8099`，systemd `iwown` 已 active + 开机自启，`/api/status` 返回 `protobuf:true` + `mysql:connected`
+- **反代**：nginx 在**负载机 `192.168.4.136`**（非 .104！），配置 `/etc/nginx/conf.d/vhost_dc.ncrc.org.cn.conf`，`/api2/` 后加了 `location /iwown/` → `http://192.168.4.104:8099/`
+- **外网入口**：`https://dc.ncrc.org.cn/iwown/api/status` 已验证通
+- **DB 密码**：取自 S101 `scripts/health_server.py`，base64 写入 `/opt/iwown/iwown.env`（chmod 600，不入 git）
+
+### ⚠️ protobuf 实现冲突坑（已解，必读）
+本仓 `theproto/*_pb2.py` 是旧版 protoc 生成，与服务器上 protobuf 5.29.6 的默认 **C++ 实现**不兼容（启动报 descriptor 错、`protobuf:false`）。
+解法：`iwown.service` 里加了 `Environment="PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python"` 强制纯 python 实现，仅作用本服务，不影响 S101。
+**这行已在 git 里**，下次 `deploy-iwown.ps1` 会自动带上，无需手动加。
+
 ## 文件
 
 | 文件 | 作用 |
