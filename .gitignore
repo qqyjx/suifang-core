@@ -67,3 +67,8 @@ features.json
 CLAUDE.md
 # Python 编译缓存 (scripts/md2html.py 运行产生)
 scripts/__pycache__/
+
+# iwown 接收服务 Python 编译产物
+iwown/server/__pycache__/
+iwown/server/**/__pycache__/
+*.pyc
