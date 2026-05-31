@@ -1,6 +1,28 @@
 # 智能随访系统 — 可穿戴设备体征数据采集平台
 
-基于 Veepoo BLE SDK 的医疗级智能穿戴设备数据采集平台。**当前生产版本 5.06-v10**，已部署到生产环境，数据通过 `https://dc.ncrc.org.cn/api2` 写入六元空间 MySQL 数据库。
+医疗级智能穿戴设备数据采集平台。**当前生产版本 5.06-v10**，已部署到生产环境，数据写入六元空间 MySQL 数据库。
+
+本仓已整合 **3 款设备**，三者共用同一台服务器 (`192.168.4.104`) + 同一个反代 (`dc.ncrc.org.cn`) + 同一套六元 MySQL，但**接入方式与服务端各不相同**：
+
+| 设备 | 联网方式 | 数据桥 | 服务端 | 端口 / 反代 location | 数据库表 | 看板 |
+|---|---|---|---|---|---|---|
+| **S101** (Veepoo) | BLE 蓝牙 | 微信小程序 | `scripts/health_server.py` (收 JSON) | `:3000` → `/api2/` | `wearable_device*` | [S101 看板](https://qqyjx.github.io/suifang/prototype/data-dashboard.html) |
+| **诊脉仪** | 导出 .zip | 浏览器本地解析 | **复用** `scripts/health_server.py` (加 `/api/zhenmaiyi/*` 端点) | `:3000` → `/api2/` | `zhenmaiyi` | [诊脉仪看板](https://qqyjx.github.io/suifang/prototype/pulse-dashboard.html) |
+| **iwown 4G** | 4G 蜂窝直连 | 无桥，设备直传 | **独立** `iwown/server/iwown_server.py` (收二进制 protobuf) | `:8099` → `/iwown/` | `iwown_device` / `iwown_data` | [iwown 看板](https://qqyjx.github.io/suifang/prototype/iwown-dashboard.html) |
+
+> **为什么诊脉仪没有独立 server**：它是浏览器解析 + 偶发上传 (拖 zip→解析→点入库)，在现有 Python 服务上挂两个 JSON 端点即可，无需单独进程。
+> **为什么 iwown 要独立 server**：它是 4G 手表 24h 主动推**二进制 protobuf 流**，处理逻辑 (解帧 + CRC + protobuf 反序列化) 与收 JSON 完全不同，单独进程隔离更稳。详见 [iwown/](iwown/)。
+
+```
+                          ┌─ S101 手表 ──BLE──► 微信小程序 ─┐
+                          │                                 │ HTTPS POST (JSON)
+                          │  诊脉仪 ──导出.zip──► 浏览器解析 ─┤
+   六元 MySQL ◄───────────┤                                 ▼
+   (h6dp_suifang)         │              dc.ncrc.org.cn/api2 ──► 192.168.4.104:3000 (health_server.py)
+                          │
+                          └─ iwown 4G 手表 ──4G HTTP POST(二进制 protobuf)──►
+                                          dc.ncrc.org.cn/iwown ──► 192.168.4.104:8099 (iwown_server.py)
+```
 
 ---
 
