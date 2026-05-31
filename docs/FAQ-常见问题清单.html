@@ -206,7 +206,7 @@ SDK 的<strong>密钥核准链路断了</strong>，<code>type=1</code>
 <li>v5+ 已加 10 秒超时模态：等 10 秒会弹引导框</li>
 </ol>
 <p><strong>代码位置</strong>：<a
-href="../code/demo/WeiXinSDKTSDemo/miniprogram/pages/bleConnection/index.ts">pages/bleConnection/index.ts</a>
+href="../mini_program_code/demo/WeiXinSDKTSDemo/miniprogram/pages/bleConnection/index.ts">pages/bleConnection/index.ts</a>
 的 <code>connectBle</code> setInterval 段。</p>
 <hr />
 <h3 id="q3-重连成功后只显示设备名-s101mac版本电量步数全空白">Q3.
@@ -224,7 +224,7 @@ MAC、固件版本、电池电量、实时步数四行全是空。</p>
 <code>veepooBlePasswordCheckManager</code>，pullHistory 顺延到
 2500ms。</p>
 <p><strong>代码位置</strong>：<a
-href="../code/demo/WeiXinSDKTSDemo/miniprogram/app.ts">app.ts</a> onShow
+href="../mini_program_code/demo/WeiXinSDKTSDemo/miniprogram/app.ts">app.ts</a> onShow
 中的密钥核准 setTimeout。</p>
 <hr />
 <h3 id="q4-点断开连接后再去搜索扫不到手表">Q4.
@@ -286,7 +286,7 @@ BLE，BLE 通道断 → 数据没法实时上传</li>
 例外（必须身体形成导联回路，物理限制）</li>
 </ul>
 <p><strong>代码位置</strong>：<a
-href="../code/demo/WeiXinSDKTSDemo/miniprogram/services/bleHub.ts">services/bleHub.ts</a>
+href="../mini_program_code/demo/WeiXinSDKTSDemo/miniprogram/services/bleHub.ts">services/bleHub.ts</a>
 <code>pullHistoryFromWatch()</code>。</p>
 <hr />
 <h3 id="q7-同一只手表在-wearable_device-表里出现多行dev_id-飘逸">Q7.

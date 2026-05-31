@@ -100,7 +100,7 @@ curl 'https://dc.ncrc.org.cn/api2/api/data?patientNo=0012865682'
 ## 开发与发布
 
 ### 开发
-1. 微信开发者工具打开 `code/demo/WeiXinSDKTSDemo`
+1. 微信开发者工具打开 `mini_program_code/demo/WeiXinSDKTSDemo`
 2. AppID `wxbc5453a4c53dbee8`，勾"不校验合法域名" + "增强编译"，基础库 ≥ 3.8.9
 3. 改 `services/env.ts` 的 `BUILD_TAG` 跟版本号
 
@@ -124,7 +124,7 @@ bash scripts/redeploy.sh
 ```
 WeChat_Mini_Program_Ble_SDK/
 ├── README.md                       本文件
-├── code/demo/WeiXinSDKTSDemo/       小程序源码
+├── mini_program_code/demo/WeiXinSDKTSDemo/       小程序源码
 │   └── miniprogram/
 │       ├── pages/index/             首页（v10 极简患者界面 + 高级模式）
 │       ├── pages/...                25+ 子页面（高级模式入口）
