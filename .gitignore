@@ -72,3 +72,7 @@ scripts/__pycache__/
 iwown/server/__pycache__/
 iwown/server/**/__pycache__/
 *.pyc
+
+# iwown 数据库密码 env (chmod 600, 永不进 git)
+iwown/server/iwown.env
+*.env
