@@ -110,7 +110,7 @@ ul, ol { margin: 8px 0 8px 22px; } li { margin: 4px 0; }
       <tr><td><code>POST /status/notify</code></td><td>JSON</td><td><span class="tag tag-opt">可选</span></td><td>在线/离线</td></tr>
       <tr><td><code>GET /health/sleep</code></td><td>→JSON</td><td><span class="tag tag-opt">可选</span></td><td>设备拉睡眠结果（算法待接，暂 10404）</td></tr>
     </table>
-    <p style="margin-top:8px;">烧录地址示例：<code>https://dc.ncrc.org.cn/iwown/pb/upload</code></p>
+    <p style="margin-top:8px;">烧录地址（<b>只填前缀，不带 <code>/pb/upload</code></b>）：<code>https://dc.ncrc.org.cn/iwown</code> —— 手表内部会自动拼上 <code>/pb/upload</code>、<code>/alarm/upload</code> 等端点。<b>多写 <code>/pb/upload</code> 会让手表实际发到 <code>/iwown/pb/upload/pb/upload</code> 导致 404 数据进不来（2026-06-01 厂商确认 + 实测踩坑）。</b></p>
   </div>
 
   <div class="card">
@@ -139,8 +139,8 @@ ul, ol { margin: 8px 0 8px 22px; } li { margin: 4px 0; }
     <h2>六、设备接入与域名烧录 <span class="tag tag-ok">已确认</span></h2>
     <ol>
       <li>部署我方接收服务 + 六元加 <code>/iwown/</code> 反代</li>
-      <li>用 iwown Android 调试 APK（<code>IWBle_debug_1.28.0920.apk</code>）<b>蓝牙连手表写入上传地址</b> → <code>https://dc.ncrc.org.cn/iwown/pb/upload</code>（操作见官方 <code>domain_burning.pdf</code> + 视频）</li>
-      <li>测试工具 <code>search.iwown.com/connect4g</code> 填 /pb/upload 地址验证（应回 0x00）</li>
+      <li>用 iwown Android 调试 APK（<code>IWBle_debug_1.28.0920.apk</code>）<b>蓝牙连手表写入上传地址</b> → <b>只填前缀</b> <code>https://dc.ncrc.org.cn/iwown</code>（<b>不带 <code>/pb/upload</code></b>，手表自动拼端点；操作见官方 <code>domain_burning.pdf</code> + 视频）</li>
+      <li>测试工具 <code>search.iwown.com/connect4g</code> 验证时填<b>完整</b> <code>https://dc.ncrc.org.cn/iwown/pb/upload</code>（该工具不做前缀拼接，需填全路径；应回 0x00）。注意：测试工具填全路径 ≠ 手表烧录填前缀，两者规则不同，别混。</li>
       <li>手表唯一标识 = body 前 15 字节 device_id（ASCII）；患者归属靠后台 <code>iwown_device.patient_no</code> 绑定（类比 S101 门诊号）</li>
     </ol>
   </div>

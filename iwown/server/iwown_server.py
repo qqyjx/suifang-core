@@ -10,7 +10,8 @@ iwown 4G 智能手表数据接收服务
   - S101:  health_server.py  :3000  收 JSON   -> dc.ncrc.org.cn/api2/
   - iwown: iwown_server.py    :8099  收二进制 -> dc.ncrc.org.cn/iwown/  (六元加 nginx location)
 
-设备上行端点 (路径前缀任意, 结尾固定; 烧录地址如 https://dc.ncrc.org.cn/iwown/pb/upload):
+设备上行端点 (手表烧录地址只填前缀 https://dc.ncrc.org.cn/iwown, 不带 /pb/upload;
+手表自动拼下列端点。多写 /pb/upload 会变 /iwown/pb/upload/pb/upload → 404):
   POST /pb/upload         二进制  必需  opt 0x80 健康 / 0x0A 实时
   POST /alarm/upload      二进制  必需  opt 0x12 报警
   POST /call_log/upload   JSON    必需  SOS+通话记录

@@ -94,7 +94,7 @@ curl https://dc.ncrc.org.cn/iwown/api/status
 ## 联调步骤（拿到真机后）
 
 1. 六元加 nginx 反代 + 部署本服务
-2. iwown Android 调试 APK 蓝牙烧录手表上传地址 → `https://dc.ncrc.org.cn/iwown/pb/upload`
+2. iwown Android 调试 APK 蓝牙烧录手表上传地址 → **只填前缀** `https://dc.ncrc.org.cn/iwown`（⚠️ **不带 `/pb/upload`**！手表内部自动拼 `/pb/upload` 等端点。多写 `/pb/upload` 会让手表实际发到 `/iwown/pb/upload/pb/upload` → 404，真机数据进不来。2026-06-01 厂商确认 + 实测踩坑。注意：`search.iwown.com/connect4g` 测试工具反而要填**完整** `.../iwown/pb/upload`，两者规则相反别混）
 3. 手表上报 → 看 `/api/iwown/list` 出数据 + `fallback/` 有 raw
 4. 抽一条 raw_hex 核对字段语义，修正抽列逻辑（raw 已存，可重算历史）
 5. 绑定 device_id ↔ 患者；接睡眠算法；按需做看板
