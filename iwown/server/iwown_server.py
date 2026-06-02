@@ -94,7 +94,7 @@ def ensure_tables():
             CREATE TABLE IF NOT EXISTS iwown_data (
                 id          BIGINT AUTO_INCREMENT PRIMARY KEY,
                 device_id   VARCHAR(32) NOT NULL,
-                data_type   VARCHAR(16) NOT NULL COMMENT 'health/realtime/alarm/calllog/deviceinfo/status',
+                data_type   VARCHAR(16) NOT NULL COMMENT 'health/realtime/alarm/index/calllog/deviceinfo/status',
                 opt         SMALLINT UNSIGNED DEFAULT NULL COMMENT '0x80/0x0A/0x12',
                 recorded_at DATETIME DEFAULT NULL COMMENT '帧内测量时间',
                 hr_avg SMALLINT DEFAULT NULL, hr_min SMALLINT DEFAULT NULL, hr_max SMALLINT DEFAULT NULL,
@@ -327,12 +327,32 @@ class IwownHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError):
             limit = 100
         try:
+            offset = max(0, int((q.get('offset') or ['0'])[0]))
+        except (ValueError, TypeError):
+            offset = 0
+        dtype = (q.get('type') or ['all'])[0]
+        try:
             conn = get_connection()
             cur = conn.cursor()
+            # 概况统计: 始终全量 (排除 index 同步帧), 不受分页/筛选影响
+            cur.execute("SELECT data_type, COUNT(*) FROM iwown_data "
+                        "WHERE data_type <> 'index' GROUP BY data_type")
+            type_counts = {dt: n for dt, n in cur.fetchall()}
+            total = sum(type_counts.values())
+            cur.execute("SELECT COUNT(DISTINCT device_id) FROM iwown_data "
+                        "WHERE data_type <> 'index'")
+            device_count = cur.fetchone()[0]
+            labels = self._device_labels(cur)   # IMEI -> 手表显示名
+            # 当前页数据: 类型筛选 + 分页
+            if dtype and dtype != 'all':
+                where, tail, filtered_total = "data_type = %s", [dtype], type_counts.get(dtype, 0)
+            else:
+                where, tail, filtered_total = "data_type <> 'index'", [], total
             cur.execute(
                 "SELECT device_id,data_type,opt,recorded_at,hr_avg,spo2_avg,sbp,dbp,"
                 "temperature,pressure,step,battery,uploaded_at "
-                "FROM iwown_data ORDER BY id DESC LIMIT %s", (limit,))
+                "FROM iwown_data WHERE " + where + " "
+                "ORDER BY id DESC LIMIT %s OFFSET %s", tail + [limit, offset])
             cols = [d[0] for d in cur.description]
             rows = []
             for r in cur.fetchall():
@@ -342,12 +362,37 @@ class IwownHandler(BaseHTTPRequestHandler):
                         d[k] = d[k].strftime('%Y-%m-%d %H:%M:%S')
                 if d.get('temperature') is not None:
                     d['temperature'] = float(d['temperature'])
+                d['device_label'] = labels.get(d['device_id']) or d['device_id']
                 rows.append(d)
             cur.close()
             conn.close()
-            return self._send_json(200, {'count': len(rows), 'rows': rows})
+            return self._send_json(200, {
+                'count': len(rows), 'total': total, 'filtered_total': filtered_total,
+                'offset': offset, 'limit': limit, 'type_counts': type_counts,
+                'device_count': device_count, 'rows': rows})
         except Exception as e:
             return self._send_json(500, {'error': str(e)})
+
+    def _device_labels(self, cur):
+        """IMEI -> 手表显示名 (型号前缀-IMEI末4位)。前缀取该设备 deviceinfo.sn 前 6 位
+        (如 'BP100C100260M26000090' -> 'BP100C'), 无 deviceinfo 时回退原 IMEI。"""
+        labels = {}
+        try:
+            cur.execute("SELECT device_id, decoded_json FROM iwown_data "
+                        "WHERE data_type='deviceinfo' AND decoded_json IS NOT NULL")
+            for dev, dj in cur.fetchall():
+                if not dev:
+                    continue
+                try:
+                    info = json.loads(dj)
+                except Exception:
+                    info = {}
+                sn = info.get('sn') or ''
+                prefix = sn[:6] if sn else (info.get('model') or '')
+                labels[dev] = ('%s-%s' % (prefix, dev[-4:])) if prefix else dev
+        except Exception:
+            pass
+        return labels
 
     def _health_sleep(self, q):
         # 设备拉取睡眠结果。睡眠分期算法需 iwown 算法 API (calculation.html#id4), 暂未接入。

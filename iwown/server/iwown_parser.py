@@ -30,7 +30,7 @@ import datetime
 # 缺失时降级: 只保 raw, 不解码 (服务仍能收数据 + 回 0x00)
 try:
     from google.protobuf.json_format import MessageToDict
-    from theproto import his_data_pb2, realtime_data_pb2, Alarm_info_pb2
+    from theproto import his_data_pb2, om0_command_pb2, Alarm_info_pb2
     from theproto import his_health_data_pb2  # noqa: F401 (enum 引用)
     PROTOBUF_OK = True
     PROTOBUF_ERR = None
@@ -141,6 +141,9 @@ def _decode_health(pb_bytes):
     field = notify.WhichOneof('data')
     metrics = {}
     rec = None
+    if field == 'index_table':
+        # 目录/同步索引帧 (start_seq/end_seq), 无体征 -> 单独归类, 不污染体征视图
+        return 'index', None, decoded, {}
     if field == 'his_data' and notify.type == his_data_pb2.HisDataType.HEALTH_DATA \
             and notify.his_data.HasField('health'):
         h = notify.his_data.health
@@ -173,21 +176,22 @@ def _decode_health(pb_bytes):
 
 
 def _decode_realtime(pb_bytes):
-    """0x0A OM0Report -> 实时步数/距离/卡路里/电量/信号/GNSS。"""
-    om0 = realtime_data_pb2.OM0Report()
+    """0x0A OM0Report (om0_command_pb2) -> 实时步数/距离/卡路里/电量/信号/GNSS。
+    注意: battery 是子消息(取 .level), health 字段名是 steps(非 step)。"""
+    om0 = om0_command_pb2.OM0Report()
     om0.ParseFromString(pb_bytes)
     decoded = MessageToDict(om0, preserving_proto_field_name=True)
-    rec = _epoch_to_str(om0.date_time.date_time.seconds)
+    rec = _epoch_to_str(om0.date_time.date_time.seconds) if om0.HasField('date_time') else None
     metrics = {}
     if om0.HasField('battery'):
-        metrics['battery'] = om0.battery
+        metrics['battery'] = om0.battery.level
     if om0.HasField('rssi'):
         rssi = om0.rssi
         if rssi > 0x7FFFFFFF:           # uint32 表负数, 与示例一致
             rssi = -((rssi ^ 0xFFFFFFFF) + 1)
         metrics['rssi'] = rssi
     if om0.HasField('health'):
-        metrics['step'] = om0.health.step
+        metrics['step'] = om0.health.steps
         metrics['distance'] = round(om0.health.distance * 0.1, 1)
         metrics['calorie'] = round(om0.health.calorie * 0.1, 1)
     return 'realtime', rec, decoded, metrics

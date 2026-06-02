@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS iwown_device (
 CREATE TABLE IF NOT EXISTS iwown_data (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
     device_id   VARCHAR(32) NOT NULL,
-    data_type   VARCHAR(16) NOT NULL COMMENT 'health/realtime/alarm/calllog/deviceinfo/status/unknown',
+    data_type   VARCHAR(16) NOT NULL COMMENT 'health/realtime/alarm/index/calllog/deviceinfo/status/unknown',
     opt         SMALLINT UNSIGNED DEFAULT NULL COMMENT '0x80健康/0x0A实时/0x12报警',
     recorded_at DATETIME DEFAULT NULL COMMENT '帧内测量时间',
     hr_avg SMALLINT DEFAULT NULL, hr_min SMALLINT DEFAULT NULL, hr_max SMALLINT DEFAULT NULL,

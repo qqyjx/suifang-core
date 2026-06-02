@@ -98,6 +98,14 @@ table.data tr:hover td { background: #f8fbfc; }
 .banner code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px; }
 
 .footer-note { margin-top: 24px; font-size: 12px; color: #9ca3af; text-align: center; line-height: 1.7; }
+
+/* Pager */
+.pager { display: flex; gap: 14px; align-items: center; justify-content: center; padding: 14px; flex-wrap: wrap; }
+.pager button { height: 34px; padding: 0 16px; border: 1px solid #e5e7eb; border-radius: 8px;
+  background: #fff; cursor: pointer; font-size: 13px; color: #374151; font-family: inherit; }
+.pager button:disabled { opacity: 0.45; cursor: not-allowed; }
+.pager button:hover:not(:disabled) { background: #f9fafb; border-color: #0891b2; }
+.pager-info { font-size: 13px; color: #6b7280; min-width: 84px; text-align: center; }
 </style>
 </head>
 <body>
@@ -153,10 +161,10 @@ table.data tr:hover td { background: #f8fbfc; }
       <option value="realtime">实时(0x0A)</option>
       <option value="alarm">报警(0x12)</option>
     </select>
-    <select id="limitSel" title="拉取条数">
-      <option value="100">最近 100 条</option>
-      <option value="200">最近 200 条</option>
-      <option value="500">最近 500 条</option>
+    <select id="limitSel" title="每页条数">
+      <option value="50">每页 50 条</option>
+      <option value="100">每页 100 条</option>
+      <option value="200">每页 200 条</option>
     </select>
     <button type="button" onclick="resetFilters()">重置</button>
   </div>
@@ -173,8 +181,9 @@ table.data tr:hover td { background: #f8fbfc; }
 <script>
 const API_BASE = 'https://dc.ncrc.org.cn/iwown';
 const REFRESH_MS = 30000;
-const state = { search: '', filterType: 'all', limit: 100 };
+const state = { search: '', filterType: 'all', pageSize: 100, page: 0 };
 let cachedRows = [];
+let meta = { total: 0, filtered_total: 0, type_counts: {}, device_count: 0 };
 let timer = null;
 
 function fmt(v) { return (v === null || v === undefined || v === '') ? '<span class="muted">--</span>' : v; }
@@ -183,7 +192,7 @@ function escapeHtml(s) { return String(s == null ? '' : s)
 
 function typePill(t) {
   const map = { health:'pill-health', realtime:'pill-realtime', alarm:'pill-alarm' };
-  const label = { health:'健康', realtime:'实时', alarm:'报警', calllog:'通话', deviceinfo:'设备', status:'状态' };
+  const label = { health:'健康', realtime:'实时', alarm:'报警', calllog:'通话', deviceinfo:'设备', status:'状态', index:'索引', unknown:'未知' };
   return `<span class="pill ${map[t]||'pill-other'}">${label[t]||escapeHtml(t)}</span>`;
 }
 
@@ -195,7 +204,9 @@ async function fetchAll() {
   try {
     const [statusRes, listRes] = await Promise.allSettled([
       fetch(API_BASE + '/api/status', { cache: 'no-store' }),
-      fetch(API_BASE + '/api/iwown/list?limit=' + state.limit, { cache: 'no-store' }),
+      fetch(API_BASE + '/api/iwown/list?limit=' + state.pageSize
+            + '&offset=' + (state.page * state.pageSize)
+            + '&type=' + encodeURIComponent(state.filterType), { cache: 'no-store' }),
     ]);
     if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
       const st = await statusRes.value.json();
@@ -209,6 +220,12 @@ async function fetchAll() {
       const data = await listRes.value.json();
       online = true;
       cachedRows = data.rows || [];
+      meta = {
+        total: data.total || 0,
+        filtered_total: (data.filtered_total != null ? data.filtered_total : (data.total || 0)),
+        type_counts: data.type_counts || {},
+        device_count: data.device_count || 0,
+      };
     }
   } catch (e) { /* offline */ }
 
@@ -225,33 +242,36 @@ async function fetchAll() {
 }
 
 function applyFilter() {
+  // 类型筛选已在服务端按 ?type= 处理; 这里只做当前页的设备搜索
   const q = state.search.trim().toLowerCase();
-  return cachedRows.filter(r => {
-    if (state.filterType !== 'all' && r.data_type !== state.filterType) return false;
-    if (q && !String(r.device_id || '').toLowerCase().includes(q)) return false;
-    return true;
-  });
+  if (!q) return cachedRows;
+  return cachedRows.filter(r =>
+    String(r.device_label || '').toLowerCase().includes(q) ||
+    String(r.device_id || '').toLowerCase().includes(q));
 }
 
 function renderStats() {
-  const rows = cachedRows;
-  const devices = new Set(rows.map(r => r.device_id)).size;
-  const health = rows.filter(r => r.data_type === 'health').length;
-  const alarm = rows.filter(r => r.data_type === 'alarm').length;
   const cards = [
-    { label: '数据条数', num: rows.length, cls: '' },
-    { label: '设备数', num: devices, cls: 'purple' },
-    { label: '健康记录', num: health, cls: 'green' },
-    { label: '报警记录', num: alarm, cls: 'red' },
+    { label: '数据条数', num: meta.total, cls: '' },
+    { label: '设备数', num: meta.device_count, cls: 'purple' },
+    { label: '健康记录', num: meta.type_counts.health || 0, cls: 'green' },
+    { label: '报警记录', num: meta.type_counts.alarm || 0, cls: 'red' },
   ];
   document.getElementById('statsGrid').innerHTML = cards.map(c =>
     `<div class="stat-card ${c.cls}"><div class="num">${c.num}</div><div class="label">${c.label}</div></div>`).join('');
 }
 
+function totalPages() {
+  return Math.max(1, Math.ceil((meta.filtered_total || 0) / state.pageSize));
+}
+
 function render() {
   renderStats();
   const list = applyFilter();
-  document.getElementById('dataMeta').textContent = `共 ${cachedRows.length} 条 · 筛选后 ${list.length} 条`;
+  const tp = totalPages();
+  const filterNote = state.filterType === 'all' ? '' : `筛选 ${meta.filtered_total} 条 · `;
+  document.getElementById('dataMeta').textContent =
+    `共 ${meta.total} 条 · ${filterNote}第 ${state.page + 1}/${tp} 页`;
   const c = document.getElementById('content');
   if (!list.length) {
     c.innerHTML = '<div class="empty"><div class="icon">📭</div>暂无数据'
@@ -264,7 +284,7 @@ function render() {
   list.forEach(r => {
     const bp = (r.sbp || r.dbp) ? `${fmt(r.sbp)}/${fmt(r.dbp)}` : '<span class="muted">--</span>';
     html += '<tr>'
-      + `<td>${escapeHtml(r.device_id||'')}</td>`
+      + `<td title="${escapeHtml(r.device_id||'')}">${escapeHtml(r.device_label || r.device_id || '')}</td>`
       + `<td>${typePill(r.data_type)}</td>`
       + `<td class="muted">${fmt(r.recorded_at)}</td>`
       + `<td>${fmt(r.hr_avg)}</td>`
@@ -278,19 +298,35 @@ function render() {
       + '</tr>';
   });
   html += '</tbody></table></div>';
+  html += renderPager(tp);
   c.innerHTML = html;
 }
 
+function renderPager(tp) {
+  if (tp <= 1) return '';
+  const p = state.page;
+  return '<div class="pager">'
+    + `<button ${p <= 0 ? 'disabled' : ''} onclick="gotoPage(${p - 1})">‹ 上一页</button>`
+    + `<span class="pager-info">第 ${p + 1} / ${tp} 页</span>`
+    + `<button ${p >= tp - 1 ? 'disabled' : ''} onclick="gotoPage(${p + 1})">下一页 ›</button>`
+    + '</div>';
+}
+
+function gotoPage(n) {
+  state.page = Math.max(0, Math.min(totalPages() - 1, n));
+  fetchAll();
+}
+
 function resetFilters() {
-  state.search = ''; state.filterType = 'all';
+  state.search = ''; state.filterType = 'all'; state.page = 0;
   document.getElementById('searchInput').value = '';
   document.getElementById('filterType').value = 'all';
-  render();
+  fetchAll();
 }
 
 document.getElementById('searchInput').addEventListener('input', e => { state.search = e.target.value; render(); });
-document.getElementById('filterType').addEventListener('change', e => { state.filterType = e.target.value; render(); });
-document.getElementById('limitSel').addEventListener('change', e => { state.limit = parseInt(e.target.value,10); fetchAll(); });
+document.getElementById('filterType').addEventListener('change', e => { state.filterType = e.target.value; state.page = 0; fetchAll(); });
+document.getElementById('limitSel').addEventListener('change', e => { state.pageSize = parseInt(e.target.value,10); state.page = 0; fetchAll(); });
 document.getElementById('refreshBtn').addEventListener('click', fetchAll);
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); document.getElementById('searchInput').focus(); }
