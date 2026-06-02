@@ -386,8 +386,8 @@ class IwownHandler(BaseHTTPRequestHandler):
             return self._send_json(500, {'error': str(e)})
 
     def _device_labels(self, cur):
-        """IMEI -> 手表显示名 (型号前缀-IMEI末4位)。前缀取该设备 deviceinfo.sn 前 6 位
-        (如 'BP100C100260M26000090' -> 'BP100C'), 无 deviceinfo 时回退原 IMEI。"""
+        """IMEI -> 显示名: 直接用该设备 deviceinfo 上报的 sn (如 BP100C100260M26000090);
+        无 deviceinfo/sn 时回退原 IMEI。"""
         labels = {}
         try:
             cur.execute("SELECT device_id, decoded_json FROM iwown_data "
@@ -400,8 +400,8 @@ class IwownHandler(BaseHTTPRequestHandler):
                 except Exception:
                     info = {}
                 sn = info.get('sn') or ''
-                prefix = sn[:6] if sn else (info.get('model') or '')
-                labels[dev] = ('%s-%s' % (prefix, dev[-4:])) if prefix else dev
+                if sn:
+                    labels[dev] = sn
         except Exception:
             pass
         return labels
