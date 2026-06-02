@@ -68,6 +68,15 @@ METRIC_COLS = ['hr_avg', 'hr_min', 'hr_max', 'spo2_avg', 'spo2_min', 'spo2_max',
                'sbp', 'dbp', 'temperature', 'pressure', 'step', 'distance',
                'calorie', 'battery', 'rssi']
 
+# 事件类: 即使无体征也保留 (报警/通话/设备信息/在线状态)
+EVENT_TYPES = ('alarm', 'calllog', 'deviceinfo', 'status')
+
+
+def _is_meaningful(dtype, metrics):
+    """是否值得入库: 事件类恒保留; 其余(health/realtime/index/unknown)仅当确有体征。
+    手表每分钟生成一条记录, 未测量的那分钟只有时间戳没有体征 -> 视为空帧不入库。"""
+    return dtype in EVENT_TYPES or bool(metrics)
+
 
 def get_connection():
     return pymysql.connect(**DB_CONFIG)
@@ -234,18 +243,21 @@ class IwownHandler(BaseHTTPRequestHandler):
         if crc_bad:
             print('[%s] device=%s ⚠ CRC 不符 %d/%d 帧 (仍入库, 算法待真机确认)'
                   % (tag, device_id, crc_bad, len(frames)))
+        skipped = 0
         for fr in frames:
             if accept_opts and fr['opt'] not in accept_opts:
-                # opt 不属于本端点, 仍保 raw 入库, data_type=unknown
-                rows.append(('unknown', fr['opt'], None, None, {}, fr['raw_hex']))
+                skipped += 1  # opt 不属于本端点; 原始已在 fallback, 不入库
                 continue
             dtype, rec, decoded, metrics = iwown_parser.decode_frame(fr['opt'], fr['pb_bytes'])
+            if not _is_meaningful(dtype, metrics):
+                skipped += 1  # 无测量的空帧 / index 同步帧: 不入库 (原始已在 fallback)
+                continue
             rows.append((dtype, fr['opt'], rec, decoded, metrics, fr['raw_hex']))
         inserted, derr = insert_rows(device_id, rows)
         if derr:
             print('[%s] device=%s 入库失败(已落盘): %s' % (tag, device_id, derr))
         else:
-            print('[%s] device=%s 帧=%d 入库=%d' % (tag, device_id, len(frames), inserted))
+            print('[%s] device=%s 帧=%d 入库=%d 跳过空帧=%d' % (tag, device_id, len(frames), inserted, skipped))
         # 即便入库失败也回 0x00: 原始数据已在 fallback, 避免设备重传风暴
         return self._send_byte(0x00)
 

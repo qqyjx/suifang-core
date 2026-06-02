@@ -62,8 +62,10 @@ def _epoch_to_str(seconds):
     if not seconds:
         return None
     try:
-        # 与示例一致用本地时区格式化; 同时另存 epoch 供入库
-        return datetime.datetime.fromtimestamp(seconds).strftime('%Y-%m-%d %H:%M:%S')
+        # 手表把"本地北京时间"当作 epoch 秒编码 (local-as-epoch)。
+        # 必须用 utcfromtimestamp 还原成手表墙钟时间; 用 fromtimestamp 会被服务器
+        # 所在 +8 时区再加一次 8h, 导致 recorded_at 跑到未来 (比入库还晚)。
+        return datetime.datetime.utcfromtimestamp(seconds).strftime('%Y-%m-%d %H:%M:%S')
     except (OSError, OverflowError, ValueError):
         return None
 
