@@ -674,10 +674,9 @@ const ERTONG_HOSPITAL_CARDS = new Set([
 // 点导出 → 先选医院 → 再按白名单分流导出
 function exportToExcel() {
   const choice = prompt(
-    '导出哪家医院的数据?\n\n' +
-    '  输入 1 = 儿童医院 (就诊卡信息收集表里那 ' + ERTONG_HOSPITAL_CARDS.size + ' 个卡号对应的患者)\n' +
-    '  输入 2 = 北医三院 (其余有门诊号的患者)\n\n' +
-    '(取消则不导出)',
+    '需要导出哪家医院的数据？\n' +
+    '输入 1 = 儿童医院\n' +
+    '输入 2 = 北医三院',
     '1'
   );
   if (choice === null) return;
