@@ -688,11 +688,24 @@ function exportToExcel() {
 
   // 在"当前筛选后"基础上再按医院白名单分流
   const base = applyFiltersSort();
-  const list = base.filter(p => {
+  let list = base.filter(p => {
     if (p.pn === 'NULL') return false;  // 无门诊号的不归任何医院, 两边都不导
     const hit = ERTONG_HOSPITAL_CARDS.has(String(p.pn).trim());
     return isErtong ? hit : !hit;
   });
+
+  // 儿童医院: 补全名单里"还没采集到数据"的卡号, 标暂无数据, 保证导出始终是完整 30 行。
+  // 北医三院无固定名单(其余全部), 不补。仅在无搜索关键字时补(有搜索说明用户在精确查找)。
+  if (isErtong && !state.search.trim()) {
+    const haveSet = new Set(list.map(p => String(p.pn).trim()));
+    ERTONG_HOSPITAL_CARDS.forEach(card => {
+      if (!haveSet.has(card)) {
+        list.push({ pn: card, count: 0, types: {}, devices: [], earliest: '', latest: '', _noData: true });
+      }
+    });
+    // 按门诊号排序, 让补进来的空号归位
+    list.sort((a, b) => String(a.pn).localeCompare(String(b.pn)));
+  }
 
   if (!list.length) {
     alert(hospitalName + ' 在当前筛选条件下没有匹配的患者数据。\n' +
@@ -707,6 +720,14 @@ function exportToExcel() {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   const rowsHtml = list.map((p, i) => {
+    // 名单内还没采集到数据的卡号: 采集列统一标"暂无数据"
+    if (p._noData) {
+      return '<tr>' +
+        `<td>${i + 1}</td>` +
+        `<td style="mso-number-format:'\\@';">${esc(p.pn)}</td>` +
+        `<td>暂无数据</td><td>暂无数据</td><td>暂无数据</td><td>暂无数据</td><td>暂无数据</td>` +
+        '</tr>';
+    }
     const types = Object.entries(p.types || {})
       .map(([t, n]) => `${t}:${n}`).join(' / ');
     const devs = (p.devices || []).join(', ');
