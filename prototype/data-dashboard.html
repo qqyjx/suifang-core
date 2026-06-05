@@ -671,8 +671,45 @@ const ERTONG_HOSPITAL_CARDS = new Set([
   "0013732978","0014305682","0014364463","0014942714","0015140956"
 ]);
 
-// 点导出 → 先选医院 → 再按白名单分流导出
-function exportToExcel() {
+// 每种体征类型的列定义 (列标题 -> 取值字段)。源自 /api/data 实测全部 11 类。
+// 公共列(门诊号/设备/采集时间)统一前置, 这里只列各类型专属体征字段。
+const DETAIL_COLS = {
+  '心率':     [['心率值', '心率值'], ['心率状态', '心率状态']],
+  '血压':     [['高压', '高压'], ['低压', '低压'], ['脉搏', '脉搏'], ['风险等级', '风险等级']],
+  '血氧':     [['血氧饱和度', '血氧饱和度'], ['心率', '心率']],
+  '体温':     [['体温', '体温'], ['皮肤温度', '皮肤温度']],
+  '血糖':     [['血糖值(mmol/L)', '血糖值_mmol_L'], ['餐态', '餐态']],
+  '步数':     [['步数', '步数'], ['卡路里', '卡路里'], ['距离(米)', '距离_米']],
+  '睡眠':     [['入睡时间', '入睡时间'], ['醒来时间', '醒来时间'], ['深睡(分钟)', '深睡_分钟'], ['浅睡(分钟)', '浅睡_分钟']],
+  '血液成分': [['尿酸', '尿酸'], ['胆固醇', '胆固醇'], ['甘油三酯', '甘油三酯']],
+  '身体成分': [['体重', '体重'], ['BMI', 'BMI'], ['体脂率', '体脂率'], ['肌肉量', '肌肉量']],
+  '心电':     [['心率', '心率'], ['诊断', '诊断'], ['波形采样点数', '波形采样点数']],
+  '日综合':   [['原始记录(dailyRecords)', 'dailyRecords']],
+};
+
+const xmlEsc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+// 生成一个 worksheet 的 XML (Excel 2003 SpreadsheetML, 支持多 sheet 纯前端)
+function buildSheet(name, headerCells, rows) {
+  const cell = (v, isNum) => {
+    if (v === null || v === undefined || v === '') return '<Cell><Data ss:Type="String"></Data></Cell>';
+    if (isNum && typeof v === 'number')
+      return `<Cell><Data ss:Type="Number">${v}</Data></Cell>`;
+    return `<Cell><Data ss:Type="String">${xmlEsc(v)}</Data></Cell>`;
+  };
+  const headerRow = '<Row>' + headerCells.map(h =>
+    `<Cell ss:StyleID="hdr"><Data ss:Type="String">${xmlEsc(h)}</Data></Cell>`).join('') + '</Row>';
+  const bodyRows = rows.map(r => '<Row>' + r.map(c =>
+    cell(c.v, c.num)).join('') + '</Row>').join('');
+  // sheet 名不能含 []:*?/\ 且 ≤31 字符
+  const safeName = String(name).replace(/[\[\]:*?/\\]/g, '_').slice(0, 31);
+  return `<Worksheet ss:Name="${xmlEsc(safeName)}"><Table>${headerRow}${bodyRows}</Table></Worksheet>`;
+}
+
+// 点导出 → 选医院 → 拉 /api/data 明细 → 按医院切 → 每种体征一个 sheet
+async function exportToExcel() {
   const choice = prompt(
     '需要导出哪家医院的数据？\n' +
     '输入 1 = 儿童医院\n' +
@@ -682,87 +719,138 @@ function exportToExcel() {
   if (choice === null) return;
   const c = choice.trim();
   if (c !== '1' && c !== '2') { alert('请输入 1 (儿童医院) 或 2 (北医三院)'); return; }
-
   const isErtong = (c === '1');
   const hospitalName = isErtong ? '儿童医院' : '北医三院';
 
-  // 在"当前筛选后"基础上再按医院白名单分流
-  const base = applyFiltersSort();
-  let list = base.filter(p => {
-    if (p.pn === 'NULL') return false;  // 无门诊号的不归任何医院, 两边都不导
-    const hit = ERTONG_HOSPITAL_CARDS.has(String(p.pn).trim());
-    return isErtong ? hit : !hit;
-  });
+  const btn = document.getElementById('exportXlsx');
+  const oldText = btn.textContent;
+  btn.textContent = '⏳ 拉取明细...'; btn.disabled = true;
 
-  // 儿童医院: 补全名单里"还没采集到数据"的卡号, 标暂无数据, 保证导出始终是完整 30 行。
-  // 北医三院无固定名单(其余全部), 不补。仅在无搜索关键字时补(有搜索说明用户在精确查找)。
-  if (isErtong && !state.search.trim()) {
-    const haveSet = new Set(list.map(p => String(p.pn).trim()));
-    ERTONG_HOSPITAL_CARDS.forEach(card => {
-      if (!haveSet.has(card)) {
-        list.push({ pn: card, count: 0, types: {}, devices: [], earliest: '', latest: '', _noData: true });
+  try {
+    // 拉全量明细 (实测 ~538KB/0.3s, 一次拉前端切分最优)
+    const res = await fetch(DATA_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('拉 /api/data 失败: ' + res.statusText);
+    const data = await res.json();
+    const records = data.records || [];
+
+    // 该医院的门诊号判定
+    const belongs = pn => {
+      if (!pn) return false;
+      const hit = ERTONG_HOSPITAL_CARDS.has(String(pn).trim());
+      return isErtong ? hit : !hit;
+    };
+
+    // 按体征类型聚合明细行: { 类型: [ {门诊号,设备,采集时间, ...体征字段} ] }
+    const byType = {};       // 类型 -> rows(每行是 cell 数组)
+    const seenPn = new Set();
+    for (const row of records) {
+      const dev = row.deviceId;
+      const big = row.data || {};
+      for (const [typ, arr] of Object.entries(big)) {
+        if (!Array.isArray(arr)) continue;
+        for (const rec of arr) {
+          const pn = rec['门诊号'];
+          if (!belongs(pn)) continue;
+          seenPn.add(String(pn).trim());
+          const colsDef = DETAIL_COLS[typ] || [];
+          // 公共前置列 + 该类型专属列
+          const cells = [
+            { v: String(pn), num: false },
+            { v: dev, num: true },
+            { v: fmtCST((rec['采集时间'] || '').slice(0, 19)), num: false },
+          ];
+          for (const [, field] of colsDef) {
+            let v = rec[field];
+            if (Array.isArray(v) || (v && typeof v === 'object')) v = JSON.stringify(v);
+            cells.push({ v: v, num: typeof v === 'number' });
+          }
+          (byType[typ] = byType[typ] || []).push(cells);
+        }
       }
-    });
-    // 按门诊号排序, 让补进来的空号归位
-    list.sort((a, b) => String(a.pn).localeCompare(String(b.pn)));
-  }
-
-  if (!list.length) {
-    alert(hospitalName + ' 在当前筛选条件下没有匹配的患者数据。\n' +
-          '(提示: 导出前若加了搜索/筛选, 会先按筛选再按医院分流; 想导全部先点"重置")');
-    return;
-  }
-
-  const headers = ['序号', '门诊号(就诊卡号)', '采集条数', '设备 deviceId',
-                   '数据类型', '最早采集时间', '最晚采集时间'];
-
-  const esc = s => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  const rowsHtml = list.map((p, i) => {
-    // 名单内还没采集到数据的卡号: 采集列统一标"暂无数据"
-    if (p._noData) {
-      return '<tr>' +
-        `<td>${i + 1}</td>` +
-        `<td style="mso-number-format:'\\@';">${esc(p.pn)}</td>` +
-        `<td>暂无数据</td><td>暂无数据</td><td>暂无数据</td><td>暂无数据</td><td>暂无数据</td>` +
-        '</tr>';
     }
-    const types = Object.entries(p.types || {})
-      .map(([t, n]) => `${t}:${n}`).join(' / ');
-    const devs = (p.devices || []).join(', ');
-    // 门诊号是纯数字串(前导0), 加 mso-number-format 文本格式防 Excel 吃掉前导0
-    return '<tr>' +
-      `<td>${i + 1}</td>` +
-      `<td style="mso-number-format:'\\@';">${esc(p.pn)}</td>` +
-      `<td>${p.count || 0}</td>` +
-      `<td style="mso-number-format:'\\@';">${esc(devs)}</td>` +
-      `<td>${esc(types)}</td>` +
-      `<td>${esc(fmtCST(p.earliest))}</td>` +
-      `<td>${esc(fmtCST(p.latest))}</td>` +
-      '</tr>';
-  }).join('');
 
-  const tableHtml =
-    '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
-    'xmlns:x="urn:schemas-microsoft-com:office:excel" ' +
-    'xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"></head><body>' +
-    '<table border="1">' +
-    '<tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr>' +
-    rowsHtml +
-    '</table></body></html>';
+    // 组装所有 sheet
+    const sheets = [];
+    // sheet 1: 患者总览 (含儿童医院补全的暂无数据卡号)
+    const overviewHeader = ['序号', '门诊号(就诊卡号)', '采集明细条数', '设备', '数据类型概览'];
+    const ovMap = {};   // pn -> {count, devs, types}
+    for (const row of records) {
+      for (const [typ, arr] of Object.entries(row.data || {})) {
+        if (!Array.isArray(arr)) continue;
+        for (const rec of arr) {
+          const pn = rec['门诊号'];
+          if (!belongs(pn)) continue;
+          const k = String(pn).trim();
+          const o = ovMap[k] = ovMap[k] || { count: 0, devs: new Set(), types: {} };
+          o.count++; o.devs.add(row.deviceId); o.types[typ] = (o.types[typ] || 0) + 1;
+        }
+      }
+    }
+    let pnList = Object.keys(ovMap).sort();
+    // 儿童医院补全无数据卡号
+    if (isErtong) {
+      ERTONG_HOSPITAL_CARDS.forEach(card => { if (!ovMap[card]) ovMap[card] = null; });
+      pnList = [...ERTONG_HOSPITAL_CARDS].sort();
+    }
+    const ovRows = pnList.map((pn, i) => {
+      const o = ovMap[pn];
+      if (!o) return [
+        { v: i + 1, num: true }, { v: pn, num: false },
+        { v: '暂无数据', num: false }, { v: '暂无数据', num: false }, { v: '暂无数据', num: false }];
+      const typesStr = Object.entries(o.types).map(([t, n]) => `${t}:${n}`).join(' / ');
+      return [
+        { v: i + 1, num: true }, { v: pn, num: false },
+        { v: o.count, num: true }, { v: [...o.devs].join(','), num: false },
+        { v: typesStr, num: false }];
+    });
+    sheets.push(buildSheet('患者总览', overviewHeader, ovRows));
 
-  // 加 BOM 保证中文不乱码
-  const blob = new Blob(['﻿' + tableHtml], { type: 'application/vnd.ms-excel' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  a.href = url;
-  a.download = `${hospitalName}_S101患者数据_${list.length}人_${ts}.xls`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+    // 每种体征一个 sheet (按固定顺序, 只导该医院有数据的类型)
+    const TYPE_ORDER = ['心率', '血压', '血氧', '体温', '血糖', '步数', '睡眠',
+                        '血液成分', '身体成分', '心电', '日综合'];
+    const typesPresent = TYPE_ORDER.filter(t => byType[t] && byType[t].length);
+    // 还有不在预定义顺序里的类型(以防新增)兜底
+    Object.keys(byType).forEach(t => { if (!typesPresent.includes(t)) typesPresent.push(t); });
+
+    for (const typ of typesPresent) {
+      const colsDef = DETAIL_COLS[typ] || [];
+      const header = ['门诊号', '设备', '采集时间', ...colsDef.map(([title]) => title)];
+      sheets.push(buildSheet(typ, header, byType[typ]));
+    }
+
+    if (sheets.length <= 1 && !isErtong) {
+      alert(hospitalName + ' 没有任何明细数据。');
+      btn.textContent = oldText; btn.disabled = false;
+      return;
+    }
+
+    // 拼完整 workbook
+    const wb =
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<?mso-application progid="Excel.Sheet"?>\n' +
+      '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" ' +
+      'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">' +
+      '<Styles><Style ss:ID="hdr"><Font ss:Bold="1"/>' +
+      '<Interior ss:Color="#DCE6F1" ss:Pattern="Solid"/></Style></Styles>' +
+      sheets.join('') +
+      '</Workbook>';
+
+    const blob = new Blob(['﻿' + wb], { type: 'application/vnd.ms-excel' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.href = url;
+    a.download = `${hospitalName}_S101体征明细_${seenPn.size}人_${ts}.xls`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) {
+    console.error(e);
+    alert('导出失败: ' + e.message);
+  } finally {
+    btn.textContent = oldText; btn.disabled = false;
+  }
 }
 
 /* ----------------- Render ----------------- */
