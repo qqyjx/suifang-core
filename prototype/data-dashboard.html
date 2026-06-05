@@ -217,6 +217,34 @@ body {
 .time-since.fresh { color: #2faa55; font-weight: 500; font-style: normal; }
 .time-since.stale { color: #f59e0b; }
 .time-since.dead { color: #d04848; }
+.card-hint { font-size: 11px; color: #2c6ef2; margin-top: 8px; text-align: right; opacity: .7; }
+.patient-card:hover { box-shadow: 0 4px 18px rgba(44,110,242,.18); transform: translateY(-2px); transition: all .15s; }
+
+/* 患者详情 modal */
+.modal-mask { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none;
+  align-items: flex-start; justify-content: center; z-index: 100; padding: 24px 12px; overflow-y: auto; }
+.modal-mask.open { display: flex; }
+.modal { background: #fff; border-radius: 16px; max-width: 920px; width: 100%; margin: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,.25); overflow: hidden; }
+.modal-header { background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%); color: #fff;
+  padding: 18px 26px; display: flex; justify-content: space-between; align-items: flex-start; }
+.modal-header h2 { font-size: 20px; font-weight: 600; }
+.modal-header .modal-sub { font-size: 13px; opacity: .9; margin-top: 4px; }
+.modal-close { background: rgba(255,255,255,.2); color: #fff; border: 0; width: 32px; height: 32px;
+  border-radius: 50%; cursor: pointer; font-size: 18px; line-height: 1; }
+.modal-close:hover { background: rgba(255,255,255,.32); }
+.modal-body { padding: 22px 26px; max-height: 76vh; overflow-y: auto; }
+.modal-section { margin-bottom: 22px; }
+.modal-section h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; padding-left: 10px;
+  border-left: 3px solid #2c6ef2; display: flex; align-items: center; gap: 8px; }
+.modal-section h3 .badge { font-size: 11px; background: #eef4ff; color: #2c6ef2; padding: 1px 8px; border-radius: 10px; font-weight: 600; }
+.detail-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.detail-table th { background: #f9fafb; color: #6b7280; text-align: left; padding: 7px 10px;
+  border-bottom: 2px solid #e5e7eb; font-weight: 600; white-space: nowrap; }
+.detail-table td { padding: 7px 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
+.detail-table tr:last-child td { border-bottom: none; }
+.detail-table tr:hover td { background: #f8fbff; }
+.modal-loading { text-align: center; padding: 40px; color: #9ca3af; }
 
 /* Pagination */
 .pagination {
@@ -346,6 +374,20 @@ body {
   </div>
 
   <div class="pagination" id="pagination" style="display:none;"></div>
+
+  <!-- 患者详情 modal -->
+  <div class="modal-mask" id="patientModal">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div>
+          <h2 id="pmTitle">--</h2>
+          <div class="modal-sub" id="pmSub">--</div>
+        </div>
+        <button class="modal-close" onclick="closePatientDetail()" title="关闭 (Esc)">×</button>
+      </div>
+      <div class="modal-body" id="pmBody"><div class="modal-loading">载入中…</div></div>
+    </div>
+  </div>
 
   <div class="footer">
     数据来源
@@ -853,6 +895,86 @@ async function exportToExcel() {
   }
 }
 
+/* ----------------- 患者详情 modal ----------------- */
+// 点患者卡 → 拉该患者 /api/data?patientNo → 每种体征一张表展示具体值
+async function openPatientDetail(pn) {
+  const mask = document.getElementById('patientModal');
+  const body = document.getElementById('pmBody');
+  document.getElementById('pmTitle').textContent = pn ? `门诊号 ${pn}` : '历史数据 (无门诊号)';
+  document.getElementById('pmSub').textContent = '正在拉取明细…';
+  body.innerHTML = '<div class="modal-loading">载入中…</div>';
+  mask.classList.add('open');
+
+  try {
+    const qs = pn ? ('?patientNo=' + encodeURIComponent(pn)) : '';
+    const res = await fetch(DATA_URL + qs, { cache: 'no-store' });
+    if (!res.ok) throw new Error('拉明细失败: ' + res.statusText);
+    const data = await res.json();
+    const records = data.records || [];
+
+    // 按体征类型聚合该患者明细
+    const byType = {};
+    let total = 0;
+    const devs = new Set();
+    for (const row of records) {
+      for (const [typ, arr] of Object.entries(row.data || {})) {
+        if (!Array.isArray(arr)) continue;
+        for (const rec of arr) {
+          // /api/data 不带 patientNo 时返回全部, 这里再按 pn 过滤(pn=null 看 NULL)
+          const recPn = rec['门诊号'] || null;
+          if (pn ? String(recPn).trim() !== String(pn).trim() : recPn) continue;
+          (byType[typ] = byType[typ] || []).push({ rec, dev: row.deviceId });
+          devs.add(row.deviceId); total++;
+        }
+      }
+    }
+
+    document.getElementById('pmSub').textContent =
+      `设备 ${[...devs].join(', ') || '--'} · 共 ${total} 条明细 · ${Object.keys(byType).length} 类体征`;
+
+    if (!total) { body.innerHTML = '<div class="modal-loading">该患者暂无明细数据</div>'; return; }
+
+    const TYPE_ORDER = ['心率', '血压', '血氧', '体温', '血糖', '步数', '睡眠',
+                        '血液成分', '身体成分', '心电', '日综合'];
+    const present = TYPE_ORDER.filter(t => byType[t]);
+    Object.keys(byType).forEach(t => { if (!present.includes(t)) present.push(t); });
+
+    let html = '';
+    for (const typ of present) {
+      const list = byType[typ];
+      const colsDef = DETAIL_COLS[typ] || [];
+      const headers = ['采集时间', ...colsDef.map(([title]) => title)];
+      // 按采集时间倒序
+      list.sort((a, b) => String(b.rec['采集时间'] || '').localeCompare(String(a.rec['采集时间'] || '')));
+      const rowsHtml = list.map(({ rec }) => {
+        const cells = [`<td>${escapeHtml(fmtCST((rec['采集时间'] || '').slice(0, 19)))}</td>`];
+        for (const [, field] of colsDef) {
+          let v = rec[field];
+          if (Array.isArray(v) || (v && typeof v === 'object')) v = JSON.stringify(v);
+          cells.push(`<td>${escapeHtml(v == null ? '' : v)}</td>`);
+        }
+        return '<tr>' + cells.join('') + '</tr>';
+      }).join('');
+      html += `<div class="modal-section">
+        <h3>${escapeHtml(typ)} <span class="badge">${list.length} 条</span></h3>
+        <table class="detail-table"><thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+        <tbody>${rowsHtml}</tbody></table></div>`;
+    }
+    body.innerHTML = html;
+  } catch (e) {
+    console.error(e);
+    body.innerHTML = '<div class="modal-loading">加载失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function closePatientDetail() {
+  document.getElementById('patientModal').classList.remove('open');
+}
+document.getElementById('patientModal').addEventListener('click', e => {
+  if (e.target.id === 'patientModal') closePatientDetail();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePatientDetail(); });
+
 /* ----------------- Render ----------------- */
 function renderAll() {
   renderStatsGrid();
@@ -944,6 +1066,8 @@ function buildPatientCard(p, q, today) {
 
   const el = document.createElement('div');
   el.className = cls;
+  el.style.cursor = 'pointer';
+  el.title = '点击查看该患者的具体体征数据';
   el.innerHTML = `
     <div class="patient-header">
       <div class="patient-no">${titleHtml}</div>
@@ -956,8 +1080,11 @@ function buildPatientCard(p, q, today) {
       <div class="metric-row"><span class="key">最晚采集</span><span class="val">${fmtCST(p.latest)}</span></div>
       <div class="time-since ${since.cls}">距最新数据: ${since.text}</div>
       <div class="type-bars">${typesHtml}</div>
+      <div class="card-hint">👆 点击看具体数值</div>
     </div>
   `;
+  if (!isNull) el.addEventListener('click', () => openPatientDetail(p.pn));
+  else el.addEventListener('click', () => openPatientDetail(null));
   return el;
 }
 
