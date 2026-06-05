@@ -338,6 +338,7 @@ body {
       <option value="patient">门诊号 ↑</option>
     </select>
     <button class="clear-btn" id="clearFilters" type="button">重置</button>
+    <button class="clear-btn" id="exportXlsx" type="button" title="把当前筛选后的患者列表导出为 Excel">📥 导出 Excel</button>
   </div>
 
   <div id="patients" class="patients">
@@ -657,6 +658,58 @@ function applyFiltersSort() {
   return out;
 }
 
+/* ----------------- 导出 Excel ----------------- */
+// 把当前筛选后的患者列表导出成 .xls (HTML table 格式, Excel/WPS 直接打开, 无需第三方库)。
+// 列对齐儿童医院"就诊卡信息收集表"的口径: 门诊号(=就诊卡号)在第一列, 其余为采集统计。
+function exportToExcel() {
+  const list = applyFiltersSort();
+  if (!list.length) { alert('当前筛选结果为空, 没有可导出的数据'); return; }
+
+  const headers = ['序号', '门诊号(就诊卡号)', '采集条数', '设备 deviceId',
+                   '数据类型', '最早采集时间', '最晚采集时间'];
+
+  const esc = s => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const rowsHtml = list.map((p, i) => {
+    const pn = p.pn === 'NULL' ? '(无门诊号)' : p.pn;
+    const types = Object.entries(p.types || {})
+      .map(([t, n]) => `${t}:${n}`).join(' / ');
+    const devs = (p.devices || []).join(', ');
+    // 门诊号是纯数字串(前导0), 加 mso-number-format 文本格式防 Excel 吃掉前导0
+    return '<tr>' +
+      `<td>${i + 1}</td>` +
+      `<td style="mso-number-format:'\\@';">${esc(pn)}</td>` +
+      `<td>${p.count || 0}</td>` +
+      `<td style="mso-number-format:'\\@';">${esc(devs)}</td>` +
+      `<td>${esc(types)}</td>` +
+      `<td>${esc(fmtCST(p.earliest))}</td>` +
+      `<td>${esc(fmtCST(p.latest))}</td>` +
+      '</tr>';
+  }).join('');
+
+  const tableHtml =
+    '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+    'xmlns:x="urn:schemas-microsoft-com:office:excel" ' +
+    'xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"></head><body>' +
+    '<table border="1">' +
+    '<tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr>' +
+    rowsHtml +
+    '</table></body></html>';
+
+  // 加 BOM 保证中文不乱码
+  const blob = new Blob(['﻿' + tableHtml], { type: 'application/vnd.ms-excel' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  a.href = url;
+  a.download = `S101患者数据_${list.length}人_${ts}.xls`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /* ----------------- Render ----------------- */
 function renderAll() {
   renderStatsGrid();
@@ -881,6 +934,8 @@ document.getElementById('clearFilters').addEventListener('click', () => {
   document.getElementById('sortBy').value = 'latest';
   renderPatients();
 });
+
+document.getElementById('exportXlsx').addEventListener('click', exportToExcel);
 
 document.getElementById('pagination').addEventListener('click', e => {
   const btn = e.target.closest('button');
