@@ -715,6 +715,11 @@ const ERTONG_HOSPITAL_CARDS = new Set([
 
 // 每种体征类型的列定义 (列标题 -> 取值字段)。源自 /api/data 实测全部 11 类。
 // 公共列(门诊号/设备/采集时间)统一前置, 这里只列各类型专属体征字段。
+// 看板/明细/导出统一隐藏的体征类型。
+// 日综合: Veepoo 手表"日汇总"接口, 实测 98% 是空跑(dailyRecords 空壳), 真实体征
+// 都在 步数/血压/心率/血氧/体温 等单项里, 对医院无用, 故隐藏。
+const HIDE_TYPES = new Set(['日综合']);
+
 const DETAIL_COLS = {
   '心率':     [['心率值', '心率值'], ['心率状态', '心率状态']],
   '血压':     [['高压', '高压'], ['低压', '低压'], ['脉搏', '脉搏'], ['风险等级', '风险等级']],
@@ -790,6 +795,7 @@ async function exportToExcel() {
       const big = row.data || {};
       for (const [typ, arr] of Object.entries(big)) {
         if (!Array.isArray(arr)) continue;
+        if (HIDE_TYPES.has(typ)) continue;  // 隐藏日综合等空跑类型
         for (const rec of arr) {
           const pn = rec['门诊号'];
           if (!belongs(pn)) continue;
@@ -819,6 +825,7 @@ async function exportToExcel() {
     for (const row of records) {
       for (const [typ, arr] of Object.entries(row.data || {})) {
         if (!Array.isArray(arr)) continue;
+        if (HIDE_TYPES.has(typ)) continue;  // 隐藏日综合等空跑类型
         for (const rec of arr) {
           const pn = rec['门诊号'];
           if (!belongs(pn)) continue;
@@ -847,9 +854,9 @@ async function exportToExcel() {
     });
     sheets.push(buildSheet('患者总览', overviewHeader, ovRows));
 
-    // 每种体征一个 sheet (按固定顺序, 只导该医院有数据的类型)
+    // 每种体征一个 sheet (按固定顺序, 只导该医院有数据的类型; 日综合已在聚合时排除)
     const TYPE_ORDER = ['心率', '血压', '血氧', '体温', '血糖', '步数', '睡眠',
-                        '血液成分', '身体成分', '心电', '日综合'];
+                        '血液成分', '身体成分', '心电'];
     const typesPresent = TYPE_ORDER.filter(t => byType[t] && byType[t].length);
     // 还有不在预定义顺序里的类型(以防新增)兜底
     Object.keys(byType).forEach(t => { if (!typesPresent.includes(t)) typesPresent.push(t); });
@@ -882,7 +889,9 @@ async function exportToExcel() {
     const a = document.createElement('a');
     const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     a.href = url;
-    a.download = `${hospitalName}_S101体征明细_${seenPn.size}人_${ts}.xls`;
+    // 儿童医院文件名用完整名单数(总览补全30人), 北医三院用实际有数据数
+    const peopleCount = isErtong ? ovRows.length : seenPn.size;
+    a.download = `${hospitalName}_S101体征明细_${peopleCount}人_${ts}.xls`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -919,6 +928,7 @@ async function openPatientDetail(pn) {
     for (const row of records) {
       for (const [typ, arr] of Object.entries(row.data || {})) {
         if (!Array.isArray(arr)) continue;
+        if (HIDE_TYPES.has(typ)) continue;  // 隐藏日综合等空跑类型
         for (const rec of arr) {
           // /api/data 不带 patientNo 时返回全部, 这里再按 pn 过滤(pn=null 看 NULL)
           const recPn = rec['门诊号'] || null;
@@ -935,7 +945,7 @@ async function openPatientDetail(pn) {
     if (!total) { body.innerHTML = '<div class="modal-loading">该患者暂无明细数据</div>'; return; }
 
     const TYPE_ORDER = ['心率', '血压', '血氧', '体温', '血糖', '步数', '睡眠',
-                        '血液成分', '身体成分', '心电', '日综合'];
+                        '血液成分', '身体成分', '心电'];
     const present = TYPE_ORDER.filter(t => byType[t]);
     Object.keys(byType).forEach(t => { if (!present.includes(t)) present.push(t); });
 
@@ -1054,7 +1064,8 @@ function buildPatientCard(p, q, today) {
   const isNull = p.pn === 'NULL';
   const isToday = p.latest && p.latest.slice(0, 10) === today;
   const devs = p.devices.join(', ');
-  const typesHtml = Object.entries(p.types).sort((a, b) => b[1] - a[1])
+  const typesHtml = Object.entries(p.types).filter(([n]) => !HIDE_TYPES.has(n))
+    .sort((a, b) => b[1] - a[1])
     .map(([n, c]) => `<span class="type-pill ${typeClass(n)}">${escapeHtml(n)} ${c}</span>`).join('');
 
   let cls = 'patient-card';
