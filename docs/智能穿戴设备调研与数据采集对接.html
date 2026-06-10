@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能穿戴设备调研与数据采集对接 · 六元随访平台</title>
+<style>
+  :root {
+    --primary: #1565a8;
+    --primary-dark: #0d4a7d;
+    --accent: #18a999;
+    --bg: #f4f7fa;
+    --card: #ffffff;
+    --text: #2b3440;
+    --muted: #6b7886;
+    --border: #dde5ec;
+    --ok: #1e9e63;
+    --warn: #d98a1c;
+    --risk: #c4453a;
+    --tag-blue-bg: #e8f1fa;
+    --tag-green-bg: #e6f5ef;
+    --tag-orange-bg: #fbf1e2;
+    --tag-red-bg: #faeae8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; background: var(--bg); color: var(--text); line-height: 1.75; }
+  header { background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 60%, var(--accent) 100%); color: #fff; padding: 38px 24px 30px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 8px; }
+  header h1 { font-size: 26px; font-weight: 700; letter-spacing: 1px; }
+  header .sub { margin-top: 8px; font-size: 14px; opacity: .92; }
+  header .meta { margin-top: 14px; font-size: 13px; opacity: .85; }
+  nav.toc { position: sticky; top: 0; z-index: 50; background: #fff; border-bottom: 1px solid var(--border); box-shadow: 0 1px 6px rgba(20,40,60,.06); }
+  nav.toc .wrap { display: flex; gap: 4px; overflow-x: auto; }
+  nav.toc a { display: block; padding: 12px 16px; font-size: 14px; color: var(--muted); text-decoration: none; white-space: nowrap; border-bottom: 3px solid transparent; }
+  nav.toc a:hover { color: var(--primary); }
+  nav.toc a.hot { color: var(--primary); font-weight: 600; }
+  main { padding: 28px 24px 60px; }
+  section { margin-bottom: 44px; }
+  h2 { font-size: 21px; color: var(--primary-dark); padding-left: 12px; border-left: 5px solid var(--accent); margin-bottom: 6px; }
+  h2 .num { color: var(--accent); margin-right: 6px; }
+  .h2sub { font-size: 13px; color: var(--muted); padding-left: 17px; margin-bottom: 18px; }
+  h3 { font-size: 16.5px; color: var(--primary); margin: 26px 0 10px; }
+  h4 { font-size: 14.5px; color: var(--text); margin: 18px 0 8px; }
+  p { margin: 8px 0; font-size: 14.5px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px 22px; margin: 14px 0; box-shadow: 0 1px 4px rgba(20,40,60,.04); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 860px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin: 10px 0; background: #fff; }
+  th { background: #eef4f9; color: var(--primary-dark); font-weight: 600; text-align: left; padding: 9px 10px; border: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px 10px; border: 1px solid var(--border); vertical-align: top; }
+  tr:nth-child(even) td { background: #fafcfe; }
+  .tag { display: inline-block; padding: 1px 9px; border-radius: 20px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .tag.ok { background: var(--tag-green-bg); color: var(--ok); }
+  .tag.warn { background: var(--tag-orange-bg); color: var(--warn); }
+  .tag.risk { background: var(--tag-red-bg); color: var(--risk); }
+  .tag.info { background: var(--tag-blue-bg); color: var(--primary); }
+  .callout { border-left: 4px solid var(--accent); background: #f0faf8; padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 14px 0; font-size: 14px; }
+  .callout.warn { border-color: var(--warn); background: #fdf7ec; }
+  .callout.risk { border-color: var(--risk); background: #fdf0ee; }
+  .flow { background: #0f2438; color: #cfe6f5; font-family: "JetBrains Mono", Consolas, monospace; font-size: 13px; padding: 16px 20px; border-radius: 10px; overflow-x: auto; white-space: pre; line-height: 1.9; margin: 12px 0; }
+  .flow b { color: #6fd3c3; font-weight: 700; }
+  .kpi { display: flex; gap: 14px; flex-wrap: wrap; margin: 14px 0; }
+  .kpi .item { flex: 1; min-width: 160px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; text-align: center; }
+  .kpi .item .v { font-size: 24px; font-weight: 700; color: var(--primary); }
+  .kpi .item .k { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .src { font-size: 12px; color: var(--muted); }
+  .src a { color: var(--primary); text-decoration: none; }
+  .src a:hover { text-decoration: underline; }
+  footer { text-align: center; font-size: 12.5px; color: var(--muted); padding: 24px 0 40px; }
+  .steps { counter-reset: step; list-style: none; }
+  .steps li { position: relative; padding: 10px 0 10px 44px; border-left: 2px dashed var(--border); margin-left: 14px; font-size: 14px; }
+  .steps li::before { counter-increment: step; content: counter(step); position: absolute; left: -15px; top: 10px; width: 28px; height: 28px; background: var(--primary); color: #fff; border-radius: 50%; text-align: center; line-height: 28px; font-size: 13px; font-weight: 700; }
+  .steps li b { color: var(--primary-dark); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>智能穿戴设备调研与数据采集对接</h1>
+    <div class="sub">六元随访平台 · 设备数据采集入口设计 — 二类证产品盘点 / 深圳代工路径 / 现有手表 1.0 对接</div>
+    <div class="meta">整理:肖逸凡 · 2026-06-10 · 对应 06-09 会议待办「梳理并设计智能穿戴设备的数据采集入口」</div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#s0">总览</a>
+    <a href="#s1" class="hot">① 短期 1.0:现有设备对接</a>
+    <a href="#s2">② 二类证穿戴产品盘点</a>
+    <a href="#s3">③ 深圳代工与 2.0 硬件路径</a>
+    <a href="#s4">④ 路线建议</a>
+  </div>
+</nav>
+
+<main>
+<div class="wrap">
+
+<!-- ============ 总览 ============ -->
+<section id="s0">
+  <h2><span class="num">◎</span>总览</h2>
+  <div class="h2sub">三个问题,三个板块,一条路线</div>
+  <div class="grid3">
+    <div class="card">
+      <h4 style="margin-top:0">① 短期 1.0</h4>
+      <p style="font-size:13.5px">我们手上已经有 3 款设备、2 条已打通的数据链路。iwown 4G 手表全链路已上线,心率、血氧、血压、体温、步数等核心体征已入库,随访平台对接只差患者绑定和看板接入两步。</p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">② 市场上有什么</h4>
+      <p style="font-size:13.5px">国内拿到二类医疗器械证的手表、手环、戒指逐一盘点:谁有证、证管什么功能、能采到什么数据、有没有企业级数据接口。为采购成品和对标定价提供依据。</p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">③ 2.0 自有硬件</h4>
+      <p style="font-size:13.5px">深圳代工生态摸底:哪些 ODM 厂能做健康手表/手环/戒指、有无医疗级拿证经验、合作模式与成本数量级。给出贴牌、定制、自有证三档路径,支撑融资叙事。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 第 1 章 ============ -->
+<section id="s1">
+  <h2><span class="num">①</span>短期 1.0:现有设备功能数据与平台对接</h2>
+  <div class="h2sub">在手设备盘点 → iwown 4G 手表数据全景 → 与随访平台的对接清单</div>
+
+  <h3>1.1 在手设备盘点</h3>
+  <table>
+    <tr><th>设备</th><th>形态 / 厂商</th><th>联网方式</th><th>资质</th><th>采集指标</th><th>链路状态</th></tr>
+    <tr>
+      <td><b>iwown 4G 手表</b><br><span class="tag info">当前主推</span></td>
+      <td>手表 · 深圳埃微 iwown</td>
+      <td><b>自带 4G,直连服务器</b>,患者无需手机和小程序</td>
+      <td>厂商资质待向对接人确认</td>
+      <td>心率、血氧、血压、体温、压力、步数距离卡路里、GNSS 定位、跌倒/SOS 等报警(详见 1.2)</td>
+      <td><span class="tag ok">全链路已上线</span> 2026-05-31</td>
+    </tr>
+    <tr>
+      <td><b>Veepoo S101 手表</b></td>
+      <td>AMOLED 手表 · 深圳维亿魄 Veepoo</td>
+      <td>BLE 蓝牙,经微信小程序中转</td>
+      <td>二类医疗器械注册证资质(仓内文档记载,证号待复核)</td>
+      <td>血压、体温、血糖趋势、血液成分、身体成分、血氧</td>
+      <td><span class="tag ok">已集成</span> 57 页小程序</td>
+    </tr>
+    <tr>
+      <td><b>Veepoo R04 戒指</b></td>
+      <td>智能戒指 · 同上</td>
+      <td>BLE 蓝牙,经微信小程序中转</td>
+      <td>同上</td>
+      <td>心率、血氧、HRV、压力、睡眠</td>
+      <td><span class="tag ok">已集成</span></td>
+    </tr>
+    <tr>
+      <td><b>诊脉仪</b></td>
+      <td>脉诊设备</td>
+      <td>—</td>
+      <td>—</td>
+      <td>脉象数据</td>
+      <td><span class="tag info">独立看板</span></td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    <b>两条架构的取舍:</b>Veepoo 走「设备 → 小程序 → 平台」,要求患者会用微信、每次手动同步,适合年轻患者自管理;iwown 走「设备 → 4G → 平台」,患者戴上即采,零操作,适合老年患者和院外随访。<b>轻量平台 1.0 以 iwown 4G 链路为数据采集入口主力,Veepoo 链路保留为补充。</b>
+  </div>
+
+  <h3>1.2 iwown 4G 手表:数据全景(能拿到什么)</h3>
+
+  <div class="flow"><b>iwown 手表</b> ──4G HTTP POST(二进制 protobuf)──▶ <b>dc.ncrc.org.cn/iwown/</b>
+     ──nginx 反代──▶ <b>192.168.4.104:8099</b>(解帧 + 解 protobuf)──▶ <b>六元 MySQL</b>(iwown_data / iwown_device 表)</div>
+
+  <p>手表按设定周期批量上传三类二进制帧和三个 JSON 端点。服务端已做「常用体征抽列入库 + 全量 JSON 无损保留 + 原始帧兜底」三层存储,即使解码失败原始数据也不丢,可回溯重算。</p>
+
+  <h4>A. 已入库、随访平台可直接取用 <span class="tag ok">立即可用</span></h4>
+  <table>
+    <tr><th>指标</th><th>内容</th><th>频率</th><th>库表字段</th></tr>
+    <tr><td>心率</td><td>分钟均值 / 最小 / 最大</td><td>分钟级,批量上传</td><td>hr_avg / hr_min / hr_max</td></tr>
+    <tr><td>血氧</td><td>分钟均值 / 最小 / 最大</td><td>分钟级</td><td>spo2_avg / spo2_min / spo2_max</td></tr>
+    <tr><td>血压</td><td>收缩压 / 舒张压</td><td>测量时</td><td>sbp / dbp</td></tr>
+    <tr><td>体温</td><td>估算体温 + 腋温</td><td>测量时</td><td>temperature / temperature_axillary</td></tr>
+    <tr><td>压力值</td><td>由 HRV 疲劳度换算</td><td>分钟级</td><td>pressure</td></tr>
+    <tr><td>活动量</td><td>步数 / 距离 / 卡路里</td><td>分钟级 + 当天实时累计</td><td>step / distance / calorie</td></tr>
+    <tr><td>设备状态</td><td>电量 / 4G 信号 / 在线离线</td><td>实时帧</td><td>battery / rssi</td></tr>
+    <tr><td>测量时间</td><td>帧内真实测量时刻,已修正时区</td><td>—</td><td>recorded_at</td></tr>
+  </table>
+
+  <h4>B. 协议已支持、数据已无损落库,接入只需加解析视图 <span class="tag info">按需开启</span></h4>
+  <table>
+    <tr><th>类别</th><th>指标</th><th>随访价值</th></tr>
+    <tr><td>报警事件(0x12 帧,已接收)</td><td>跌倒报警、SOS(含经纬度+通话记录)、心率/血氧/血压/体温/血糖/血钾越限、心血管报警、久坐、未佩戴、低电量</td><td><b>最高。</b>这是从"采数据"到"主动干预"的关键:报警直达随访工作台,CRC 可即时回访</td></tr>
+    <tr><td>定位</td><td>GNSS 每次上传最近 5 条,GPS / WiFi / 基站三种来源</td><td>院外活动半径、SOS 定位</td></tr>
+    <tr><td>HRV</td><td>SDNN / RMSSD / PNN50 / MEAN</td><td>自主神经评估、科研数据</td></tr>
+    <tr><td>睡眠</td><td>原始分钟数据已上传;深睡/浅睡/评分/OSAHS 风险等结果需服务端计算后回给手表显示</td><td>睡眠质量随访,算法来源待与 iwown 确认</td></tr>
+    <tr><td>更多体征</td><td>呼吸率、房颤标记 AF、情绪、体脂 BIOZ、血糖、血钾、尿酸、血脂五项、跌倒风险评估</td><td>视所购型号固件是否支持,逐项真机验证后开放</td></tr>
+    <tr><td>外接设备转发</td><td>手表可中继第三方血压计、体脂秤、血氧仪、体温计、血糖仪、血酮仪、智能床垫(在离床/心率/呼吸率/体动)</td><td>家庭场景多设备汇聚到同一链路,潜力大</td></tr>
+    <tr><td>通话与设备信息</td><td>通话记录、SOS 呼叫日志、IMEI/ICCID/佩戴状态/型号/固件版本</td><td>设备运维与依从性监测(佩戴率)</td></tr>
+  </table>
+
+  <h4>C. 待确认事项 <span class="tag warn">对接前要核</span></h4>
+  <table>
+    <tr><th>事项</th><th>说明</th><th>动作</th></tr>
+    <tr><td>真机指标子集</td><td>协议全集不等于所购型号固件能力,ECG/PPG/血糖等高级项要逐项验证</td><td>真机样本核对,以 raw_hex 重放验证</td></tr>
+    <tr><td>字段单位与 CRC</td><td>官方示例不校验 CRC,字段单位待真机回归</td><td>同上,原始帧已全存可重算</td></tr>
+    <tr><td>上传频率配置</td><td>定时批量上传,间隔由服务端下发指令配置,需 iwown 企业服务账号鉴权</td><td>向 iwown 对接人索取 EntService 凭据</td></tr>
+    <tr><td>设备资质</td><td>该型号是否具备二类医疗器械注册证,影响数据在临床随访中的定位</td><td>向 iwown 索取注册证信息,与第②章盘点对照</td></tr>
+  </table>
+
+  <h3>1.3 与随访平台的对接清单(1.0 落地四步)</h3>
+  <ol class="steps">
+    <li><b>患者绑定:</b>iwown_device 表已预留 patient_no 字段,后台把设备号与门诊号绑定,数据即归到患者名下。与 S101 门诊号体系同构,可复用绑定页面。</li>
+    <li><b>看板接入:</b>原型 iwown-dashboard.html 已有三看板雏形,把 iwown_data 体征列接入随访平台患者视图,入组后自动展示趋势。</li>
+    <li><b>报警工作流:</b>解析 0x12 报警帧入事件表,跌倒 / SOS / 体征越限推送随访工作台,形成「报警 → CRC 回访 → 记录」闭环。报警阈值经下发指令可配。</li>
+    <li><b>佩戴依从性:</b>用未佩戴报警 + 设备在线状态做佩戴率统计,纳入随访质量指标。</li>
+  </ol>
+
+  <div class="callout">
+    <b>与 06-09 会议的衔接:</b>会议明确轻量平台核心是信息采集,覆盖入组前中后。穿戴设备链路就是其中「被动连续采集」的入口,与 AI 语音转结构化、OCR 病历识别并列为三类采集方式。本章 A 表字段可直接作为轻量平台 1.0 设计方案中「智能穿戴数据采集入口」的字段清单。
+  </div>
+</section>
+
+<!-- ============ 第 2 章 ============ -->
+<section id="s2">
+  <h2><span class="num">②</span>二类证智能穿戴产品盘点</h2>
+  <div class="h2sub">谁有证 · 证管什么 · 能采什么数据 · 有没有对接口</div>
+  <div class="callout">
+    <b>监管背景:</b>腕戴设备在华获证集中在四类注册名:腕部单导(联)心电采集器、腕部心电血压记录仪、腕部(动态)血压记录仪、移动心电图/脉率房颤提示软件。截至 2025-10,「可穿戴器械」标签下已有 351 个获批注册证,其中医用诊察和监护类 273 个。所有「获证项」都限定为采集、记录、提示,<b>不含自动诊断</b>,随访平台话术必须与注册证适用范围一致。
+  </div>
+  <div class="callout warn">
+    <b>证号使用说明:</b>下表证号均回溯到厂商官方页面或权威报道原文;NMPA 官方数据库为动态页面,本次未能程序化交叉验证。<b>采购前务必在 NMPA「医疗器械查询」按注册人名称复核一次</b>。查不到的标「证号待查」,查无获证证据的标「未获证 / 未能证实」。
+  </div>
+
+  <h3>2.1 手表类(获证产品)</h3>
+  <table>
+    <tr><th>产品</th><th>注册证</th><th>医疗级功能(获证项)</th><th>消费级数据</th><th>数据对接</th><th>价格</th></tr>
+    <tr>
+      <td><b>华为 WATCH D2</b> <span class="tag ok">首推</span></td>
+      <td>腕部动态血压记录仪 粤械注准20242071034(2024-08);叠加心电分析提示软件 粤械注准20212211827</td>
+      <td>单次血压 + <b>24h 动态血压</b>、单导心电、窦律/房颤/早搏软件提示</td>
+      <td>心率、血氧、睡眠、皮肤温度、HRV、压力、运动</td>
+      <td><b>Health Kit 企业 REST API</b>,资质审核后可读心率血氧血压,支持房颤订阅推送 — 国产生态唯一「获证设备 + 官方云端 API」闭环</td>
+      <td>2988 元</td>
+    </tr>
+    <tr>
+      <td>华为 WATCH D(上代)</td>
+      <td>腕部心电血压记录仪,渠道资质页写作 粤械注准20212071428,建议复核</td>
+      <td>示波法血压(单次)+ 单导心电</td>
+      <td>心率、血氧、睡眠、体温</td>
+      <td>同 Health Kit</td>
+      <td>已被 D2 迭代,新购选 D2</td>
+    </tr>
+    <tr>
+      <td>华为 GT3 / GT3 Pro / WATCH 3/4 系列 ECG 款</td>
+      <td>硬件单导心电采集器 2021-06 获国家局二类注册(证号存疑待查);软件证同 粤械注准20212211827</td>
+      <td>单导 ECG + 窦律/房颤/早搏提示</td>
+      <td>全套运动健康数据</td>
+      <td>同 Health Kit</td>
+      <td>约 1500-3500 元</td>
+    </tr>
+    <tr>
+      <td><b>Apple Watch 国行</b></td>
+      <td>移动心电图房颤提示软件 国械注进20212210223;移动脉率房颤提示软件 国械注进20212210317;房颤历史 2025-12 获批(证号待查)</td>
+      <td>单导 ECG、房颤提示、房颤负荷(SE 款不支持 ECG)</td>
+      <td>心率、血氧、睡眠、体温、跌倒检测</td>
+      <td><b>无云端 API</b>,数据在 iPhone HealthKit,须自研 iOS App 经用户授权读取;安卓患者不可用,随访场景硬伤</td>
+      <td>约 2999 元起</td>
+    </tr>
+    <tr>
+      <td>OPPO Watch ECG 版</td>
+      <td>腕部单导联心电采集器 粤械注准20202071387(2020-09,国内首款 eSIM 获证手表)</td>
+      <td>单导 ECG 采集</td>
+      <td>心率、睡眠、血氧、运动</td>
+      <td>Health Research Kit 偏科研合作,非通用企业 API</td>
+      <td>2499 元;2021 后未迭代,渠道存货少 <span class="tag warn">不建议新选</span></td>
+    </tr>
+    <tr>
+      <td>三星 Galaxy Watch 国行</td>
+      <td>移动心电图房颤提示软件 国械注进20232210017(2023-02)</td>
+      <td>单通道 ECG 与房颤窦律提示,22 岁以下不适用;<b>血压功能官方明示在华非医疗器械</b></td>
+      <td>心率、血氧、睡眠、体成分</td>
+      <td>国行数据开放能力弱,无企业健康数据云 API</td>
+      <td>约 1500-3500 元</td>
+    </tr>
+    <tr>
+      <td><b>小米腕部心电血压记录仪</b></td>
+      <td>北京局二类证,报道证号 京械注准20242070384;「心电血压记录仪」与「血压记录仪 H1e」两款证号媒体有混用,按型号复核</td>
+      <td>示波法血压 + 脉率、腕部单导心电</td>
+      <td>心率、血氧、睡眠、运动(小米健康 App)</td>
+      <td><b>无企业开放平台</b>,数据沉淀在小米健康 App,自动采集对接是短板</td>
+      <td>1999 元,双医疗功能性价比最高</td>
+    </tr>
+    <tr>
+      <td>华米 Amazfit Balance 等</td>
+      <td>血压测量软件 2023-09 获国家二类注册(国内首个纯软件血压证,证号未披露待查),固件覆盖 5 款表</td>
+      <td>血压测量(软件)</td>
+      <td>ECG(消费功能)、心率、血氧、睡眠、体成分</td>
+      <td>Zepp 平台对企业开放有限</td>
+      <td>约 1500 元档</td>
+    </tr>
+    <tr>
+      <td>乐心 Health Watch H1</td>
+      <td>腕部单导心电采集器 粤械注准20192070823(2019-12,国内首款获证 ECG 手表,有效期至 2029)</td>
+      <td>单导心电采集记录</td>
+      <td>心率、睡眠、步数</td>
+      <td>乐心有健康云平台与医院社康标准化接口,<b>B 端对接基因好</b></td>
+      <td>1988 元;硬件 2019 年款已老,选乐心实为选其机构对接方案</td>
+    </tr>
+  </table>
+
+  <h3>2.2 手环 / 医疗腕带类</h3>
+  <table>
+    <tr><th>产品</th><th>获证情况</th><th>能采什么</th><th>对接</th><th>随访适配判断</th></tr>
+    <tr>
+      <td><b>乐普(Viatom)Wear O2 腕带血氧仪</b></td>
+      <td>报道证号 粤械注准20202071597,建议复核</td>
+      <td>持续血氧 + 脉率(睡眠呼吸场景)、体动、睡眠</td>
+      <td>乐普 B 端开放平台,Viatom 长期做 OEM 集成,SDK 商务洽谈</td>
+      <td><span class="tag ok">适合</span> 单价数百元,批量发放友好</td>
+    </tr>
+    <tr>
+      <td>乐普穿戴器械线(ER1/ER2 动态心电、Checkme 等)</td>
+      <td>乐普为心血管器械龙头,证照齐全度行业最专业(单品证号未逐一核验)</td>
+      <td>动态心电、掌上多参数检测</td>
+      <td>同上</td>
+      <td><span class="tag ok">心电随访补充</span></td>
+    </tr>
+    <tr>
+      <td>dido 健康手环(F50S Pro 等)</td>
+      <td><b>未能证实持有 NMPA 二类证</b>;宣传口径为「FDA 二类」(美国注册,非 NMPA),「无创血糖」宣传需警惕</td>
+      <td>心率、血压趋势、血糖趋势等(消费级)</td>
+      <td>—</td>
+      <td><span class="tag risk">按未获证对待</span></td>
+    </tr>
+    <tr>
+      <td>九安医疗 iHealth</td>
+      <td>主营血压计血糖仪血氧仪等家用械字号,<b>未发现手表手环形态获证</b></td>
+      <td>家用血压计等数据上传成熟</td>
+      <td>iHealth 生态成熟</td>
+      <td><span class="tag info">非穿戴范畴</span> 家用血压计可另行考虑</td>
+    </tr>
+    <tr>
+      <td>脉搏波 maibobo(深圳瑞光康泰)</td>
+      <td>获证产品均为上臂式/医用血压计(RBP-300 等),<b>手表形态未能证实获证</b></td>
+      <td>血压(上臂式)</td>
+      <td>RBP-2400 进了华为鸿蒙智联生态</td>
+      <td><span class="tag info">非穿戴范畴</span></td>
+    </tr>
+    <tr>
+      <td>安顿预警手表</td>
+      <td><b>明确未获证</b>:心梗脑卒中「预警」类在 NMPA 注册审批中无先例,全行业无一款获证</td>
+      <td>所谓预警输出</td>
+      <td>—</td>
+      <td><span class="tag risk">排除</span> 医疗平台采信其输出有合规风险</td>
+    </tr>
+    <tr>
+      <td>SKG 小警卫预警手表</td>
+      <td>软文称血压「达到 II 类标准」「30+ 项认证」,<b>未能核到手表本体 NMPA 证号</b></td>
+      <td>血压等(消费级)</td>
+      <td>—</td>
+      <td><span class="tag risk">按未获证对待</span> 2999 元性价比也不占优</td>
+    </tr>
+  </table>
+
+  <h3>2.3 戒指类</h3>
+  <table>
+    <tr><th>产品</th><th>获证情况</th><th>能采什么</th><th>对接</th><th>随访适配判断</th></tr>
+    <tr>
+      <td><b>RingConn(深圳玖治)</b></td>
+      <td>多家媒体一致报道<b>心率血氧已获 NMPA 二类注册,为国内首款获证智能戒指</b>;具体证号未公开披露,按企业名核</td>
+      <td>获证项:心率、血氧;消费级:睡眠分期、睡眠呼吸暂停、HRV、体温、压力,Gen 3 夜间血压趋势(趋势未见获证)</td>
+      <td>无公开企业 API,有瑞金医院等科研合作先例,对接需商务谈</td>
+      <td><span class="tag ok">长期队列试点</span> 续航与佩戴依从性远超手表;Gen 3 国内 2599 元起,无订阅费</td>
+    </tr>
+    <tr>
+      <td><b>乐普(Viatom)O2Ring 指环血氧仪</b></td>
+      <td>二类「脉搏血氧仪」,证号印于包装可查(本次未核到,待查);FDA 版 2025-02 也已获批</td>
+      <td>连续血氧、脉率、体动,低氧震动提醒</td>
+      <td>Viatom B 端 SDK / OEM 成熟</td>
+      <td><span class="tag ok">最「械」的戒指</span> 睡眠呼吸、呼吸慢病、术后血氧随访;数百元档</td>
+    </tr>
+    <tr>
+      <td>Oura Ring</td>
+      <td><b>无 NMPA 注册,不在华销售</b>(配送国家不含中国大陆)</td>
+      <td>睡眠、HRV、体温等</td>
+      <td>订阅制 + 数据出境问题</td>
+      <td><span class="tag risk">排除</span></td>
+    </tr>
+    <tr>
+      <td>CIRCUL 戒指(深圳倍泰)</td>
+      <td>未找到 NMPA 注册证据,主走海外 FDA 路线</td>
+      <td>血氧、心率</td>
+      <td>—</td>
+      <td><span class="tag warn">未能证实</span></td>
+    </tr>
+    <tr>
+      <td>其他动态</td>
+      <td colspan="3">乐心在研医疗级血氧智能戒指,以后续公告为准;天键 MRing、华米 Helio Ring、魅族戒指均为消费级无获证证据</td>
+      <td><span class="tag info">观察</span></td>
+    </tr>
+  </table>
+
+  <h3>2.4 随访平台选型梯队</h3>
+  <table>
+    <tr><th>梯队</th><th>产品</th><th>一句话理由</th></tr>
+    <tr><td>1</td><td><b>华为 WATCH D2</b></td><td>证最硬(动态血压器械证 + 心电软件证双证),医疗级血压 ECG 房颤一机全包,Health Kit 企业 API 可自动采集 + 房颤订阅,2988 元患者依从性好</td></tr>
+    <tr><td>2</td><td><b>乐普系 Wear O2 / O2Ring / ER 系列</b></td><td>器械血统最纯,B 端开放平台和机构对接是主业;O2Ring 是「戒指形态 + 二类证」唯一成熟组合;单价低适合批量发放</td></tr>
+    <tr><td>3</td><td><b>小米腕部心电血压记录仪</b></td><td>1999 元拿到血压心电双医疗功能,性价比最高;无企业 API,适合患者自测 + 人工回报的轻随访</td></tr>
+    <tr><td>4</td><td><b>RingConn Gen 3</b></td><td>戒指里唯一获证,佩戴依从性最好,适合长期睡眠 HRV 队列;证号未公开 + 无公开 API 是短板</td></tr>
+    <tr><td>5</td><td><b>Apple Watch</b></td><td>ECG + 脉率房颤双证 + 房颤历史,数据质量好;只覆盖 iPhone 患者且须自研 App,作补充不作主力</td></tr>
+  </table>
+
+  <div class="callout">
+    <b>选型组合建议:</b>高血压心血管随访主力用华为 WATCH D2 走 Health Kit API 自动采集;低成本批量发放或血氧呼吸类随访用乐普 O2Ring / Wear O2 走 B 端 SDK;对佩戴依从性敏感的长期队列试点 RingConn;iPhone 房颤患者补充 Apple Watch。华为 D2 的「医保购买」各地执行不一且有叫停案例,不要写进给患者的宣传。
+  </div>
+</section>
+
+<!-- ============ 第 3 章 ============ -->
+<section id="s3">
+  <h2><span class="num">③</span>深圳代工与六元 2.0 硬件路径</h2>
+  <div class="h2sub">ODM 厂商盘点 · 合作模式 · 拿证路径</div>
+  <div class="callout">
+    <b>结论速览:</b>深圳及珠三角集中了全国约六到七成的智能手表手环 ODM 产能,从百台贴牌到百万级 ODM 全梯度都有,供给侧不是瓶颈。现有供应商埃微本身就是 ODM 出身,累计代工出货约 1100 万只,且已转型智慧养老 4G 健康手表方向,与我们场景高度同构,<b>2.0 第一站应先谈埃微深度定制,而不是急着换厂</b>。医疗器械注册人制度 MAH 已全国落地,「六元持证 + 工厂委托生产」路径法规上完全打通。
+  </div>
+
+  <h3>3.1 厂商盘点(14 家速览)</h3>
+  <table>
+    <tr><th>#</th><th>公司</th><th>所在地</th><th>主营形态</th><th>4G 蜂窝</th><th>医疗级 / 拿证</th><th>定制门槛</th></tr>
+    <tr><td>1</td><td><b>埃微 iwown</b> <span class="tag info">现供应商</span></td><td>深圳</td><td>4G 健康手表 / 手环 / 床垫</td><td>✅ 自有 4G 产品线 + IoT 平台</td><td>自有二类证未查实,需商务确认</td><td>需商务询价</td></tr>
+    <tr><td>2</td><td><b>维亿魄 Veepoo</b> <span class="tag info">现供应商</span></td><td>深圳南山</td><td>手表手环方案 + ODM,医疗算法见长</td><td>需确认</td><td>自称血氧脉率算法 2019 年获原 CFDA 认证,需验原件</td><td>需商务询价</td></tr>
+    <tr><td>3</td><td>爱都 IDO</td><td>深圳</td><td>手表手环 ODM,年出货千万级</td><td>需确认</td><td>未见</td><td>需商务询价</td></tr>
+    <tr><td>4</td><td>星迈 Starmax</td><td>深圳</td><td>手表手环 OEM/ODM</td><td>需确认</td><td>未见</td><td><b>100 台起</b>可激光雕 logo(官网公开)</td></tr>
+    <tr><td>5</td><td>领为创新 Linwear</td><td>深圳</td><td>手表 ODM,海思 + OpenHarmony 首家量产</td><td>有 5G / 通话手表线</td><td>未见</td><td>需商务询价</td></tr>
+    <tr><td>6</td><td><b>联硕智能 Best-link</b></td><td>深圳宝安</td><td>4G 手表 / 老人表 / 儿童表 / 戒指</td><td>✅ 4G 是主线</td><td>未见证书,有 16 种健康算法</td><td>需商务询价</td></tr>
+    <tr><td>7</td><td><b>乐心 Lifesense</b></td><td>广东中山</td><td>医疗级手表 / 手环 / 血压计,上市公司</td><td>需确认</td><td>✅ 多产品二类证,ECG 手表 H1 完成 NMPA 注册</td><td>ODM 为主业,接小单需谈</td></tr>
+    <tr><td>8</td><td>dido(声音纪元)</td><td>深圳龙岗</td><td>健康手表手环,品牌商</td><td>部分型号</td><td>宣传称二类认证,待 NMPA 库核实</td><td>非典型代工</td></tr>
+    <tr><td>9</td><td>魔样科技</td><td>深圳</td><td>手表 + 戒指方案 ODM,媒体称市占约 15%</td><td>需确认</td><td>未见</td><td>需商务询价</td></tr>
+    <tr><td>10</td><td>易优斯 E-USE</td><td>深圳宝安</td><td>智能戒指 ODM 专门户</td><td>不适用</td><td>未见</td><td>需商务询价</td></tr>
+    <tr><td>11</td><td>博实结 BSJ</td><td>深圳</td><td>4G/NB 定位终端 + 穿戴定位,创业板上市</td><td>✅ 蜂窝定位主业</td><td>未见</td><td>需商务询价</td></tr>
+    <tr><td>12</td><td>云里物里 Minew</td><td>深圳</td><td>BLE 手环 / 信标 ODM</td><td>❌ BLE 为主</td><td>未见</td><td>需商务询价</td></tr>
+    <tr><td>13</td><td>聚伟电子</td><td>深圳</td><td>手环手表 ODM,小批量方向</td><td>宣称有 4G 健康表方案</td><td>宣称医疗级,无证书证据</td><td>自宣 1000 台起,<span class="tag warn">仅自宣口径</span></td></tr>
+    <tr><td>14</td><td>天键医疗(广东)</td><td>广东</td><td>智能戒指 MRing 等</td><td>不适用</td><td>明确标注「非医疗器械」</td><td>需商务询价</td></tr>
+  </table>
+  <p class="src">来源:艾邦智能手表 ODM 20 强、各厂商官网与 1688 旺铺、深圳湾 / 界面 / 雷峰网等行业报道,详见文末来源汇总。参照系:华米 Zepp(合肥)、九安 iHealth(天津,非深圳;「伊欧乐」实为独立体脂秤公司与其无关)、RingConn 玖治(深圳品牌商,不接代工)。深圳乐源 Lovefit 已跌出 ODM 25 强名单,不建议列入。</p>
+
+  <h3>3.2 重点厂商解读(与我们最相关的 6 家)</h3>
+  <div class="grid2">
+    <div class="card">
+      <h4 style="margin-top:0">埃微 iwown — 迁移成本最低的 2.0 起点</h4>
+      <p style="font-size:13.5px">2012 年成立,2014-2019 年代工出货约 1100 万只,客户覆盖日本欧洲及多家全球 500 强。现已转向可穿戴数字健康 AI 管理 + 一站式智慧养老:4G 健康安全手表 H102C、AI 语音手表 H103、智能床垫、居家报警器。<b>自有 IoT 开放平台支持设备接入、消息订阅转发</b>,正是数据直传随访平台的现成接口。既是 1.0 供应商又有十年 ODM 史,半定制在埃微体系内做迁移成本最低。</p>
+      <p class="src"><a href="https://www.iwown.com/">官网</a> · <a href="https://www.iwown.com/productinfo/2431220.html">H102C</a> · <a href="https://api8.iwown.com/iot_platform/">IoT 平台文档</a> · <a href="https://www.cmpe360.com/p/123388">艾邦榜单</a></p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">维亿魄 Veepoo — 医疗算法最强的方案商</h4>
+      <p style="font-size:13.5px">我们 S101 手表和 R04 戒指的供应商。百人团队八成是医学算法软硬件工程师。ECG 512Hz 采样、静息心率 ±1bpm、医疗级血氧最大误差 ±4% 可筛查睡眠呼吸暂停,自称 2019 年血氧脉率获原 CFDA 认证。若 2.0 卖点是「测得准、能出医疗级指标」,Veepoo 是深圳方案商里医疗属性最强的之一,重点验证其认证文件原件。</p>
+      <p class="src"><a href="https://www.veepoo.cn/about">官网</a> · <a href="https://www.veepoo.net/smart-watch-odm-oem-service">ODM 服务页</a></p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">联硕智能 — 产品形态与我们需求最像</h4>
+      <p style="font-size:13.5px">产品线直接覆盖我们要的所有形态:4G 智能手表、老人手表、儿童手表、智能戒指。服务模式是软硬件加系统一站式:OEM/ODM、App 定制、<b>后台管理系统私有化部署、API 对接</b>、16 种健康监测算法,曾服务日本 Casio、美国 iTouch。私有化后台加 API 对接正是医疗随访平台的核心诉求,值得第一批约谈。</p>
+      <p class="src"><a href="https://best-link.com.cn/">官网</a></p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">乐心医疗 — 珠三角医疗级标杆、受托生产候选</h4>
+      <p style="font-size:13.5px">创业板上市,20 余年医疗级远程健康监测,医疗级手表、血压计、心贴均有二类证,2019 年 ECG 手表 H1 完成 NMPA 注册。ODM 曾占营收九成以上,客户含德英美日一线品牌。<b>走 MAH 委托生产路线时,乐心这类持生产许可的企业是理想受托方候选</b>,是否接小客户委托需商务确认。</p>
+      <p class="src"><a href="https://www.lifesense.com/">官网</a> · <a href="https://www.lifesense.com/newsd/548">H1 注册新闻</a></p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">星迈 Starmax — 公开门槛最低,适合小批量试错</h4>
+      <p style="font-size:13.5px">2015 年成立,6000㎡ 厂房,SMT 贴片到组装测试一站式,销往 65 国。官网公开定制梯度:<b>100 台起免费激光雕 logo</b>,开机画面表盘 UI 等深度定制另谈。是公开信息里 MOQ 门槛最低的正规工厂之一,适合 1.5 阶段小批量贴牌。</p>
+      <p class="src"><a href="https://www.istarmax.com.cn/oem-and-odm/">OEM/ODM 页</a></p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">RingConn 玖治 — 不接代工,但路径值得对标</h4>
+      <p style="font-size:13.5px">深圳团队,港大博士创办,珠三角自有制造,全球智能戒指市占第二。<b>媒体报道其获 NMPA 二类医疗器械认证,为国内首个拿证智能戒指</b>,并与 30 余家医疗学术机构合作。它证明「深圳团队 + 珠三角制造 + 医疗二类证戒指」走得通,是融资叙事的现成对标。</p>
+      <p class="src"><a href="https://www.ithome.com/0/905/624.htm">IT之家</a> · <a href="https://www.baijing.cn/article/54238">白鲸出海</a></p>
+    </div>
+  </div>
+
+  <h3>3.3 合作模式科普:OEM / ODM / JDM</h3>
+  <table>
+    <tr><th>模式</th><th>谁出设计</th><th>拿到什么</th><th>适用阶段</th></tr>
+    <tr><td><b>OEM 贴牌</b></td><td>工厂公模公板,我们只出 logo、包装、App 皮肤</td><td>最快最便宜,产品无差异化,同款满街</td><td>验证市场、融资 demo</td></tr>
+    <tr><td><b>ODM 半定制</b></td><td>工厂方案库 + 按需改外观、固件、算法、App</td><td>开私模独占外观、定制功能,核心设计仍在工厂</td><td>自有品牌正式起盘</td></tr>
+    <tr><td><b>JDM 联合开发</b></td><td>双方联合定义开发</td><td>深度绑定,可谈 IP 归属,投入周期最大</td><td>有稳定量后</td></tr>
+  </table>
+  <p><b>数量级参考(注明口径):</b>贴牌公板百台级可谈(星迈 100 台有官网来源),改固件 App 千台级,开私模通常数千台以上摊薄模具费;传统表壳开模数千至两万元以上,智能表全新私模含外壳结构表带包装多套模具,<b>估算为数万至数十万元量级,以工厂报价为准</b>;交期公板贴牌约 4-8 周、ODM 改模约 3-6 个月(行业经验估算)。具体 MOQ 与单价全部需商务询价。</p>
+
+  <h3>3.4 医疗器械注册人制度 MAH:自有二类证怎么拿</h3>
+  <div class="card">
+    <p><b>制度框架:</b>注册人制度允许「持证」和「生产」分离。六元作为注册人申报二类证,委托持有相应生产许可的工厂生产;注册人对设计开发、临床、生产、销售、不良事件全生命周期负全责,双方签质量协议。国家药监局 2024 年 38 号公告进一步收紧委托生产监管,注册人自身要建质量管理能力,不是出钱挂名。移动与可穿戴医疗器械有专门审查指导原则(2025 修订版),软件与网络安全资料按此准备。</p>
+    <table>
+      <tr><th>环节</th><th>周期 / 费用</th><th>备注</th></tr>
+      <tr><td>形式审查 + 技术审评</td><td>约 20 个工作日 + 60-90 个工作日</td><td>各省略有差异</td></tr>
+      <tr><td>注册检验</td><td>约 2-6 个月</td><td>检验本身已不收费</td></tr>
+      <tr><td>二类首次注册官费</td><td>各省自定,江苏例 8.45 万元</td><td><b>小微企业二类首次注册可免官费</b></td></tr>
+      <tr><td>临床评价</td><td>免临床目录内则免;同品种比对;真做临床十几万起、上不封顶</td><td>心率血氧类多有同品种可比对,立项前找 CRO 预审</td></tr>
+      <tr><td>全程</td><td><b>免临床路径约 1-1.5 年;含临床约 2-3 年(推算)</b></td><td>—</td></tr>
+    </table>
+    <p><b>关键校准:</b>拿到 ECG 二类证的智能手表至今仍是个位数(华为、OPPO、苹果、华米,乐心 H1 也完成注册),整表拿证门槛真实存在。更常见打法是<b>单指标拿证</b>(血氧、脉率、血压模块)或「消费级整机 + 持证配件」组合。</p>
+    <p class="src"><a href="https://www.huiyelaw.com/news-1926.html">汇业律所 MAH 解析</a> · <a href="https://www.nmpa.gov.cn/xxgk/fgwj/xzhgfxwj/20240403170020128.html">NMPA 2024 年 38 号公告</a> · <a href="https://www.ylzbzz.org.cn/index.php?m=content&c=index&a=show&catid=57&id=69">注册周期与费用</a> · <a href="https://www.eet-china.com/news/202110121129.html">EET-China ECG 拿证统计</a></p>
+  </div>
+
+  <h3>3.5 两个形态的成熟度判断</h3>
+  <div class="grid2">
+    <div class="card">
+      <h4 style="margin-top:0">4G 健康手表公板 <span class="tag ok">成熟,1.5 阶段首选</span></h4>
+      <p style="font-size:13.5px">芯片平台高度成熟:紫光展锐 W307/W317/W117 等专为 4G 手表设计,集成 4G + 蓝牙 + WiFi + GNSS,官方面向儿童老人手表场景。市面康养公板普遍带 GPS 多重定位、双向通话、SOS、电子围栏、跌倒报警、心率血压趋势血氧。贴牌不动模具,主要花费在 logo、包装、固件参数和数据接口对接。深圳可谈的:埃微、联硕、博实结,星迈聚伟询价确认。</p>
+    </div>
+    <div class="card">
+      <h4 style="margin-top:0">智能戒指 ODM <span class="tag warn">可做,但当不了随访主终端</span></h4>
+      <p style="font-size:13.5px">2025 上半年全球出货 160 万枚,深圳是全球戒指供应链中心。可接 ODM 的有魔样、易优斯、联硕及友宏、雅为、凌拓、玖智等方案商。消费级方案(睡眠 HRV 血氧)成熟可贴牌,但<b>戒指无屏、无蜂窝、依赖手机,做不了 4G 直传和主动报警</b>,除 RingConn 外几乎无人拿医疗证。定位:2.5 阶段夜间睡眠与依从性补充采集。</p>
+    </div>
+  </div>
+  <p class="src" style="margin-top:18px">主要来源:<a href="https://www.cmpe360.com/p/123388">艾邦智能手表 ODM 20 强</a> · <a href="https://m.kchuhai.com/developers/view-756.html">埃微企业资料</a> · <a href="https://www.shenzhenware.com/articles/15280">深圳湾爱都专访</a> · <a href="https://www.jiemian.com/article/1130347.html">界面乐心报道</a> · <a href="https://www.unisoc.com/cn/product/SmartWearables">紫光展锐穿戴产品线</a> · <a href="https://www.thepaper.cn/newsDetail_forward_32056358">澎湃戒指出货统计</a> · <a href="https://zhuanlan.zhihu.com/p/478780653">知乎 ODM 25 强洗牌</a>;其余见各小节内链。聚伟电子信息全部来自自宣软文已降权;埃微 / 星迈 / 领为 / 联硕 / 魔样 / 易优斯的自有医疗器械证书均未在公开渠道查到证据,签约前需逐家核验。</p>
+</section>
+
+<!-- ============ 第 4 章 ============ -->
+<section id="s4">
+  <h2><span class="num">④</span>路线建议</h2>
+  <div class="h2sub">从 1.0 到 2.0 的三步走</div>
+  <div class="kpi">
+    <div class="item"><div class="v">1.0</div><div class="k">现在 · iwown 链路收尾<br>绑定 + 看板 + 报警闭环</div></div>
+    <div class="item"><div class="v">1.0+</div><div class="k">按病种引入获证成品<br>华为 D2 / 乐普 O2Ring</div></div>
+    <div class="item"><div class="v">1.5</div><div class="k">0-6 月 · 公板贴牌<br>自有品牌立起来</div></div>
+    <div class="item"><div class="v">2.0</div><div class="k">6-18 月 · ODM 私模<br>+ 合规预研</div></div>
+    <div class="item"><div class="v">3.0</div><div class="k">18 月+ · MAH 自有二类证<br>硬件变医疗资产</div></div>
+  </div>
+
+  <h3>4.1 五步路线</h3>
+  <ol class="steps">
+    <li><b>1.0(本周内可动):</b>完成 iwown 链路三件事 — 患者绑定、看板接入随访平台、0x12 报警帧解析进工作台。同步向 iwown 索取 EntService 凭据和该型号注册证信息,真机核字段。这就是 06-09 会议要的「数据采集入口」初稿落点。</li>
+    <li><b>1.0+(与 1.0 并行,按病种选配):</b>高血压心血管随访试点华为 WATCH D2 + Health Kit 企业 API;血氧呼吸类随访批量发乐普 O2Ring。<b>用获证成品先把「医疗级数据进平台」跑通</b>,不必等自有硬件。</li>
+    <li><b>1.5(0-6 个月,公板贴牌):</b>首选与埃微谈 H102C / H103 公板品牌定制 + IoT 平台直连六元后台,1.0 平滑升级零迁移;同步约谈联硕智能(私有化后台是现成的)和星迈(100 台门槛)比价备份。目标百台到千台级,融资 demo + 试点落地。产品页规范表述为「健康管理参考,非医疗诊断」。</li>
+    <li><b>2.0(6-18 个月,ODM 半定制):</b>在 Veepoo(医疗算法强)、爱都(量产强)、领为(技术栈新)、联硕(后台配套强)中选 1-2 家开私模:独占外观 + 定制固件(随访提醒、用药打卡、跌倒调参)+ 数据协议直连,签外观独占与数据归属条款。同期找 CRO 对照免临床目录做预审,确定先拿哪个单指标(血氧脉率最常见),注册检验前置。</li>
+    <li><b>3.0(18 个月+,MAH 自有证):</b>六元作为注册人申报二类证(优先单指标),委托持生产许可的工厂生产,受托方候选乐心医疗或推动埃微 / Veepoo 走受托资质。拿证后融资叙事直接对标 RingConn(消费级起量 → NMPA 二类证 → 医疗机构合作)与乐心(ODM 现金流 → 医疗证 → 慢病管理服务),两条都是已验证的珠三角路径。戒指作为 2.5 阶段第二形态,复用同一套注册与质量体系。</li>
+  </ol>
+
+  <h3>4.2 下一步行动清单</h3>
+  <table>
+    <tr><th>#</th><th>动作</th><th>负责 / 渠道</th><th>产出</th></tr>
+    <tr><td>1</td><td>iwown 链路收尾:患者绑定 + 看板 + 报警工作流;索取 EntService 凭据与注册证信息</td><td>我们 + iwown 对接人</td><td>1.0 数据采集入口上线</td></tr>
+    <tr><td>2</td><td>向埃微商务发函:ODM 定制清单 + MOQ + IoT 平台对接文档</td><td>商务</td><td>2.0 第一候选报价</td></tr>
+    <tr><td>3</td><td>约谈联硕、星迈、Veepoo 拿书面报价(MOQ / 模具费 / 交期 / 认证)</td><td>商务</td><td>比价表</td></tr>
+    <tr><td>4</td><td>华为 Health Kit 企业开发者资质申请预研;乐普开放平台商务接触</td><td>技术 + 商务</td><td>获证成品对接可行性结论</td></tr>
+    <tr><td>5</td><td>找 CRO 做「4G 健康手表免临床路径」预评估</td><td>商务</td><td>拿证路径与预算</td></tr>
+    <tr><td>6</td><td>所有厂商宣称的医疗资质,在 NMPA 注册数据库按证号核验后再写进 BP</td><td>我们</td><td>合规底稿</td></tr>
+  </table>
+
+  <div class="callout risk">
+    <b>三条红线,写 BP 和对外宣传前先过一遍:</b>① 证号一律以 NMPA 数据库复核为准,本报告标「待查 / 未能证实」的不得当作已获证写;② 获证项仅限采集记录提示,任何「诊断 / 预警」表述都越界(安顿是反面教材);③ 未获证设备的输出在平台里定位为「健康管理参考」,与械字号数据分层展示。
+  </div>
+</section>
+
+</div>
+</main>
+
+<footer>六元随访平台 · 智能穿戴设备调研 · 2026-06-10 整理 · 内部对接材料</footer>
+
+</body>
+</html>
