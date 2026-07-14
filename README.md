@@ -44,11 +44,11 @@
 
 **统一入口**：[📚 智能随访 · 文档中心](https://qqyjx.github.io/suifang/docs/) — 左侧分类 sidebar + 右侧 iframe，URL hash 记忆当前文档，移动端友好。
 
-涵盖 11 份文档，分三大类：
+涵盖 13 份文档，分三大类：
 
 - **使用与流程**：医院交付使用指南 / 新设备接入手册 / FAQ 常见问题清单
 - **测试与运维**：真机测试 checklist / 功能测试-手表数据上传 / 服务器运维
-- **开发与设计**：SDK 数据采集全景 / Veepoo SDK 使用文档 / 业务逻辑设计 v10 / UI 原型 v10 / Pencil+Claude Code 工作流
+- **开发与设计**：**随访平台 1.0 设计方案** / 智能穿戴设备调研与对接 / SDK 数据采集全景 / Veepoo SDK 使用文档 / 业务逻辑设计 v10 / UI 原型 v10 / Pencil+Claude Code 工作流
 
 > 直接打开 [`docs/`](https://qqyjx.github.io/suifang/docs/) 也可以 (GitHub Pages 默认入口)。原 11 份独立 .html 文件未删, 老链接仍可用。
 
