@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>随访平台 1.0 设计方案 · 六元随访平台</title>
+<title>随访平台 1.0 设计方案 · 智能随访系统</title>
 <style>
   :root {
     --primary: #1565a8;
@@ -64,8 +64,8 @@
 <header>
   <div class="wrap">
     <h1>随访平台 1.0 设计方案</h1>
-    <div class="sub">六元随访平台 · 我方原型倒逼对齐 — 架构 / 功能模块 / 数据模型 / API / 里程碑</div>
-    <div class="meta">整理:肖逸凡 · 2026-07-13 · 策略:设计文档先行 → 可演示原型 → 与六元对齐分工;技术形态沿用现有生产栈(静态前端 + Python 服务 + 六元 MySQL)</div>
+    <div class="sub">自建随访平台 — 架构 / 功能模块 / 数据模型 / API / 里程碑</div>
+    <div class="meta">整理:肖逸凡 · 2026-07-13 · 策略:设计文档先行 → 可演示版本 → 生产试点;技术形态沿用现有生产栈(静态前端 + Python 服务 + 六元 MySQL)</div>
   </div>
 </header>
 
@@ -90,17 +90,17 @@
   <p class="lead">采集层已建成在产,平台层空缺 — 本方案把"1.0 落地四步"落成可评审的设计。</p>
   <div class="card">
     <p><b>现状</b>:三条设备数据链路(S101/R04 小程序、诊脉仪浏览器上传、iwown 4G 直传)均已上线生产,数据入六元 MySQL(<code>h6dp_suifang</code>),但目前只有"按设备看数据"的三块独立看板,没有<b>以患者为中心</b>的随访平台层 — 患者绑定、跨设备患者视图、报警工作台、佩戴依从性统计都还不存在。</p>
-    <p style="margin-top:10px"><b>本方案定义</b>:随访平台 1.0 的定位边界、总体架构、5 个功能模块、3 张新增数据表、8 个新 API、3 个前端视图、4 个里程碑。评审通过后按 ⑦ 里程碑推进,产出一个接<b>真实生产数据</b>的可演示原型,以此为底与六元对齐轻量平台 1.0 的分工。</p>
+    <p style="margin-top:10px"><b>本方案定义</b>:随访平台 1.0 的定位边界、总体架构、5 个功能模块、3 张新增数据表、8 个新 API、3 个前端视图、4 个里程碑。评审通过后按 ⑦ 里程碑推进,产出一个接<b>真实生产数据</b>的可用版本,直接进入生产试点。</p>
   </div>
 </section>
 
 <section id="s1">
   <h2><span class="num">①</span>定位与边界</h2>
-  <p class="lead">和六元轻量平台 1.0 的关系,以及 1.0 明确不做什么。</p>
+  <p class="lead">平台是什么、按什么原则建,以及 1.0 明确不做什么。</p>
 
-  <h3>1.1 定位:我方原型倒逼对齐</h3>
+  <h3>1.1 定位:自建随访平台</h3>
   <div class="card">
-    <p>06-09 会议明确轻量平台 1.0 核心是<b>信息采集</b>(覆盖入组前中后),平台主体由六元负责,我方负责智能穿戴数据采集入口。但采集入口的价值要在"患者视图 + 报警闭环"里才能被看见 — 因此我方先做一个<b>可演示的平台原型</b>(接真数据),把设备链路的完整价值呈现出来,再以原型为底与六元谈分工:哪些模块并入六元平台、哪些保留为我方子系统。</p>
+    <p>平台由我方<b>自建自用</b>:三条设备链路已经在我方手里跑通并在产,患者绑定、跨设备患者视图、报警闭环、依从性统计在同一套栈上顺势建成,即为一个完整可用的随访平台 1.0。核心是把"采数据"升级为"以患者为中心的随访工作流"— 医护打开一个页面,能看到每个患者是谁、体征怎么样、有没有报警、报警处理到哪一步。</p>
   </div>
 
   <h3>1.2 设计原则</h3>
@@ -114,7 +114,7 @@
 
   <h3>1.3 非目标(1.0 不做)</h3>
   <ul class="plain">
-    <li>不做 HIS/电子病历系统对接,不做完整 EMR — 那是六元平台或 2.0 的事</li>
+    <li>不做 HIS/电子病历系统对接,不做完整 EMR — 2.0 再议</li>
     <li>不做随访计划/问卷引擎(排期到 1.1,本方案仅预留数据模型钩子,见 3.5)</li>
     <li>不做账号权限体系 — 原型阶段沿用现看板的"链接即访问"模式,上生产前再加最简 token 门</li>
     <li>不做 App / 小程序新端 — 平台是医护侧 Web,患者侧维持现状</li>
@@ -182,7 +182,7 @@
 
   <h3>3.5 M5 随访计划(1.1 预留,不实做)</h3>
   <div class="card">
-    <p>计划/任务/问卷引擎推迟到 1.1(大概率由六元平台承载)。1.0 仅在 <code>platform_followup_log</code> 里预留 <code>plan_id</code> 空列作为钩子,避免将来迁移改表。</p>
+    <p>计划/任务/问卷引擎推迟到 1.1。1.0 仅在 <code>platform_followup_log</code> 里预留 <code>plan_id</code> 空列作为钩子,避免将来迁移改表。</p>
   </div>
 </section>
 
@@ -224,7 +224,7 @@
     <tr><td>POST</td><td><code>/api/platform/alarm/ingest</code></td><td>触发一次 alarm 行 → 事件表解析(幂等,供定时任务/手动刷新)</td><td>M3</td></tr>
     <tr><td>GET</td><td><code>/api/platform/compliance?patientNo=&days=</code></td><td>佩戴依从性明细(每日佩戴率曲线)</td><td>M4</td></tr>
   </table></div>
-  <div class="warn-box"><b>写接口的最简门禁</b>:原型阶段读接口开放(与现看板一致),三个 POST 写接口要求 header 带共享 token(环境变量注入,不入仓),防止公网误写。正式并入六元平台后再换其账号体系。</div>
+  <div class="warn-box"><b>写接口的最简门禁</b>:原型阶段读接口开放(与现看板一致),POST 写接口要求 header 带共享 token(环境变量注入,不入仓),防止公网误写。1.1 再升级为账号体系。</div>
 </section>
 
 <section id="s6">
@@ -240,13 +240,13 @@
 
 <section id="s7">
   <h2><span class="num">⑦</span>里程碑与验收</h2>
-  <p class="lead">每步可独立演示、可验收,随时可拿去与六元对齐。</p>
+  <p class="lead">每步可独立演示、可验收。</p>
   <div class="table-scroll"><table>
     <tr><th>里程碑</th><th>交付物</th><th>验收标准</th></tr>
     <tr><td><b>M0 设计评审</b>(本文档)</td><td>本设计方案</td><td>定位/模块/数据模型确认,进入实施</td></tr>
-    <tr><td><b>M1 只读原型</b></td><td>platform_patient 表 + patients/vitals API + 患者列表/详情两视图</td><td>用真实生产数据演示:绑定 1 台真机 iwown 设备到测试患者,详情页出真趋势</td></tr>
+    <tr><td><b>M1 只读版本</b></td><td>platform_patient 表 + patients/vitals API + 患者列表/详情两视图</td><td>用真实生产数据演示:绑定 1 台真机 iwown 设备到测试患者,详情页出真趋势</td></tr>
     <tr><td><b>M2 报警闭环</b></td><td>platform_alarm/followup_log 表 + ingest/transition API + 工作台视图</td><td>真机触发一次未佩戴或 SOS 报警 → 工作台可见 → 走完 new→closed 全状态机</td></tr>
-    <tr><td><b>M3 对齐会</b></td><td>原型演示 + 分工提案(哪些模块并入六元/哪些保留)</td><td>形成书面分工结论,决定 1.1 排期(随访计划引擎归属)</td></tr>
+    <tr><td><b>M3 生产试点</b></td><td>部署 .104 + 真实患者建档绑定 + 使用说明</td><td>医护用平台完成一轮真实随访(看趋势 + 处理一次报警),收集反馈定 1.1 排期</td></tr>
   </table></div>
 </section>
 
@@ -256,7 +256,7 @@
     <tr><th>事项</th><th>风险/未知</th><th>动作</th></tr>
     <tr><td>报警帧真机验证</td><td>0x12 协议已支持、落库链路已通,但跌倒/SOS/越限各子类型尚无真机样本回归</td><td>M2 验收即真机触发;raw_hex 全存,可重放</td></tr>
     <tr><td>报警阈值下发</td><td>越限阈值配置需 iwown EntService 企业账号鉴权</td><td>向 iwown 对接人索取凭据(调研报告 1.2C 同款待办)</td></tr>
-    <tr><td>患者主索引归属</td><td>六元平台大概率也有患者表;两边并行会出双主数据</td><td>M3 对齐会必议题:platform_patient 定位为"设备侧影子索引",以六元为准时留同步接口</td></tr>
+    <tr><td>患者主索引唯一性</td><td>门诊号手工录入可能出现错号/重复,归户即错</td><td>platform_patient 为唯一患者主数据;绑定页展示该门诊号已有数据摘要供人工核对</td></tr>
     <tr><td>合规</td><td>体征+定位属个人敏感信息(PIPL);平台话术需与二类证适用范围一致</td><td>页面不展示身份证等强标识;对外材料引用证号前对照注册证适用范围</td></tr>
     <tr><td>.104 部署窗口</td><td>WSL→.104 SSH 走 VPN 常被切</td><td>沿用既有 SOP:PowerShell 端 ssh.exe 部署,先探活再动手</td></tr>
   </table></div>

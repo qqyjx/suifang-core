@@ -23,6 +23,14 @@ API 端点：
 - GET  /api/device/by-sign?sign=...      按 sign 查 wearable_device（不创建）
 - DELETE /api/device/:id                 删 wearable_device 一行 + 联动删该 deviceId 的所有数据
 
+随访平台 1.0 M1 (只读版本, 见 docs/随访平台1.0设计方案.html §④⑤):
+- GET  /api/platform/patients             患者列表 + 三链路绑定态 + 最近上传时间 + 未关闭报警数
+- POST /api/platform/patient              UPSERT platform_patient (建档/改档)
+- POST /api/platform/bind                 绑定/解绑 iwown 设备 或 zhenmaiyi case_id
+- GET  /api/platform/patient/vitals        单患者跨链路体征日聚合 (iwown 日聚合 + 复用 S101 门诊号解析 + 诊脉仪最新一条)
+  写接口门禁: 环境变量 PLATFORM_TOKEN 设了时, POST /api/platform/* 必须带 header
+  X-Platform-Token 且值匹配, 否则 403; 未设时开发模式放行 (启动时打印警告)。
+
 5.06-v9 决定: 不动 wearable_device_data schema (无 wx_openid / patient_no 列),
              患者标识统一写在大 JSON 每条记录的 '门诊号' 字段里, 切片仍按 deviceId 一台设备一行.
              v7/v8 残留的 wx.login / ble_event 端点和函数保留在文件中但不在启动时激活,
@@ -45,11 +53,13 @@ import pymysql
 # ============ 配置 ============
 PORT = 3000
 DB_CONFIG = {
-    'host': '192.168.4.174',
-    'port': 3306,
-    'user': 'developer',
-    'password': 'DePer!$12967',
-    'database': 'h6dp_suifang',
+    # 随访平台 1.0: DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME 环境变量覆盖硬编码默认值
+    # (与下面 WX_APPID 同款写法), 生产环境不设这些变量时行为不变.
+    'host': os.environ.get('DB_HOST') or '192.168.4.174',
+    'port': int(os.environ.get('DB_PORT') or 3306),
+    'user': os.environ.get('DB_USER') or 'developer',
+    'password': os.environ.get('DB_PASSWORD') or 'DePer!$12967',
+    'database': os.environ.get('DB_NAME') or 'h6dp_suifang',
     'charset': 'utf8mb4',
     'connect_timeout': 5,
     'autocommit': True,
@@ -61,6 +71,11 @@ DEFAULT_DEVICE_ID = 1
 # 通过 systemd Environment= 或环境变量注入.
 WX_APPID = os.environ.get('WX_APPID') or 'wxbc5453a4c53dbee8'
 WX_APPSECRET = os.environ.get('WX_APPSECRET') or ''
+
+# ============ 随访平台 1.0 写接口门禁 ============
+# PLATFORM_TOKEN 设了时, POST /api/platform/* 必须带 header X-Platform-Token 且值匹配;
+# 未设时 (本地/原型阶段) 放行, 启动时打印警告. 与 WX_APPSECRET 同一套"敏感值不入仓"原则.
+PLATFORM_TOKEN = os.environ.get('PLATFORM_TOKEN') or ''
 
 # 数据类型 → 中文键名（10 类，未含 daily）
 TYPE_TO_CHINESE = {
@@ -185,6 +200,70 @@ def ensure_zhenmaiyi_table():
         cur.close()
     except Exception as e:
         print('[启动] ensure_zhenmaiyi_table 失败:', e)
+    finally:
+        conn.close()
+
+
+def ensure_platform_tables():
+    """随访平台 1.0 M1: 创建 platform_* 3 张表 (idempotent).
+
+    设计原则 (docs/随访平台1.0设计方案.html §①④): 不动现有 6 张生产表
+    (wearable_device* / zhenmaiyi / iwown_* / ble_event) 一列, 平台层只新增
+    platform_ 前缀表. DDL 归档参考见 database/platform.sql, 本函数为权威来源
+    (与 ensure_zhenmaiyi_table 同一惯例).
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_patient (
+                patient_no VARCHAR(64) PRIMARY KEY COMMENT '门诊号, 患者主键',
+                name VARCHAR(64) DEFAULT NULL,
+                gender ENUM('M','F') DEFAULT NULL,
+                age INT DEFAULT NULL,
+                group_tag VARCHAR(64) DEFAULT NULL COMMENT '队列/分组',
+                zhenmaiyi_case_id VARCHAR(64) DEFAULT NULL COMMENT '诊脉仪 case_id 映射',
+                note VARCHAR(255) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台患者主索引'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_alarm (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                patient_no VARCHAR(64) DEFAULT NULL,
+                device_id VARCHAR(32) DEFAULT NULL,
+                alarm_type VARCHAR(24) DEFAULT NULL COMMENT 'fall/sos/hr/spo2/bp/temp/sedentary/not_worn/low_battery',
+                severity ENUM('crit','warn','info') DEFAULT NULL,
+                lat DECIMAL(10,6) DEFAULT NULL,
+                lng DECIMAL(10,6) DEFAULT NULL,
+                payload_json JSON DEFAULT NULL,
+                source_data_id BIGINT DEFAULT NULL COMMENT '→iwown_data.id, 解析重跑幂等去重',
+                status ENUM('new','acked','followed','closed') DEFAULT 'new',
+                occurred_at DATETIME DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_source_data_id (source_data_id),
+                INDEX idx_patient_no (patient_no),
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台报警事件 (M2 起写入, M1 只建表)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_followup_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                patient_no VARCHAR(64) DEFAULT NULL,
+                alarm_id BIGINT DEFAULT NULL,
+                action ENUM('ack','call','visit','note','close') DEFAULT NULL,
+                result_text TEXT,
+                operator VARCHAR(64) DEFAULT NULL,
+                plan_id BIGINT DEFAULT NULL COMMENT '1.1 随访计划钩子, 暂空',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_patient_no (patient_no)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台回访/处理记录 (M2 起写入, M1 只建表)'
+        """)
+        print('[启动] platform_patient / platform_alarm / platform_followup_log 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_tables 失败:', e)
     finally:
         conn.close()
 
@@ -844,6 +923,295 @@ def device_delete(device_id):
     finally:
         conn.close()
 
+# ============ 随访平台 1.0 M1 (患者中心 + 患者视图, 只读版本) ============
+def check_platform_token(handler):
+    """写接口门禁: PLATFORM_TOKEN 设了时校验 header X-Platform-Token; 未设时放行(dev 模式).
+
+    返回 True = 通过; False = 已直接发送 403 响应, 调用方应立即 return.
+    """
+    if not PLATFORM_TOKEN:
+        return True
+    token = handler.headers.get('X-Platform-Token')
+    if token != PLATFORM_TOKEN:
+        handler._send_json(403, {'ok': False, 'error': 'X-Platform-Token 校验失败或缺失'})
+        return False
+    return True
+
+
+def upsert_platform_patient(body):
+    """UPSERT platform_patient (建档/改档). patient_no 为业务主键(门诊号)."""
+    patient_no = str(body.get('patient_no') or '').strip()
+    if not patient_no:
+        return None, 'patient_no 必填'
+    name = body.get('name') or None
+    gender = body.get('gender') or None
+    if gender not in (None, 'M', 'F'):
+        return None, "gender 必须是 'M' 或 'F'"
+    age_raw = body.get('age')
+    try:
+        age = int(age_raw) if age_raw not in (None, '') else None
+    except (ValueError, TypeError):
+        return None, 'age 必须是整数'
+    group_tag = body.get('group_tag') or None
+    zhenmaiyi_case_id = body.get('zhenmaiyi_case_id') or None
+    note = body.get('note') or None
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT patient_no FROM platform_patient WHERE patient_no = %s', (patient_no,))
+        exists = cur.fetchone()
+        if exists:
+            cur.execute("""
+                UPDATE platform_patient SET
+                  name = %s, gender = %s, age = %s, group_tag = %s,
+                  zhenmaiyi_case_id = %s, note = %s
+                WHERE patient_no = %s
+            """, (name, gender, age, group_tag, zhenmaiyi_case_id, note, patient_no))
+            action = 'update'
+        else:
+            cur.execute("""
+                INSERT INTO platform_patient
+                  (patient_no, name, gender, age, group_tag, zhenmaiyi_case_id, note)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (patient_no, name, gender, age, group_tag, zhenmaiyi_case_id, note))
+            action = 'insert'
+        cur.close()
+        return {'patient_no': patient_no, 'action': action}, None
+    finally:
+        conn.close()
+
+
+def platform_bind(body):
+    """绑定/解绑 {patient_no, chain: 'iwown'|'zhenmaiyi', key, unbind}.
+
+    iwown:     UPDATE iwown_device SET patient_no (unbind → NULL); key = device_id,
+               device_id 必须已在 iwown_device 名册中(设备先上报/或手工登记), 否则报错.
+    zhenmaiyi: UPDATE platform_patient SET zhenmaiyi_case_id; key = case_id.
+    """
+    patient_no = str(body.get('patient_no') or '').strip()
+    chain = body.get('chain')
+    key = body.get('key')
+    unbind = bool(body.get('unbind'))
+    if not patient_no:
+        return None, 'patient_no 必填'
+    if chain not in ('iwown', 'zhenmaiyi'):
+        return None, "chain 必须是 'iwown' 或 'zhenmaiyi'"
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT patient_no FROM platform_patient WHERE patient_no = %s', (patient_no,))
+        if not cur.fetchone():
+            cur.close()
+            return None, '患者不存在, 请先 POST /api/platform/patient 建档: {}'.format(patient_no)
+
+        if chain == 'iwown':
+            if not key:
+                cur.close()
+                return None, 'iwown 绑定/解绑需要 key(device_id)'
+            cur.execute('SELECT device_id FROM iwown_device WHERE device_id = %s', (key,))
+            if not cur.fetchone():
+                cur.close()
+                return None, 'iwown_device 中不存在 device_id={} (设备需先上报或手工登记)'.format(key)
+            new_patient_no = None if unbind else patient_no
+            cur.execute('UPDATE iwown_device SET patient_no = %s WHERE device_id = %s',
+                        (new_patient_no, key))
+            cur.close()
+            return {'patient_no': patient_no, 'chain': 'iwown', 'device_id': key, 'unbind': unbind}, None
+        else:
+            new_case_id = None if unbind else (str(key).strip() if key else None)
+            cur.execute('UPDATE platform_patient SET zhenmaiyi_case_id = %s WHERE patient_no = %s',
+                        (new_case_id, patient_no))
+            cur.close()
+            return {'patient_no': patient_no, 'chain': 'zhenmaiyi',
+                    'zhenmaiyi_case_id': new_case_id, 'unbind': unbind}, None
+    finally:
+        conn.close()
+
+
+def _s101_scan_by_patient():
+    """扫 wearable_device_data 全表一遍, 按门诊号建索引 (患者列表绑定态 + 最近上传时间用).
+
+    复用 /api/patients/summary 的扫描惯例: 逐行 json.loads 大 JSON, 按每条记录的
+    '门诊号' 字段分桶. 返回 dict: patient_no -> {'latest': iso_str|None, 'count': int}.
+    """
+    result = {}
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT data FROM wearable_device_data')
+        for (data_raw,) in cur.fetchall():
+            try:
+                big_json = json.loads(data_raw) if data_raw else {}
+            except json.JSONDecodeError:
+                big_json = {}
+            if not isinstance(big_json, dict):
+                continue
+            for type_key, arr in big_json.items():
+                if not isinstance(arr, list):
+                    continue
+                for rec in arr:
+                    if not isinstance(rec, dict):
+                        continue
+                    p_no = rec.get('门诊号')
+                    if not p_no:
+                        continue
+                    ts = rec.get('采集时间') or rec.get('recordedAt') or rec.get('uploadedAt')
+                    entry = result.setdefault(p_no, {'latest': None, 'count': 0})
+                    entry['count'] += 1
+                    if ts and (entry['latest'] is None or ts > entry['latest']):
+                        entry['latest'] = ts
+        cur.close()
+        return result
+    finally:
+        conn.close()
+
+
+def _s101_patient_vitals(patient_no, days=14):
+    """单患者 S101/R04 体征日聚合(心率/血氧/血压/体温/步数).
+
+    复用 /api/data?patientNo= 的过滤惯例: 逐行大 JSON, Python 端按 '门诊号' 过滤每条记录,
+    再按 采集时间 的日期分桶取 均值/极值(步数取当日最大值, 与手表累计计数器语义一致).
+    """
+    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=days)).strftime('%Y-%m-%d')
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT deviceId, data FROM wearable_device_data')
+        devices = set()
+        count = 0
+        earliest = latest = None
+        buckets = {}
+
+        def bucket(date_str):
+            return buckets.setdefault(date_str, {
+                'hr': [], 'spo2': [], 'sbp': [], 'dbp': [], 'temp': [], 'step': 0,
+            })
+
+        for dev_id, data_raw in cur.fetchall():
+            try:
+                big_json = json.loads(data_raw) if data_raw else {}
+            except json.JSONDecodeError:
+                big_json = {}
+            if not isinstance(big_json, dict):
+                continue
+            for type_key, arr in big_json.items():
+                if not isinstance(arr, list):
+                    continue
+                for rec in arr:
+                    if not isinstance(rec, dict) or rec.get('门诊号') != patient_no:
+                        continue
+                    ts = rec.get('采集时间') or rec.get('recordedAt') or rec.get('uploadedAt') or ''
+                    date_str = ts[:10] if ts else None
+                    if not date_str or date_str < cutoff:
+                        continue
+                    devices.add(dev_id)
+                    count += 1
+                    if earliest is None or ts < earliest:
+                        earliest = ts
+                    if latest is None or ts > latest:
+                        latest = ts
+                    b = bucket(date_str)
+                    if type_key == '心率' and rec.get('心率值') is not None:
+                        b['hr'].append(rec['心率值'])
+                    elif type_key == '血氧' and rec.get('血氧饱和度') is not None:
+                        b['spo2'].append(rec['血氧饱和度'])
+                    elif type_key == '血压':
+                        if rec.get('高压') is not None:
+                            b['sbp'].append(rec['高压'])
+                        if rec.get('低压') is not None:
+                            b['dbp'].append(rec['低压'])
+                    elif type_key == '体温' and rec.get('体温') is not None:
+                        b['temp'].append(rec['体温'])
+                    elif type_key == '步数' and rec.get('步数') is not None:
+                        b['step'] = max(b['step'], rec['步数'] or 0)
+        cur.close()
+
+        def avg(lst):
+            return round(sum(lst) / len(lst), 1) if lst else None
+
+        daily = []
+        for date_str in sorted(buckets.keys()):
+            b = buckets[date_str]
+            daily.append({
+                'date': date_str,
+                'hr_avg': avg(b['hr']),
+                'hr_min': min(b['hr']) if b['hr'] else None,
+                'hr_max': max(b['hr']) if b['hr'] else None,
+                'spo2_avg': avg(b['spo2']),
+                'spo2_min': min(b['spo2']) if b['spo2'] else None,
+                'spo2_max': max(b['spo2']) if b['spo2'] else None,
+                'sbp': avg(b['sbp']),
+                'dbp': avg(b['dbp']),
+                'temperature': avg(b['temp']),
+                'step': b['step'] or None,
+            })
+        return {
+            'count': count,
+            'devices': sorted(devices, reverse=True),
+            'earliest': earliest,
+            'latest': latest,
+            'daily': daily,
+        }
+    finally:
+        conn.close()
+
+
+def _iwown_daily_vitals(device_id, days=14):
+    """iwown 设备日聚合: GROUP BY DATE(recorded_at), 仅 data_type='health' 行,
+    AVG/MIN/MAX 各体征列, 步数取当日 MAX(手表侧是累计计数器, 取当日最大值即当日步数).
+    附带设备状态条: 最近一条带 battery/rssi 的帧 + iwown_device.last_seen.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DATE(recorded_at) AS d,
+                   ROUND(AVG(hr_avg),1), MIN(hr_min), MAX(hr_max),
+                   ROUND(AVG(spo2_avg),1), MIN(spo2_min), MAX(spo2_max),
+                   ROUND(AVG(sbp),1), ROUND(AVG(dbp),1),
+                   ROUND(AVG(temperature),2), MAX(step)
+            FROM iwown_data
+            WHERE device_id = %s AND data_type = 'health' AND recorded_at IS NOT NULL
+              AND recorded_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY DATE(recorded_at)
+            ORDER BY d
+        """, (device_id, days))
+        daily = []
+        for row in cur.fetchall():
+            (d, hr_avg, hr_min, hr_max, spo2_avg, spo2_min, spo2_max,
+             sbp, dbp, temperature, step) = row
+            daily.append({
+                'date': d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d),
+                'hr_avg': float(hr_avg) if hr_avg is not None else None,
+                'hr_min': hr_min, 'hr_max': hr_max,
+                'spo2_avg': float(spo2_avg) if spo2_avg is not None else None,
+                'spo2_min': spo2_min, 'spo2_max': spo2_max,
+                'sbp': float(sbp) if sbp is not None else None,
+                'dbp': float(dbp) if dbp is not None else None,
+                'temperature': float(temperature) if temperature is not None else None,
+                'step': step,
+            })
+        cur.execute("""
+            SELECT battery, rssi FROM iwown_data
+            WHERE device_id = %s AND (battery IS NOT NULL OR rssi IS NOT NULL)
+            ORDER BY id DESC LIMIT 1
+        """, (device_id,))
+        batt_row = cur.fetchone()
+        battery, rssi = batt_row if batt_row else (None, None)
+        cur.execute('SELECT last_seen FROM iwown_device WHERE device_id = %s', (device_id,))
+        seen_row = cur.fetchone()
+        last_seen = (seen_row[0].strftime('%Y-%m-%d %H:%M:%S')
+                     if seen_row and seen_row[0] else None)
+        cur.close()
+        return {
+            'daily': daily,
+            'device': {'device_id': device_id, 'battery': battery, 'rssi': rssi,
+                       'last_seen': last_seen},
+        }
+    finally:
+        conn.close()
+
+
 # ============ HTTP Handler ============
 class HealthDataHandler(BaseHTTPRequestHandler):
 
@@ -1069,6 +1437,141 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(500, {'error': str(e)})
 
+        elif pathname == '/api/platform/patients':
+            # 随访平台 M1: 患者列表 + 三链路绑定态 + 最近上传时间 + 未关闭报警数
+            try:
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    'SELECT patient_no, name, gender, age, group_tag, zhenmaiyi_case_id, note '
+                    'FROM platform_patient ORDER BY patient_no'
+                )
+                patient_rows = cur.fetchall()
+
+                cur.execute('SELECT device_id, patient_no, last_seen FROM iwown_device WHERE patient_no IS NOT NULL')
+                iwown_map = {}
+                for dev_id, p_no, last_seen in cur.fetchall():
+                    iwown_map[p_no] = {
+                        'device_id': dev_id,
+                        'last_seen': last_seen.strftime('%Y-%m-%d %H:%M:%S') if last_seen else None,
+                    }
+
+                cur.execute(
+                    "SELECT device_id, MAX(recorded_at) FROM iwown_data "
+                    "WHERE data_type = 'health' GROUP BY device_id"
+                )
+                iwown_last_health = {
+                    dev: (ts.strftime('%Y-%m-%d %H:%M:%S') if ts else None)
+                    for dev, ts in cur.fetchall()
+                }
+
+                cur.execute(
+                    "SELECT patient_no, COUNT(*) FROM platform_alarm "
+                    "WHERE status != 'closed' AND patient_no IS NOT NULL GROUP BY patient_no"
+                )
+                alarm_open_map = {p_no: n for p_no, n in cur.fetchall()}
+                cur.close()
+                conn.close()
+
+                s101_map = _s101_scan_by_patient()
+
+                patients = []
+                for (p_no, name, gender, age, group_tag, zm_case, note) in patient_rows:
+                    iw = iwown_map.get(p_no)
+                    s101_entry = s101_map.get(p_no)
+                    iwown_last = None
+                    if iw:
+                        iwown_last = iwown_last_health.get(iw['device_id']) or iw['last_seen']
+                    patients.append({
+                        'patient_no': p_no, 'name': name, 'gender': gender, 'age': age,
+                        'group_tag': group_tag, 'note': note,
+                        'bindings': {
+                            'iwown': iw['device_id'] if iw else None,
+                            's101': bool(s101_entry),
+                            'zhenmaiyi': zm_case,
+                        },
+                        'last_upload': {'iwown': iwown_last, 's101': s101_entry['latest'] if s101_entry else None},
+                        'alarm_open': alarm_open_map.get(p_no, 0),
+                    })
+                self._send_json(200, {'ok': True, 'patients': patients})
+            except Exception as e:
+                traceback.print_exc()
+                self._send_json(500, {'ok': False, 'error': str(e)})
+
+        elif pathname == '/api/platform/patient/vitals':
+            # 随访平台 M1: 单患者跨链路体征日聚合 (iwown 日聚合 + S101 门诊号解析 + 诊脉仪最新一条)
+            patient_no = (query.get('patientNo') or [None])[0]
+            try:
+                days = max(1, min(90, int((query.get('days') or ['14'])[0])))
+            except (ValueError, TypeError):
+                days = 14
+            if not patient_no:
+                self._send_json(400, {'ok': False, 'error': '缺少 patientNo'})
+                return
+            try:
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    'SELECT patient_no, name, gender, age, group_tag, zhenmaiyi_case_id, note, '
+                    'created_at, updated_at FROM platform_patient WHERE patient_no = %s',
+                    (patient_no,)
+                )
+                row = cur.fetchone()
+                if not row:
+                    cur.close()
+                    conn.close()
+                    self._send_json(404, {'ok': False, 'error': '患者不存在: {}'.format(patient_no)})
+                    return
+                cols = ['patient_no', 'name', 'gender', 'age', 'group_tag',
+                        'zhenmaiyi_case_id', 'note', 'created_at', 'updated_at']
+                patient = dict(zip(cols, row))
+                for k in ('created_at', 'updated_at'):
+                    if patient.get(k) is not None and hasattr(patient[k], 'strftime'):
+                        patient[k] = patient[k].strftime('%Y-%m-%d %H:%M:%S')
+
+                cur.execute(
+                    'SELECT device_id FROM iwown_device WHERE patient_no = %s '
+                    'ORDER BY last_seen DESC LIMIT 1', (patient_no,)
+                )
+                iw_row = cur.fetchone()
+                cur.close()
+                conn.close()
+
+                iwown_result = _iwown_daily_vitals(iw_row[0], days=days) if iw_row else \
+                    {'daily': [], 'device': None}
+                s101_result = _s101_patient_vitals(patient_no, days=days)
+
+                zhenmaiyi_result = None
+                if patient.get('zhenmaiyi_case_id'):
+                    zconn = get_connection()
+                    try:
+                        zcur = zconn.cursor()
+                        zcur.execute(
+                            'SELECT case_id, patient_name, patient_gender, patient_age, detect_time, '
+                            'conclusion, pulse_label, uploaded_at FROM zhenmaiyi WHERE case_id = %s '
+                            'ORDER BY detect_time DESC, uploaded_at DESC LIMIT 1',
+                            (patient['zhenmaiyi_case_id'],)
+                        )
+                        zrow = zcur.fetchone()
+                        if zrow:
+                            zcols = ['case_id', 'patient_name', 'patient_gender', 'patient_age',
+                                     'detect_time', 'conclusion', 'pulse_label', 'uploaded_at']
+                            zhenmaiyi_result = dict(zip(zcols, zrow))
+                            for k in ('detect_time', 'uploaded_at'):
+                                if zhenmaiyi_result.get(k) is not None and hasattr(zhenmaiyi_result[k], 'strftime'):
+                                    zhenmaiyi_result[k] = zhenmaiyi_result[k].strftime('%Y-%m-%d %H:%M:%S')
+                        zcur.close()
+                    finally:
+                        zconn.close()
+
+                self._send_json(200, {
+                    'ok': True, 'patient': patient,
+                    'iwown': iwown_result, 's101': s101_result, 'zhenmaiyi': zhenmaiyi_result,
+                })
+            except Exception as e:
+                traceback.print_exc()
+                self._send_json(500, {'ok': False, 'error': str(e)})
+
         else:
             self._send_json(200, {
                 'service': '智能随访-可穿戴设备数据接收服务',
@@ -1085,6 +1588,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                     'POST /api/zhenmaiyi/upload': 'v10 patch: 浏览器解析诊脉仪 zip 后批量入库 (zhenmaiyi 表, UPSERT by case_id)',
                     'GET  /api/zhenmaiyi/list': 'v10 patch: 列全部诊脉仪记录 (不含 base64 附件)',
+                    'GET  /api/platform/patients': '随访平台 M1: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数',
+                    'POST /api/platform/patient': '随访平台 M1: UPSERT platform_patient (建档/改档)',
+                    'POST /api/platform/bind': "随访平台 M1: 绑定/解绑 {patient_no, chain:'iwown'|'zhenmaiyi', key, unbind}",
+                    'GET  /api/platform/patient/vitals?patientNo=&days=': '随访平台 M1: 单患者跨链路体征日聚合',
                 },
             })
 
@@ -1198,8 +1705,26 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(200, {'success': True, **result})
 
+            elif pathname == '/api/platform/patient':
+                if not check_platform_token(self):
+                    return
+                result, err = upsert_platform_patient(body)
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, {'ok': True, **result})
+
+            elif pathname == '/api/platform/bind':
+                if not check_platform_token(self):
+                    return
+                result, err = platform_bind(body)
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, {'ok': True, **result})
+
             else:
-                self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register, POST /api/device/merge, POST /api/zhenmaiyi/upload'})
+                self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register, POST /api/device/merge, POST /api/zhenmaiyi/upload, POST /api/platform/patient, POST /api/platform/bind'})
 
         except Exception as e:
             traceback.print_exc()
@@ -1236,6 +1761,8 @@ if __name__ == '__main__':
         ensure_mac_column()
         # v10 patch: 启动时确保 zhenmaiyi 表存在 (idempotent), 接收浏览器端解析诊脉仪 zip 上传
         ensure_zhenmaiyi_table()
+        # 随访平台 1.0 M1: 启动时确保 platform_patient/alarm/followup_log 3 张表存在 (idempotent)
+        ensure_platform_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -1250,6 +1777,12 @@ if __name__ == '__main__':
     else:
         print('[警告] WX_APPSECRET 未配置, /api/wx/login 会拒绝请求. systemd 加 Environment="WX_APPSECRET=xxx" 后重启')
 
+    if PLATFORM_TOKEN:
+        print('[启动] PLATFORM_TOKEN 已配置 (长度 {}), POST /api/platform/* 写接口需带 X-Platform-Token'.format(len(PLATFORM_TOKEN)))
+    else:
+        print('[警告] PLATFORM_TOKEN 未配置, POST /api/platform/* 写接口不做鉴权 (开发模式). '
+              '生产部署前请 systemd 加 Environment="PLATFORM_TOKEN=xxx" 后重启')
+
     server = HTTPServer(('0.0.0.0', PORT), HealthDataHandler)
     print('[启动] 智能随访数据接收服务 v5.06-v9: http://0.0.0.0:{}'.format(PORT))
     print('[模式] 一台设备一行 + 大 JSON 汇总; 患者标识 = 大 JSON 每条记录的 "门诊号" 字段')
@@ -1259,6 +1792,10 @@ if __name__ == '__main__':
     print('[端点] GET  /api/device/by-sign    设备名册查询')
     print('[端点] GET  /api/status            服务状态')
     print('[端点] GET  /api/data              查询所有设备 (?patientNo= 过滤大 JSON 内的记录)')
+    print('[端点] GET  /api/platform/patients              随访平台 M1: 患者列表 + 绑定态')
+    print('[端点] POST /api/platform/patient                随访平台 M1: UPSERT 患者建档')
+    print('[端点] POST /api/platform/bind                   随访平台 M1: 绑定/解绑 iwown|zhenmaiyi')
+    print('[端点] GET  /api/platform/patient/vitals         随访平台 M1: 单患者跨链路体征日聚合')
     try:
         server.serve_forever()
     except KeyboardInterrupt:
