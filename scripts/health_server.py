@@ -31,6 +31,14 @@ API 端点：
   写接口门禁: 环境变量 PLATFORM_TOKEN 设了时, POST /api/platform/* 必须带 header
   X-Platform-Token 且值匹配, 否则 403; 未设时开发模式放行 (启动时打印警告)。
 
+随访平台 1.0 M2 (报警闭环, 见 docs/随访平台1.0设计方案.html §3.3/④⑤⑥):
+- POST /api/platform/alarm/ingest          扫 iwown_data data_type='alarm' 未处理行 -> platform_alarm
+                                          (幂等: source_data_id 唯一索引, 重跑 inserted=0)
+- GET  /api/platform/alarms                报警工作台列表 (?status=new|acked|followed|closed|open&patientNo=&limit=)
+- POST /api/platform/alarm/transition      报警状态流转 {alarm_id, action:'ack'|'call'|'visit'|'note'|'close',
+                                          result_text, operator}; 状态机 new->acked->followed->closed,
+                                          每次成功流转落 1 行 platform_followup_log。
+
 5.06-v9 决定: 不动 wearable_device_data schema (无 wx_openid / patient_no 列),
              患者标识统一写在大 JSON 每条记录的 '门诊号' 字段里, 切片仍按 deviceId 一台设备一行.
              v7/v8 残留的 wx.login / ble_event 端点和函数保留在文件中但不在启动时激活,
@@ -1028,6 +1036,234 @@ def platform_bind(body):
         conn.close()
 
 
+# ============ 随访平台 1.0 M2 (报警闭环) ============
+def classify_iwown_alarm(decoded):
+    """从 iwown 0x12 报警帧解码 JSON (MessageToDict, preserving_proto_field_name=True) 分类出
+    (alarm_type, severity, lat, lng)。字段名逐一对应
+    iwown/reference/proto/Alarm_info.proto 的 Alarm_infokConfirm/HealthAlarmV3/AlarminfoV3
+    (与 iwown/reference/sample-python 官方示例 alarm_parser.py 读同一套字段名)。
+
+    一帧可能同时含多个子类型(repeated 字段都非空), 按下表优先级只取最高等级的一个做
+    列表展示分类; payload_json 仍落全量 decoded_json, 需要时可回溯其余子类型。
+
+    映射表 (design doc §3.3/④ 枚举: fall/sos/hr/spo2/bp/temp/sedentary/not_worn/low_battery + unknown):
+      alarm.alarm_fall                          -> fall        crit  跌倒
+      alarm.gnssinfo / alarm.SOS_Notification_time -> sos       crit  SOS(取 gnssinfo[0] 经纬度)
+      alarm.alarm_hr                              -> hr         warn  心率越限
+      alarm.alarm_spo2                            -> spo2       warn  血氧越限
+      alarm.alarm_Bp                              -> bp         warn  血压越限
+      alarm.alarm_Temperature                     -> temp       warn  体温越限
+      alarm.alarm_Sedentary                       -> sedentary  info  久坐
+      Alarminfo.wearstate                         -> not_worn   info  未佩戴
+      Alarminfo.lowpowerPercentage / poweroffPercentage -> low_battery info  低电/关机前电量上报
+                                                                        (proto 无独立"关机"档, 并入低电量)
+      其余 (alarm_Thrombus/alarm_Blood_sugar/alarm_Blood_potassium/alarm_ecg/
+            Alarminfo.sleepstate/intercept_number/解码失败/无法解析) -> unknown warn
+            (proto 有此字段但 design doc §3.3/④ 的报警类型枚举未列出; 全量仍存 payload_json 可回溯)
+    """
+    if not isinstance(decoded, dict):
+        return 'unknown', 'warn', None, None
+    alarm = decoded.get('alarm') or {}
+    info = decoded.get('Alarminfo') or {}
+
+    if alarm.get('alarm_fall'):
+        return 'fall', 'crit', None, None
+    gnss = alarm.get('gnssinfo')
+    if gnss or 'SOS_Notification_time' in alarm:
+        lat = lng = None
+        if gnss:
+            first = gnss[0]
+            lat = first.get('latitude')
+            lng = first.get('longitude')
+        return 'sos', 'crit', lat, lng
+    if alarm.get('alarm_hr'):
+        return 'hr', 'warn', None, None
+    if alarm.get('alarm_spo2'):
+        return 'spo2', 'warn', None, None
+    if alarm.get('alarm_Bp'):
+        return 'bp', 'warn', None, None
+    if alarm.get('alarm_Temperature'):
+        return 'temp', 'warn', None, None
+    if alarm.get('alarm_Sedentary'):
+        return 'sedentary', 'info', None, None
+    if 'wearstate' in info:
+        return 'not_worn', 'info', None, None
+    if 'lowpowerPercentage' in info or 'poweroffPercentage' in info:
+        return 'low_battery', 'info', None, None
+    return 'unknown', 'warn', None, None
+
+
+def platform_alarm_ingest():
+    """扫 iwown_data 里 data_type='alarm' 且尚未写入 platform_alarm 的行(LEFT JOIN 判重),
+    解析 decoded_json 分类 + 用 iwown_device 名册在 ingest 时刻做患者归属, 幂等写入
+    (source_data_id 唯一索引, 并发/重跑用 INSERT IGNORE 兜底)。返回 {ok, scanned, inserted}。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT d.id, d.device_id, d.recorded_at, d.decoded_json, dev.patient_no
+            FROM iwown_data d
+            LEFT JOIN platform_alarm pa ON pa.source_data_id = d.id
+            LEFT JOIN iwown_device dev ON dev.device_id = d.device_id
+            WHERE d.data_type = 'alarm' AND pa.id IS NULL
+            ORDER BY d.id
+        """)
+        rows = cur.fetchall()
+        scanned = len(rows)
+        inserted = 0
+        for source_id, device_id, recorded_at, decoded_raw, patient_no in rows:
+            if isinstance(decoded_raw, str):
+                try:
+                    decoded = json.loads(decoded_raw)
+                except (TypeError, ValueError):
+                    decoded = None
+            else:
+                decoded = decoded_raw
+            alarm_type, severity, lat, lng = classify_iwown_alarm(decoded)
+            payload_json = json.dumps(decoded, ensure_ascii=False) if decoded is not None else None
+            cur.execute("""
+                INSERT IGNORE INTO platform_alarm
+                  (patient_no, device_id, alarm_type, severity, lat, lng, payload_json,
+                   source_data_id, status, occurred_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'new', %s)
+            """, (patient_no, device_id, alarm_type, severity, lat, lng, payload_json,
+                  source_id, recorded_at))
+            if cur.rowcount:
+                inserted += 1
+        cur.close()
+        return {'ok': True, 'scanned': scanned, 'inserted': inserted}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_platform_alarms(status=None, patient_no=None, limit=50):
+    """报警工作台列表: 最新在前, 关联 platform_patient 姓名 + platform_followup_log 处理记录.
+    status 支持 'open' 这个 meta 值 = status != 'closed'。
+    每条报警除 followup_count 外, 还带 followups 数组(完整回访历史, 时间正序), 供工作台处理弹窗
+    直接展示, 不必再为此单开一个 GET 端点(design doc §⑤ 只列了 ingest/transition/list 三个)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where = ['1=1']
+        params = []
+        if status == 'open':
+            where.append("a.status != 'closed'")
+        elif status in ('new', 'acked', 'followed', 'closed'):
+            where.append('a.status = %s')
+            params.append(status)
+        if patient_no:
+            where.append('a.patient_no = %s')
+            params.append(patient_no)
+        params.append(limit)
+        cur.execute("""
+            SELECT a.id, a.patient_no, p.name, a.device_id, a.alarm_type, a.severity,
+                   a.lat, a.lng, a.payload_json, a.status, a.occurred_at, a.created_at,
+                   (SELECT COUNT(*) FROM platform_followup_log f WHERE f.alarm_id = a.id) AS followup_count
+            FROM platform_alarm a
+            LEFT JOIN platform_patient p ON p.patient_no = a.patient_no
+            WHERE {}
+            ORDER BY a.occurred_at DESC, a.id DESC
+            LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'patient_no', 'patient_name', 'device_id', 'alarm_type', 'severity',
+                'lat', 'lng', 'payload_json', 'status', 'occurred_at', 'created_at', 'followup_count']
+        alarms = []
+        for r in cur.fetchall():
+            row = dict(zip(cols, r))
+            for k in ('occurred_at', 'created_at'):
+                if row.get(k) is not None and hasattr(row[k], 'strftime'):
+                    row[k] = row[k].strftime('%Y-%m-%d %H:%M:%S')
+            if isinstance(row.get('payload_json'), str):
+                try:
+                    row['payload_json'] = json.loads(row['payload_json'])
+                except (TypeError, ValueError):
+                    pass
+            for k in ('lat', 'lng'):
+                if row.get(k) is not None:
+                    row[k] = float(row[k])
+            alarms.append(row)
+
+        alarm_ids = [row['id'] for row in alarms]
+        followups_map = {}
+        if alarm_ids:
+            placeholders = ','.join(['%s'] * len(alarm_ids))
+            cur.execute(
+                'SELECT alarm_id, action, result_text, operator, created_at '
+                'FROM platform_followup_log WHERE alarm_id IN ({}) ORDER BY created_at ASC'.format(placeholders),
+                alarm_ids
+            )
+            for aid, action, result_text, operator, created_at in cur.fetchall():
+                followups_map.setdefault(aid, []).append({
+                    'action': action, 'result_text': result_text, 'operator': operator,
+                    'created_at': created_at.strftime('%Y-%m-%d %H:%M:%S') if created_at else None,
+                })
+        for row in alarms:
+            row['followups'] = followups_map.get(row['id'], [])
+
+        cur.close()
+        return {'ok': True, 'count': len(alarms), 'alarms': alarms}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+# 报警闭环状态机 (design doc §3.3): new -> acked(ack) -> followed(call/visit/note) -> closed(close)。
+# acked/followed 都可以再记一次回访(followed); 除 closed 外任意态都可直接 close。
+ALARM_TRANSITIONS = {
+    'ack':   {'from': ('new',), 'to': 'acked'},
+    'call':  {'from': ('acked', 'followed'), 'to': 'followed'},
+    'visit': {'from': ('acked', 'followed'), 'to': 'followed'},
+    'note':  {'from': ('acked', 'followed'), 'to': 'followed'},
+    'close': {'from': ('new', 'acked', 'followed'), 'to': 'closed'},
+}
+
+
+def platform_alarm_transition(body):
+    """报警状态流转 {alarm_id, action, result_text, operator}. 非法流转(如 closed 再 ack)拒绝,
+    不落任何记录。每次成功流转写 1 行 platform_followup_log, 并更新 platform_alarm.status。"""
+    try:
+        alarm_id = int(body.get('alarm_id'))
+    except (TypeError, ValueError):
+        return None, 'alarm_id 必须是整数'
+    action = body.get('action')
+    if action not in ALARM_TRANSITIONS:
+        return None, 'action 必须是 ack/call/visit/note/close 之一'
+    result_text = body.get('result_text') or None
+    operator = body.get('operator') or None
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT patient_no, status FROM platform_alarm WHERE id = %s', (alarm_id,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '报警不存在: {}'.format(alarm_id)
+        patient_no, cur_status = row
+        rule = ALARM_TRANSITIONS[action]
+        if cur_status not in rule['from']:
+            cur.close()
+            return None, '非法流转: status={} action={} (仅允许 {} -> {})'.format(
+                cur_status, action, '/'.join(rule['from']), rule['to'])
+        new_status = rule['to']
+        cur.execute('UPDATE platform_alarm SET status = %s WHERE id = %s', (new_status, alarm_id))
+        cur.execute("""
+            INSERT INTO platform_followup_log (patient_no, alarm_id, action, result_text, operator)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (patient_no, alarm_id, action, result_text, operator))
+        cur.close()
+        return {'alarm_id': alarm_id, 'status': new_status}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 def _s101_scan_by_patient():
     """扫 wearable_device_data 全表一遍, 按门诊号建索引 (患者列表绑定态 + 最近上传时间用).
 
@@ -1572,6 +1808,21 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send_json(500, {'ok': False, 'error': str(e)})
 
+        elif pathname == '/api/platform/alarms':
+            # 随访平台 M2: 报警工作台列表. status 支持 new/acked/followed/closed 精确值 +
+            # 'open' meta 值(= status != 'closed'); 缺省/其他值 = 全部。
+            status = (query.get('status') or [None])[0]
+            patient_no = (query.get('patientNo') or [None])[0]
+            try:
+                limit = max(1, min(500, int((query.get('limit') or ['50'])[0])))
+            except (ValueError, TypeError):
+                limit = 50
+            result, err = query_platform_alarms(status=status, patient_no=patient_no, limit=limit)
+            if err:
+                self._send_json(500, {'ok': False, 'error': err})
+            else:
+                self._send_json(200, result)
+
         else:
             self._send_json(200, {
                 'service': '智能随访-可穿戴设备数据接收服务',
@@ -1592,6 +1843,9 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'POST /api/platform/patient': '随访平台 M1: UPSERT platform_patient (建档/改档)',
                     'POST /api/platform/bind': "随访平台 M1: 绑定/解绑 {patient_no, chain:'iwown'|'zhenmaiyi', key, unbind}",
                     'GET  /api/platform/patient/vitals?patientNo=&days=': '随访平台 M1: 单患者跨链路体征日聚合',
+                    'GET  /api/platform/alarms?status=&patientNo=&limit=': '随访平台 M2: 报警工作台列表 (status 支持 open meta 值)',
+                    'POST /api/platform/alarm/ingest': '随访平台 M2: 扫 iwown_data alarm 行 -> platform_alarm (幂等)',
+                    'POST /api/platform/alarm/transition': "随访平台 M2: 报警状态流转 {alarm_id, action:'ack'|'call'|'visit'|'note'|'close', result_text, operator}",
                 },
             })
 
@@ -1723,8 +1977,26 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(200, {'ok': True, **result})
 
+            elif pathname == '/api/platform/alarm/ingest':
+                if not check_platform_token(self):
+                    return
+                result, err = platform_alarm_ingest()
+                if err:
+                    self._send_json(500, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, result)
+
+            elif pathname == '/api/platform/alarm/transition':
+                if not check_platform_token(self):
+                    return
+                result, err = platform_alarm_transition(body)
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, {'ok': True, **result})
+
             else:
-                self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register, POST /api/device/merge, POST /api/zhenmaiyi/upload, POST /api/platform/patient, POST /api/platform/bind'})
+                self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register, POST /api/device/merge, POST /api/zhenmaiyi/upload, POST /api/platform/patient, POST /api/platform/bind, POST /api/platform/alarm/ingest, POST /api/platform/alarm/transition'})
 
         except Exception as e:
             traceback.print_exc()
@@ -1796,6 +2068,9 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/patient                随访平台 M1: UPSERT 患者建档')
     print('[端点] POST /api/platform/bind                   随访平台 M1: 绑定/解绑 iwown|zhenmaiyi')
     print('[端点] GET  /api/platform/patient/vitals         随访平台 M1: 单患者跨链路体征日聚合')
+    print('[端点] POST /api/platform/alarm/ingest            随访平台 M2: iwown 报警行 -> platform_alarm (幂等)')
+    print('[端点] GET  /api/platform/alarms                  随访平台 M2: 报警工作台列表')
+    print('[端点] POST /api/platform/alarm/transition        随访平台 M2: 报警状态流转 (state machine)')
     try:
         server.serve_forever()
     except KeyboardInterrupt:

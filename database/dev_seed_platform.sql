@@ -13,10 +13,14 @@
 --      IF NOT EXISTS 是 no-op。
 --   3. 插入 2 个测试患者 + 1 台 iwown 设备(绑定患者A) + 3 天 iwown 健康数据 +
 --      1 条未关闭报警(患者A) + 1 行 wearable_device_data 大 JSON(患者B, S101-only)。
+--   4. (M2 新增) 插入 4 条 iwown_data data_type='alarm' 原始行(SOS/心率越限/未佩戴/低电量),
+--      供 POST /api/platform/alarm/ingest 联调; 用 (device_id,data_type,recorded_at) 做
+--      NOT EXISTS 判重, 与其余表不同, 这几行可安全重复执行本文件。
 --
--- 幂等性: platform_patient / iwown_device 用 ON DUPLICATE KEY UPDATE, 重复执行安全；
--- iwown_data / wearable_device_data / platform_alarm 没有业务唯一键, 重复执行本文件会
--- 重复插入这几张表的明细行 —— 仅供一次性联调, 需要重置请换新 dev 库或先手工清空。
+-- 幂等性: platform_patient / iwown_device 用 ON DUPLICATE KEY UPDATE 重复执行安全;
+-- 第 6 节 iwown_data alarm 行用 NOT EXISTS 判重, 也可安全重复执行; 其余
+-- iwown_data(健康数据行) / wearable_device_data / 第 5 节直插的 platform_alarm 行
+-- 没有业务唯一键, 重复执行本文件会重复插入这几处明细行 —— 需要重置请换新 dev 库或先手工清空。
 
 -- ============ 1. 最小 dev 结构: wearable_device / wearable_device_data / zhenmaiyi ============
 
@@ -128,12 +132,55 @@ VALUES
      96, 93, 98, 126, 80, 36.7, 55, 8200,
      52, -63, '2026-07-15 20:00:30');
 
--- ============ 5. 1 条未关闭报警 (患者 A) ============
+-- ============ 5. 1 条未关闭报警 (患者 A, 直接插 platform_alarm, source_data_id=NULL) ============
+-- 与下面第 6 节"由 iwown_data alarm 行 ingest 出来的报警"(source_data_id 非空)共存,
+-- 用于验证 M2 ingest 幂等去重逻辑(LEFT JOIN 判重只看 source_data_id, 这条 NULL 不受影响)。
 
 INSERT INTO platform_alarm (patient_no, device_id, alarm_type, severity, status, occurred_at) VALUES
     ('DEV0001', 'DEVWATCH00000001', 'not_worn', 'warn', 'new', '2026-07-15 09:30:00');
 
--- ============ 6. wearable_device_data 大 JSON 行 (患者 B, 门诊号=DEV0002, 形状同生产) ============
+-- ============ 6. M2: iwown_data data_type='alarm' 原始行 (供 /api/platform/alarm/ingest 用) ============
+-- decoded_json 形状与 iwown_parser.py _decode_alarm() 的 MessageToDict(preserving_proto_field_name=True)
+-- 输出一致 (字段名对应 iwown/reference/proto/Alarm_info.proto 的 Alarm_infokConfirm/HealthAlarmV3/AlarminfoV3)。
+-- 幂等: 用 INSERT...SELECT...WHERE NOT EXISTS 按 (device_id,data_type,recorded_at) 去重, 可重复执行本文件。
+
+-- 6a. SOS (含 GNSS 定位)
+INSERT INTO iwown_data (device_id, data_type, opt, recorded_at, decoded_json, uploaded_at)
+SELECT 'DEVWATCH00000001', 'alarm', 18, '2026-07-15 05:30:00',
+    '{"alarm": {"gnssinfo": [{"time_stamp": {"date_time": {"seconds": 1784263800}}, "longitude": 116.397128, "latitude": 39.916527, "gps_type": "GPS_WGS84"}], "SOS_Notification_time": {"date_time": {"seconds": 1784263800}}}}',
+    '2026-07-15 05:30:05'
+WHERE NOT EXISTS (
+    SELECT 1 FROM iwown_data WHERE device_id = 'DEVWATCH00000001' AND data_type = 'alarm' AND recorded_at = '2026-07-15 05:30:00'
+);
+
+-- 6b. 心率越限 (hr threshold)
+INSERT INTO iwown_data (device_id, data_type, opt, recorded_at, decoded_json, uploaded_at)
+SELECT 'DEVWATCH00000001', 'alarm', 18, '2026-07-15 07:10:00',
+    '{"alarm": {"alarm_hr": [{"time_stamp": {"date_time": {"seconds": 1784269800}}, "hr": 138}]}}',
+    '2026-07-15 07:10:05'
+WHERE NOT EXISTS (
+    SELECT 1 FROM iwown_data WHERE device_id = 'DEVWATCH00000001' AND data_type = 'alarm' AND recorded_at = '2026-07-15 07:10:00'
+);
+
+-- 6c. 未佩戴 (not worn)
+INSERT INTO iwown_data (device_id, data_type, opt, recorded_at, decoded_json, uploaded_at)
+SELECT 'DEVWATCH00000001', 'alarm', 18, '2026-07-15 10:15:00',
+    '{"Alarminfo": {"time_stamp": {"date_time": {"seconds": 1784283300}}, "wearstate": true}}',
+    '2026-07-15 10:15:05'
+WHERE NOT EXISTS (
+    SELECT 1 FROM iwown_data WHERE device_id = 'DEVWATCH00000001' AND data_type = 'alarm' AND recorded_at = '2026-07-15 10:15:00'
+);
+
+-- 6d. 低电量 (low battery)
+INSERT INTO iwown_data (device_id, data_type, opt, recorded_at, decoded_json, uploaded_at)
+SELECT 'DEVWATCH00000001', 'alarm', 18, '2026-07-15 13:45:00',
+    '{"Alarminfo": {"time_stamp": {"date_time": {"seconds": 1784296500}}, "lowpowerPercentage": 8}}',
+    '2026-07-15 13:45:05'
+WHERE NOT EXISTS (
+    SELECT 1 FROM iwown_data WHERE device_id = 'DEVWATCH00000001' AND data_type = 'alarm' AND recorded_at = '2026-07-15 13:45:00'
+);
+
+-- ============ 7. wearable_device_data 大 JSON 行 (患者 B, 门诊号=DEV0002, 形状同生产) ============
 -- 结构与 health_server.py to_chinese_record()/upsert_device_data() 写入的形状一致:
 -- 每个中文键(心率/血氧/血压/体温/步数)是记录数组, 每条记录带 采集时间/上传时间/门诊号。
 -- deviceId=9001 是本文件专用的 dev 测试设备号, 不与真实生产 deviceId 冲突。
