@@ -246,6 +246,38 @@ canvas.trend { width: 100%; height: 150px; display: block; }
   font-size: 13px; cursor: pointer; font-family: inherit; background: #fff; color: #374151; }
 .am-actions button:hover { background: #f0fdfd; border-color: #0891b2; color: #0891b2; }
 .am-actions button.danger:hover { background: #fef2f2; border-color: #d04848; color: #d04848; }
+
+/* ============ 随访任务 (M5) ============ */
+.header .btn.tasks-nav { position: relative; }
+.header .btn.tasks-nav .nav-badge { position: absolute; top: -7px; right: -7px; background: #fee2e2;
+  color: #b91c1c; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 9px; }
+
+.task-row { background: #fff; border-radius: 12px; padding: 12px 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  display: grid; grid-template-columns: 1.3fr 1.3fr 1fr 1.1fr auto; gap: 14px; align-items: center; font-size: 13px; }
+@media (max-width: 900px) { .task-row { grid-template-columns: 1fr; gap: 6px; } }
+.task-patient { color: #374151; cursor: pointer; }
+.task-patient:hover { color: #0891b2; }
+.task-patient .sub { font-size: 11px; color: #9ca3af; display: block; }
+.task-plan-name { font-weight: 600; color: #1f2937; }
+.task-plan-name .sub { font-size: 11px; color: #9ca3af; font-weight: 400; display: block; }
+.task-due { color: #6b7280; font-size: 12px; }
+.overdue-tag { display: inline-block; background: #fee2e2; color: #b91c1c; font-size: 11px;
+  font-weight: 700; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
+.task-last-done { color: #9ca3af; font-size: 12px; }
+.task-actions button { height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid #e5e7eb;
+  background: #fff; color: #374151; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+.task-actions button:hover { background: #f0fdfd; border-color: #0891b2; color: #0891b2; }
+
+/* 患者详情页 随访计划卡 (M5) */
+.plan-card-list { display: flex; flex-direction: column; gap: 8px; }
+.plan-row { background: #fff; border-radius: 10px; padding: 10px 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  display: flex; justify-content: space-between; align-items: center; font-size: 13px; flex-wrap: wrap; gap: 8px; }
+.plan-row .info b { color: #1f2937; }
+.plan-row .info .sub { color: #9ca3af; font-size: 11.5px; display: block; margin-top: 2px; }
+.status-pill.inactive { background: #f3f4f6; color: #9ca3af; }
+.plan-row button { height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid #e5e7eb;
+  background: #fff; color: #374151; font-size: 12px; cursor: pointer; font-family: inherit; }
+.plan-row button:hover { border-color: #d04848; color: #d04848; }
 </style>
 </head>
 <body>
@@ -268,6 +300,7 @@ canvas.trend { width: 100%; height: 150px; display: block; }
       <div class="actions">
         <div class="btn" id="refreshBtn">⟳ 刷新</div>
         <div class="btn alarm-nav" id="alarmNavBtn">🚨 报警工作台<span class="nav-badge" id="alarmNavBadge" style="display:none;">0</span></div>
+        <div class="btn tasks-nav" id="tasksNavBtn">📋 随访任务<span class="nav-badge" id="tasksNavBadge" style="display:none;">0</span></div>
         <div class="btn primary" id="addPatientBtn">＋ 建档</div>
       </div>
     </div>
@@ -334,6 +367,13 @@ canvas.trend { width: 100%; height: 150px; display: block; }
           <h4>🩺 诊脉仪最新一次</h4>
           <div class="empty-inline">--</div>
         </div>
+      </div>
+
+      <div class="section-title">随访计划
+        <span class="meta"><a class="link" style="cursor:pointer;" id="planAddBtn">＋ 新建计划</a></span>
+      </div>
+      <div id="planListWrap" class="plan-card-list" style="margin-bottom:20px;">
+        <div class="loading">载入中…</div>
       </div>
 
       <div class="section-title">报警时间线
@@ -413,6 +453,40 @@ canvas.trend { width: 100%; height: 150px; display: block; }
     <div class="footer-note">
       数据来源 <code id="amApiFooterShow">--</code>/api/platform/alarms · 状态机 new→acked→followed→closed,
       详情见 <code>docs/随访平台1.0设计方案.html</code> §3.3
+    </div>
+  </div>
+
+  <!-- ============ 随访任务视图 (M5) ============ -->
+  <div id="viewTasks" style="display:none;">
+    <div class="header">
+      <div>
+        <h2 style="font-size:22px; font-weight:600;">随访任务</h2>
+        <div class="sub" id="tkSub">从随访计划现算 · 逾期 / 今日到期 / 未来 7 天</div>
+      </div>
+      <div class="actions">
+        <div class="btn" id="tkBackBtn">‹ 返回患者列表</div>
+        <div class="btn primary" id="tkRefreshBtn">⟳ 刷新</div>
+      </div>
+    </div>
+
+    <div class="section-title">🔴 逾期 <span class="meta" id="tkOverdueMeta"></span></div>
+    <div id="tkOverdueWrap" class="alarms" style="margin-bottom:20px;">
+      <div class="loading">正在加载…</div>
+    </div>
+
+    <div class="section-title">🟡 今日到期 <span class="meta" id="tkTodayMeta"></span></div>
+    <div id="tkTodayWrap" class="alarms" style="margin-bottom:20px;">
+      <div class="loading">正在加载…</div>
+    </div>
+
+    <div class="section-title">🟢 未来 7 天 <span class="meta" id="tkFutureMeta"></span></div>
+    <div id="tkFutureWrap" class="alarms">
+      <div class="loading">正在加载…</div>
+    </div>
+
+    <div class="footer-note">
+      数据来源 <code id="tkApiFooterShow">--</code>/api/platform/tasks · 任务从 platform_plan 现算, 不单独存储 ·
+      详情见 <code>docs/随访平台1.0设计方案.html</code>
     </div>
   </div>
 
@@ -512,6 +586,61 @@ canvas.trend { width: 100%; height: 150px; display: block; }
       <div class="form-actions">
         <button id="bmCancel">取消</button>
         <button class="primary" id="bmSave">提交</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 完成随访 modal (M5) -->
+<div class="modal-mask" id="taskCompleteModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="tcTitle">完成随访</h3>
+      <button class="modal-close" id="tcClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="tcDetailBox" style="margin-bottom:12px; font-size:13px; color:#374151; line-height:1.8;"></div>
+      <div class="form-row">
+        <label>随访方式</label>
+        <select id="tcMethod">
+          <option value="call">电话</option>
+          <option value="visit">上门</option>
+          <option value="note">记录</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>操作人</label>
+        <input type="text" id="tcOperator" placeholder="填写你的姓名(记住本机)">
+      </div>
+      <div class="form-row">
+        <label>随访结果</label>
+        <textarea id="tcResultText" placeholder="例: 电话联系患者本人, 状态平稳, 已完成本次随访"></textarea>
+      </div>
+      <div class="form-msg" id="tcMsg"></div>
+      <div class="form-actions">
+        <button id="tcCancel">取消</button>
+        <button class="primary" id="tcSubmit">✓ 完成随访</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 新建随访计划 modal (M5) -->
+<div class="modal-mask" id="planFormModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3>新建随访计划</h3>
+      <button class="modal-close" id="planFormClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row"><label>计划名 *</label><input type="text" id="planName" placeholder="例: 术后1月电话随访"></div>
+      <div class="form-row"><label>周期天数 (留空 = 一次性)</label><input type="number" id="planFreq" min="1" placeholder="例: 30"></div>
+      <div class="form-row"><label>首次到期日期 *</label><input type="date" id="planNextDue"></div>
+      <div class="form-row"><label>备注</label><input type="text" id="planNote"></div>
+      <div class="form-msg" id="planFormMsg"></div>
+      <div class="form-actions">
+        <button id="planFormCancel">取消</button>
+        <button class="primary" id="planFormSave">保存</button>
       </div>
     </div>
   </div>
@@ -624,6 +753,7 @@ async function fetchPatients() {
     document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString('zh-CN');
     renderPatients();
     updateAlarmNavBadge();
+    fetchTasksBadge();
   } catch (e) {
     document.getElementById('offlineBanner').style.display = '';
     wrap.innerHTML = '<div class="error">加载患者列表失败: ' + escapeHtml(e.message) + '</div>';
@@ -737,6 +867,17 @@ function updateAlarmNavBadge() {
 }
 document.getElementById('alarmNavBtn').addEventListener('click', () => goAlarms(null));
 
+/* 随访任务导航角标 (M5): 逾期+今日到期任务数, 直接对已拉到的 listState.patients 各自的
+   task_due_count 求和, 不再单独发请求 —— 与 updateAlarmNavBadge() 同一模式, 靠 fetchPatients()
+   刷新患者数组时顺带算好, 列表加载时才知道有多少待办。语义与之前略有不同: 不再是"未来 7 天
+   窗口内"的任务数, 而是"现在就要处理"的到期+逾期数, 与报警角标的"需要立即关注"口径对齐。 */
+function fetchTasksBadge() {
+  const el = document.getElementById('tasksNavBadge');
+  const total = listState.patients.reduce((sum, p) => sum + (p.task_due_count || 0), 0);
+  if (total > 0) { el.style.display = ''; el.textContent = total; } else { el.style.display = 'none'; }
+}
+document.getElementById('tasksNavBtn').addEventListener('click', () => { location.hash = '#/tasks'; });
+
 /* ================= 建档/改档 modal ================= */
 function openPatientForm(patientNo) {
   document.getElementById('pfMsg').textContent = '';
@@ -821,7 +962,7 @@ document.getElementById('bmSave').addEventListener('click', async () => {
 });
 
 /* ================= 详情视图 ================= */
-const detailState = { patientNo: null, days: 14, data: null };
+const detailState = { patientNo: null, days: 14, data: null, plans: [] };
 
 async function fetchDetail() {
   document.getElementById('detailLoading').style.display = '';
@@ -883,7 +1024,106 @@ function renderDetail() {
   document.getElementById('detailAlarmLink').onclick = () => goAlarms(p.patient_no);
   fetchDetailAlarms(p.patient_no);
   fetchCompliance(p.patient_no, detailState.days);
+  fetchPatientPlans(p.patient_no);
 }
+
+/* ================= 随访计划 (M5, 患者详情页) ================= */
+async function fetchPatientPlans(patientNo) {
+  const wrap = document.getElementById('planListWrap');
+  wrap.innerHTML = '<div class="loading">载入中…</div>';
+  try {
+    const url = API_BASE + '/api/platform/plans?patientNo=' + encodeURIComponent(patientNo);
+    const res = await fetch(url, { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    detailState.plans = data.plans || [];
+    renderPatientPlans();
+  } catch (e) {
+    wrap.innerHTML = '<div class="error">加载随访计划失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderPatientPlans() {
+  const wrap = document.getElementById('planListWrap');
+  const plans = detailState.plans || [];
+  if (!plans.length) {
+    wrap.innerHTML = '<div class="empty-inline">暂无随访计划 · 点击"＋ 新建计划"添加</div>';
+    return;
+  }
+  wrap.innerHTML = plans.map(p => {
+    const freqLabel = p.frequency_days ? ('每 ' + p.frequency_days + ' 天') : '一次性';
+    return '<div class="plan-row">' +
+      '<div class="info"><b>' + escapeHtml(p.name) + '</b>' +
+        '<span class="status-pill ' + (p.active ? 'new' : 'inactive') + '" style="margin-left:6px;">' +
+          (p.active ? '启用中' : '已停用') + '</span>' +
+        '<span class="sub">' + freqLabel + ' · 下次到期 ' + escapeHtml(p.next_due) +
+          (p.note ? (' · ' + escapeHtml(p.note)) : '') + '</span></div>' +
+      (p.active ? '<button onclick="deactivatePlan(' + p.id + ')">停用</button>' : '') +
+    '</div>';
+  }).join('');
+}
+
+async function deactivatePlan(planId) {
+  if (!confirm('确认停用该随访计划? 停用后不再出现在待办任务里。')) return;
+  try {
+    const res = await platformFetch(API_BASE + '/api/platform/plan', {
+      method: 'POST', headers: platformHeaders(true),
+      body: JSON.stringify({ id: planId, active: 0 }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    await fetchPatientPlans(detailState.patientNo);
+    fetchTasksBadge();
+  } catch (e) {
+    alert('停用失败: ' + e.message);
+  }
+}
+
+function openPlanForm() {
+  document.getElementById('planName').value = '';
+  document.getElementById('planFreq').value = '';
+  document.getElementById('planNextDue').value = '';
+  document.getElementById('planNote').value = '';
+  document.getElementById('planFormMsg').textContent = '';
+  document.getElementById('planFormModal').classList.add('open');
+}
+document.getElementById('planAddBtn').addEventListener('click', openPlanForm);
+document.getElementById('planFormClose').addEventListener('click', () => document.getElementById('planFormModal').classList.remove('open'));
+document.getElementById('planFormCancel').addEventListener('click', () => document.getElementById('planFormModal').classList.remove('open'));
+
+document.getElementById('planFormSave').addEventListener('click', async () => {
+  const msg = document.getElementById('planFormMsg');
+  const btn = document.getElementById('planFormSave');
+  const name = document.getElementById('planName').value.trim();
+  const nextDue = document.getElementById('planNextDue').value;
+  if (!name) { msg.textContent = '计划名必填'; msg.className = 'form-msg err'; return; }
+  if (!nextDue) { msg.textContent = '首次到期日期必填'; msg.className = 'form-msg err'; return; }
+  const freqRaw = document.getElementById('planFreq').value.trim();
+  const body = {
+    patient_no: detailState.patientNo,
+    name,
+    frequency_days: freqRaw ? parseInt(freqRaw, 10) : null,
+    next_due: nextDue,
+    note: document.getElementById('planNote').value.trim() || null,
+  };
+  msg.textContent = '保存中…'; msg.className = 'form-msg';
+  btn.disabled = true;
+  try {
+    const res = await platformFetch(API_BASE + '/api/platform/plan', {
+      method: 'POST', headers: platformHeaders(true), body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '已保存'; msg.className = 'form-msg ok';
+    await fetchPatientPlans(detailState.patientNo);
+    fetchTasksBadge();
+    setTimeout(() => document.getElementById('planFormModal').classList.remove('open'), 500);
+  } catch (e) {
+    msg.textContent = '保存失败: ' + e.message; msg.className = 'form-msg err';
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 /* 佩戴依从性明细条 (M4): 每日一根柱, 柱高 = wear_hours/24, 有 not_worn 报警的那天柱顶标 ⚠N。
    跟随患者详情页现有的 7/14/30 天 toggle (renderDetail 每次都重新调这个函数)。 */
@@ -1229,6 +1469,114 @@ document.getElementById('amAckBtn').addEventListener('click', () => submitTransi
 document.getElementById('amFollowBtn').addEventListener('click', () => submitTransition('follow'));
 document.getElementById('amCloseBtn').addEventListener('click', () => submitTransition('close'));
 
+/* ================= 随访任务视图 (M5) ================= */
+document.getElementById('tkApiFooterShow').textContent = API_BASE;
+const tasksState = { tasks: [], today: null };
+let tcCurrentTask = null;
+
+async function fetchTasks() {
+  const wraps = ['tkOverdueWrap', 'tkTodayWrap', 'tkFutureWrap'].map(id => document.getElementById(id));
+  wraps.forEach(w => { w.innerHTML = '<div class="loading">正在加载…</div>'; });
+  try {
+    const res = await fetch(API_BASE + '/api/platform/tasks?horizon_days=7', { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    tasksState.tasks = data.tasks || [];
+    tasksState.today = data.today;
+    renderTasks();
+  } catch (e) {
+    wraps.forEach(w => { w.innerHTML = '<div class="error">加载随访任务失败: ' + escapeHtml(e.message) + '</div>'; });
+  }
+}
+
+function renderTasks() {
+  const today = tasksState.today;
+  const overdue = tasksState.tasks.filter(t => t.next_due < today);
+  const dueToday = tasksState.tasks.filter(t => t.next_due === today);
+  const future = tasksState.tasks.filter(t => t.next_due > today);
+  document.getElementById('tkOverdueMeta').textContent = overdue.length + ' 条';
+  document.getElementById('tkTodayMeta').textContent = dueToday.length + ' 条';
+  document.getElementById('tkFutureMeta').textContent = future.length + ' 条';
+  renderTaskGroup('tkOverdueWrap', overdue, '暂无逾期任务');
+  renderTaskGroup('tkTodayWrap', dueToday, '今日无到期任务');
+  renderTaskGroup('tkFutureWrap', future, '未来 7 天内暂无到期任务');
+}
+
+function renderTaskGroup(wrapId, list, emptyText) {
+  const wrap = document.getElementById(wrapId);
+  if (!list.length) {
+    wrap.innerHTML = '<div class="empty" style="padding:24px 20px;"><div class="icon" style="font-size:28px;">✅</div>' + emptyText + '</div>';
+    return;
+  }
+  wrap.innerHTML = list.map(t => {
+    const overdueTag = t.overdue_days > 0 ? '<span class="overdue-tag">逾期 ' + t.overdue_days + ' 天</span>' : '';
+    return '<div class="task-row">' +
+      '<div class="task-patient" onclick="goDetail(\'' + escapeHtml(t.patient_no) + '\')">' +
+        escapeHtml(t.patient_name || '(未命名)') +
+        '<span class="sub">门诊号 ' + escapeHtml(t.patient_no) + '</span></div>' +
+      '<div class="task-plan-name">' + escapeHtml(t.plan_name) +
+        (t.note ? '<span class="sub">' + escapeHtml(t.note) + '</span>' : '') + '</div>' +
+      '<div class="task-due">' + escapeHtml(t.next_due) + overdueTag + '</div>' +
+      '<div class="task-last-done">上次随访: ' + (t.last_done ? escapeHtml(t.last_done) : '--') + '</div>' +
+      '<div class="task-actions"><button onclick="openTaskCompleteModal(' + t.plan_id + ')">✓ 完成随访</button></div>' +
+    '</div>';
+  }).join('');
+}
+
+function openTaskCompleteModal(planId) {
+  const t = tasksState.tasks.find(x => x.plan_id === planId);
+  if (!t) return;
+  tcCurrentTask = t;
+  document.getElementById('tcTitle').textContent = '完成随访 · ' + (t.patient_name || t.patient_no);
+  document.getElementById('tcDetailBox').innerHTML =
+    '患者: ' + escapeHtml(t.patient_name || '--') + ' (门诊号 ' + escapeHtml(t.patient_no) + ')<br>' +
+    '计划: ' + escapeHtml(t.plan_name) + ' · 到期 ' + escapeHtml(t.next_due) +
+    (t.overdue_days > 0 ? ' <span class="overdue-tag">逾期 ' + t.overdue_days + ' 天</span>' : '') + '<br>' +
+    '周期: ' + (t.frequency_days ? ('每 ' + t.frequency_days + ' 天') : '一次性 (完成后自动停用)');
+  document.getElementById('tcMethod').value = 'call';
+  document.getElementById('tcOperator').value = localStorage.getItem(LS_OPERATOR_KEY) || '';
+  document.getElementById('tcResultText').value = '';
+  document.getElementById('tcMsg').textContent = '';
+  document.getElementById('taskCompleteModal').classList.add('open');
+}
+document.getElementById('tcClose').addEventListener('click', () => document.getElementById('taskCompleteModal').classList.remove('open'));
+document.getElementById('tcCancel').addEventListener('click', () => document.getElementById('taskCompleteModal').classList.remove('open'));
+
+document.getElementById('tcSubmit').addEventListener('click', async () => {
+  const msg = document.getElementById('tcMsg');
+  const btn = document.getElementById('tcSubmit');
+  if (!tcCurrentTask) return;
+  const operator = document.getElementById('tcOperator').value.trim();
+  localStorage.setItem(LS_OPERATOR_KEY, operator);
+  const method = document.getElementById('tcMethod').value;
+  const resultText = document.getElementById('tcResultText').value.trim();
+  msg.textContent = '提交中…'; msg.className = 'form-msg';
+  btn.disabled = true;
+  try {
+    const res = await platformFetch(API_BASE + '/api/platform/task/complete', {
+      method: 'POST', headers: platformHeaders(true),
+      body: JSON.stringify({
+        plan_id: tcCurrentTask.plan_id, method,
+        result_text: resultText || null, operator: operator || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '已完成' + (data.next_due ? (', 下次到期 ' + data.next_due) : ' (一次性计划已停用)');
+    msg.className = 'form-msg ok';
+    await fetchTasks();
+    fetchTasksBadge();
+    setTimeout(() => document.getElementById('taskCompleteModal').classList.remove('open'), 700);
+  } catch (e) {
+    msg.textContent = '操作失败: ' + e.message; msg.className = 'form-msg err';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('tkBackBtn').addEventListener('click', () => { location.hash = ''; });
+document.getElementById('tkRefreshBtn').addEventListener('click', fetchTasks);
+
 /* ================= 路由 ================= */
 function parseRoute() {
   let m = location.hash.match(/^#\/patient\/([^/?]+)$/);
@@ -1238,6 +1586,7 @@ function parseRoute() {
     const qs = new URLSearchParams(m[1] || '');
     return { view: 'alarms', patientNo: qs.get('patientNo') || null };
   }
+  if (location.hash.match(/^#\/tasks$/)) return { view: 'tasks' };
   return { view: 'list' };
 }
 
@@ -1246,6 +1595,7 @@ function route() {
   document.getElementById('viewList').style.display = 'none';
   document.getElementById('viewDetail').style.display = 'none';
   document.getElementById('viewAlarms').style.display = 'none';
+  document.getElementById('viewTasks').style.display = 'none';
 
   if (r.view === 'detail') {
     document.getElementById('viewDetail').style.display = '';
@@ -1260,6 +1610,9 @@ function route() {
     alarmsState.patientNo = r.patientNo;
     document.getElementById('amSub').textContent = r.patientNo ? ('患者 ' + r.patientNo + ' 的报警') : '全部患者';
     fetchAlarms();
+  } else if (r.view === 'tasks') {
+    document.getElementById('viewTasks').style.display = '';
+    fetchTasks();
   } else {
     document.getElementById('viewList').style.display = '';
     fetchPatients();
@@ -1272,7 +1625,8 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   listState.search = ''; document.getElementById('searchInput').value = ''; renderPatients();
 });
 document.getElementById('searchInput').addEventListener('input', e => { listState.search = e.target.value; renderPatients(); });
-[document.getElementById('patientFormModal'), document.getElementById('bindModal'), document.getElementById('alarmModal')].forEach(mask => {
+[document.getElementById('patientFormModal'), document.getElementById('bindModal'), document.getElementById('alarmModal'),
+ document.getElementById('taskCompleteModal'), document.getElementById('planFormModal')].forEach(mask => {
   mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
 });
 

@@ -47,6 +47,22 @@ API 端点：
                                           纯查询视图, 不新增表; 未绑定 iwown 的患者返回空 daily。
   /api/platform/patients 响应同时新增 wear_rate_7d (近 7 天平均佩戴率, 未绑定为 null), 供列表卡片显示。
 
+随访平台 1.1 M5 (随访计划引擎): 新增 1 张表 platform_plan (随访计划); "任务"永远是从
+active=1 的计划 + next_due 现算, 从不落地存储:
+- GET  /api/platform/plans?patientNo=&active=      计划列表 (关联患者姓名)
+- POST /api/platform/plan                          建/改计划 {id?, patient_no, name,
+                                          frequency_days|null(一次性), next_due 'YYYY-MM-DD',
+                                          active?, note?}; 传 {id, active:0} 即停用
+- GET  /api/platform/tasks?horizon_days=7          今日待办 (active=1 且 next_due<=today+horizon,
+                                          overdue_days=max(0, today-next_due), 按 next_due 升序天然
+                                          就是 overdue 在前)
+- POST /api/platform/task/complete                 完成任务 {plan_id, method:'call'|'visit'|'note',
+                                          result_text, operator}; 单事务: 写 1 行
+                                          platform_followup_log(plan_id 关联) + 循环计划推进
+                                          next_due=完成当日+frequency_days / 一次性计划 active=0。
+  /api/platform/patients 响应同时新增 task_due_count (今日到期+逾期的随访任务数), 纯附加字段,
+  供列表卡片任务角标直接用, 不必再单独请求 /api/platform/tasks。
+
 5.06-v9 决定: 不动 wearable_device_data schema (无 wx_openid / patient_no 列),
              患者标识统一写在大 JSON 每条记录的 '门诊号' 字段里, 切片仍按 deviceId 一台设备一行.
              v7/v8 残留的 wx.login / ble_event 端点和函数保留在文件中但不在启动时激活,
@@ -223,7 +239,7 @@ def ensure_zhenmaiyi_table():
 
 
 def ensure_platform_tables():
-    """随访平台 1.0 M1: 创建 platform_* 3 张表 (idempotent).
+    """随访平台 1.0 M1 + 1.1 M5: 创建 platform_* 4 张表 (idempotent).
 
     设计原则 (docs/随访平台1.0设计方案.html §①④): 不动现有 6 张生产表
     (wearable_device* / zhenmaiyi / iwown_* / ble_event) 一列, 平台层只新增
@@ -275,10 +291,26 @@ def ensure_platform_tables():
                 operator VARCHAR(64) DEFAULT NULL,
                 plan_id BIGINT DEFAULT NULL COMMENT '1.1 随访计划钩子, 暂空',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_patient_no (patient_no)
+                INDEX idx_patient_no (patient_no),
+                INDEX idx_plan (plan_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台回访/处理记录 (M2 起写入, M1 只建表)'
         """)
-        print('[启动] platform_patient / platform_alarm / platform_followup_log 表已就绪')
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_plan (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                patient_no VARCHAR(64) NOT NULL,
+                name VARCHAR(128) NOT NULL COMMENT '如 术后1月电话随访',
+                frequency_days INT DEFAULT NULL COMMENT 'NULL=一次性, 否则每 N 天重复',
+                next_due DATE NOT NULL,
+                active TINYINT(1) DEFAULT 1,
+                note VARCHAR(255) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_patient_no (patient_no),
+                INDEX idx_next_due (next_due)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 1.1 随访计划 (任务由 active+next_due 现算, 不单独存储)'
+        """)
+        print('[启动] platform_patient / platform_alarm / platform_followup_log / platform_plan 表已就绪')
         cur.close()
     except Exception as e:
         print('[启动] ensure_platform_tables 失败:', e)
@@ -527,6 +559,35 @@ def ensure_mac_column():
         cur.close()
     except Exception as e:
         print('[启动] ensure_mac_column 失败:', e)
+    finally:
+        conn.close()
+
+
+def ensure_followup_log_plan_index():
+    """M5 性能修复: 确保 platform_followup_log 表有 idx_plan (plan_id) 索引 (idempotent).
+
+    生产库该表在 M2 就已建好 (无此索引), CREATE TABLE IF NOT EXISTS 对已存在的表不会补索引,
+    所以需要单独做一次 ALTER-if-missing 迁移, 与 ensure_mac_column() 同一惯例。
+    query_platform_tasks() 的 last_done 从相关子查询改成了 LEFT JOIN 派生表 GROUP BY plan_id,
+    没有这个索引会退化成全表扫描。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'platform_followup_log' AND INDEX_NAME = 'idx_plan'",
+            (DB_CONFIG['database'],)
+        )
+        if cur.fetchone()[0] == 0:
+            print('[启动] platform_followup_log.idx_plan 不存在, 添加中...')
+            cur.execute('ALTER TABLE platform_followup_log ADD INDEX idx_plan (plan_id)')
+            print('[启动] platform_followup_log.idx_plan 索引添加完成')
+        else:
+            print('[启动] platform_followup_log.idx_plan 索引已存在, 跳过 ALTER')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_followup_log_plan_index 失败:', e)
     finally:
         conn.close()
 
@@ -1274,6 +1335,261 @@ def platform_alarm_transition(body):
         conn.close()
 
 
+# ============ 随访平台 1.1 M5 (随访计划引擎) ============
+def upsert_platform_plan(body):
+    """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
+
+    {id?, patient_no, name, frequency_days|null, next_due 'YYYY-MM-DD', active?, note?}
+    id 传了 = 部分字段更新(未传的字段沿用现有值, 供 {id, active:0} 这种纯停用调用);
+    id 不传 = 新建, 此时 patient_no/name/next_due 必填。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        existing = None
+        plan_id = body.get('id')
+        if plan_id is not None:
+            try:
+                plan_id = int(plan_id)
+            except (TypeError, ValueError):
+                cur.close()
+                return None, 'id 必须是整数'
+            cur.execute(
+                'SELECT id, patient_no, name, frequency_days, next_due, active, note '
+                'FROM platform_plan WHERE id = %s', (plan_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.close()
+                return None, '随访计划不存在: {}'.format(plan_id)
+            existing = dict(zip(
+                ['id', 'patient_no', 'name', 'frequency_days', 'next_due', 'active', 'note'], row))
+
+        patient_no = str(body.get('patient_no') or (existing['patient_no'] if existing else '')).strip()
+        if not patient_no:
+            cur.close()
+            return None, 'patient_no 必填'
+
+        name = body.get('name')
+        if name is None:
+            name = existing['name'] if existing else None
+        name = (name or '').strip() if isinstance(name, str) else name
+        if not name:
+            cur.close()
+            return None, 'name 必填'
+
+        if 'frequency_days' in body:
+            freq_raw = body.get('frequency_days')
+            if freq_raw in (None, ''):
+                frequency_days = None
+            else:
+                try:
+                    frequency_days = int(freq_raw)
+                except (TypeError, ValueError):
+                    cur.close()
+                    return None, 'frequency_days 必须是正整数或 null'
+                if frequency_days <= 0:
+                    cur.close()
+                    return None, 'frequency_days 必须 > 0 或为 null(一次性计划)'
+        else:
+            frequency_days = existing['frequency_days'] if existing else None
+
+        if 'next_due' in body and body.get('next_due'):
+            try:
+                next_due = datetime.datetime.strptime(str(body['next_due']), '%Y-%m-%d').date()
+            except ValueError:
+                cur.close()
+                return None, "next_due 格式必须是 'YYYY-MM-DD'"
+        elif existing:
+            next_due = existing['next_due']
+        else:
+            cur.close()
+            return None, 'next_due 必填'
+
+        if 'active' in body:
+            active = 1 if body.get('active') else 0
+        else:
+            active = existing['active'] if existing else 1
+
+        note = body.get('note') if 'note' in body else (existing['note'] if existing else None)
+
+        cur.execute('SELECT patient_no FROM platform_patient WHERE patient_no = %s', (patient_no,))
+        if not cur.fetchone():
+            cur.close()
+            return None, '患者不存在, 请先建档: {}'.format(patient_no)
+
+        if existing:
+            cur.execute("""
+                UPDATE platform_plan SET
+                  patient_no = %s, name = %s, frequency_days = %s, next_due = %s,
+                  active = %s, note = %s
+                WHERE id = %s
+            """, (patient_no, name, frequency_days, next_due, active, note, existing['id']))
+            action = 'update'
+            plan_id = existing['id']
+        else:
+            cur.execute("""
+                INSERT INTO platform_plan (patient_no, name, frequency_days, next_due, active, note)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (patient_no, name, frequency_days, next_due, active, note))
+            action = 'insert'
+            plan_id = cur.lastrowid
+        cur.close()
+        return {'id': plan_id, 'action': action}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_platform_plans(patient_no=None, active=None):
+    """计划列表 (关联 platform_patient 姓名). active: None=不过滤, 0/1=精确过滤。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where = ['1=1']
+        params = []
+        if patient_no:
+            where.append('pl.patient_no = %s')
+            params.append(patient_no)
+        if active is not None:
+            where.append('pl.active = %s')
+            params.append(active)
+        cur.execute("""
+            SELECT pl.id, pl.patient_no, p.name, pl.name, pl.frequency_days, pl.next_due,
+                   pl.active, pl.note, pl.created_at, pl.updated_at
+            FROM platform_plan pl
+            LEFT JOIN platform_patient p ON p.patient_no = pl.patient_no
+            WHERE {}
+            ORDER BY pl.next_due ASC, pl.id ASC
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'patient_no', 'patient_name', 'name', 'frequency_days', 'next_due',
+                'active', 'note', 'created_at', 'updated_at']
+        plans = []
+        for r in cur.fetchall():
+            row = dict(zip(cols, r))
+            if row.get('next_due') is not None and hasattr(row['next_due'], 'strftime'):
+                row['next_due'] = row['next_due'].strftime('%Y-%m-%d')
+            for k in ('created_at', 'updated_at'):
+                if row.get(k) is not None and hasattr(row[k], 'strftime'):
+                    row[k] = row[k].strftime('%Y-%m-%d %H:%M:%S')
+            row['active'] = bool(row['active'])
+            plans.append(row)
+        cur.close()
+        return {'ok': True, 'count': len(plans), 'plans': plans}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_platform_tasks(horizon_days=7):
+    """今日待办任务 (从 platform_plan 现算, 不落地存储): active=1 且
+    next_due <= today+horizon_days 都算一条任务; overdue_days = max(0, today - next_due)。
+    按 next_due 升序天然就是"逾期在前、今日到期次之、未来最后", 不需要额外排序键。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT CURDATE()')
+        today = cur.fetchone()[0]
+        cur.execute("""
+            SELECT pl.id, pl.patient_no, p.name, pl.name, pl.next_due, pl.frequency_days, pl.note,
+                   fl.last_done
+            FROM platform_plan pl
+            LEFT JOIN platform_patient p ON p.patient_no = pl.patient_no
+            LEFT JOIN (
+                SELECT plan_id, MAX(created_at) AS last_done
+                FROM platform_followup_log
+                WHERE plan_id IS NOT NULL
+                GROUP BY plan_id
+            ) fl ON fl.plan_id = pl.id
+            WHERE pl.active = 1 AND pl.next_due <= %s
+            ORDER BY pl.next_due ASC, pl.id ASC
+        """, (today + datetime.timedelta(days=horizon_days),))
+        tasks = []
+        for (plan_id, patient_no, patient_name, plan_name, next_due,
+             frequency_days, note, last_done) in cur.fetchall():
+            overdue_days = max(0, (today - next_due).days)
+            tasks.append({
+                'plan_id': plan_id, 'patient_no': patient_no, 'patient_name': patient_name,
+                'plan_name': plan_name, 'next_due': next_due.strftime('%Y-%m-%d'),
+                'overdue_days': overdue_days, 'frequency_days': frequency_days, 'note': note,
+                'last_done': last_done.strftime('%Y-%m-%d %H:%M:%S') if last_done else None,
+            })
+        cur.close()
+        return {'ok': True, 'today': today.strftime('%Y-%m-%d'), 'count': len(tasks), 'tasks': tasks}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def platform_task_complete(body):
+    """完成随访任务: {plan_id, method:'call'|'visit'|'note', result_text, operator}.
+    单事务: 写 1 行 platform_followup_log(action=method, plan_id 关联) + 推进计划——
+    循环计划(frequency_days 非空) next_due = 完成当日(非旧到期日) + frequency_days;
+    一次性计划(frequency_days 为空) active 置 0。任一步失败整体回滚。
+    """
+    try:
+        plan_id = int(body.get('plan_id'))
+    except (TypeError, ValueError):
+        return None, 'plan_id 必须是整数'
+    method = body.get('method')
+    if method not in ('call', 'visit', 'note'):
+        return None, "method 必须是 'call'/'visit'/'note' 之一"
+    result_text = body.get('result_text') or None
+    operator = body.get('operator') or None
+
+    conn = get_connection()
+    try:
+        conn.autocommit(False)
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT patient_no, frequency_days, active FROM platform_plan WHERE id = %s FOR UPDATE',
+            (plan_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            cur.close()
+            return None, '随访计划不存在: {}'.format(plan_id)
+        patient_no, frequency_days, active = row
+        if not active:
+            conn.rollback()
+            cur.close()
+            return None, '随访计划已停用, 无需再完成: {}'.format(plan_id)
+
+        cur.execute("""
+            INSERT INTO platform_followup_log (patient_no, plan_id, action, result_text, operator)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (patient_no, plan_id, method, result_text, operator))
+
+        if frequency_days:
+            cur.execute('SELECT CURDATE()')
+            today = cur.fetchone()[0]
+            next_due = today + datetime.timedelta(days=int(frequency_days))
+            cur.execute('UPDATE platform_plan SET next_due = %s WHERE id = %s', (next_due, plan_id))
+            result = {'plan_id': plan_id, 'next_due': next_due.strftime('%Y-%m-%d'), 'active': True}
+        else:
+            cur.execute('UPDATE platform_plan SET active = 0 WHERE id = %s', (plan_id,))
+            result = {'plan_id': plan_id, 'next_due': None, 'active': False}
+
+        conn.commit()
+        cur.close()
+        return result, None
+    except Exception as e:
+        conn.rollback()
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.autocommit(True)
+        conn.close()
+
+
 def _s101_scan_by_patient():
     """扫 wearable_device_data 全表一遍, 按门诊号建索引 (患者列表绑定态 + 最近上传时间用).
 
@@ -1545,7 +1861,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # X-Platform-Token: 随访平台写接口门禁头 (check_platform_token), 不加进这里
+        # 跨域(如 GitHub Pages prototype -> dc.ncrc.org.cn)会在预检阶段被浏览器拦截,
+        # POST 请求根本发不出去 —— M5 联调(本机 8800 + 3000 跨端口)才暴露出这个此前一直存在的缺口。
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Platform-Token')
         # gzip 压缩: 客户端支持 (Accept-Encoding 含 gzip) + 响应 > 1KB 才压缩,
         # 小响应压缩反而变大 (gzip header 开销). 实测大 JSON 可压到 1/15 大小.
         self.send_header('Vary', 'Accept-Encoding')
@@ -1796,6 +2115,15 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 )
                 alarm_open_map = {p_no: n for p_no, n in cur.fetchall()}
 
+                # M5 新增: task_due_count (今日到期+逾期的随访任务数), 一条聚合查询覆盖所有患者
+                # (GROUP BY patient_no, 不逐患者单独查询), 与上面 alarm_open_map 同一惯例;
+                # 供列表页任务角标直接用, 不必再为角标单独发一次 /api/platform/tasks 请求。
+                cur.execute(
+                    "SELECT patient_no, COUNT(*) FROM platform_plan "
+                    "WHERE active = 1 AND next_due <= CURDATE() AND patient_no IS NOT NULL GROUP BY patient_no"
+                )
+                task_due_map = {p_no: n for p_no, n in cur.fetchall()}
+
                 # M4: 近 7 天平均佩戴率, 两条聚合查询覆盖所有已绑定设备(GROUP BY device_id,
                 # 不逐患者单独查询), 与 _iwown_compliance_daily() 用同一套口径合并:
                 # 1) 每设备每日 wear_hours; 2) 每设备每日 not_worn 报警数(用来把"当天 0 帧但
@@ -1851,6 +2179,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                         'last_upload': {'iwown': iwown_last, 's101': s101_entry['latest'] if s101_entry else None},
                         'alarm_open': alarm_open_map.get(p_no, 0),
                         'wear_rate_7d': wear_rate_map.get(iw['device_id']) if iw else None,
+                        'task_due_count': task_due_map.get(p_no, 0),
                     })
                 self._send_json(200, {'ok': True, 'patients': patients})
             except Exception as e:
@@ -1988,6 +2317,31 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send_json(500, {'ok': False, 'error': str(e)})
 
+        elif pathname == '/api/platform/plans':
+            # 随访平台 M5: 随访计划列表 (?patientNo=&active=0|1, 都缺省 = 全部计划)
+            patient_no = (query.get('patientNo') or [None])[0]
+            active_raw = (query.get('active') or [None])[0]
+            active = None
+            if active_raw in ('0', '1'):
+                active = int(active_raw)
+            result, err = query_platform_plans(patient_no=patient_no, active=active)
+            if err:
+                self._send_json(500, {'ok': False, 'error': err})
+            else:
+                self._send_json(200, result)
+
+        elif pathname == '/api/platform/tasks':
+            # 随访平台 M5: 今日待办任务, 从 platform_plan 现算 (见 query_platform_tasks 注释)
+            try:
+                horizon_days = max(1, min(90, int((query.get('horizon_days') or ['7'])[0])))
+            except (ValueError, TypeError):
+                horizon_days = 7
+            result, err = query_platform_tasks(horizon_days=horizon_days)
+            if err:
+                self._send_json(500, {'ok': False, 'error': err})
+            else:
+                self._send_json(200, result)
+
         else:
             self._send_json(200, {
                 'service': '智能随访-可穿戴设备数据接收服务',
@@ -2004,7 +2358,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                     'POST /api/zhenmaiyi/upload': 'v10 patch: 浏览器解析诊脉仪 zip 后批量入库 (zhenmaiyi 表, UPSERT by case_id)',
                     'GET  /api/zhenmaiyi/list': 'v10 patch: 列全部诊脉仪记录 (不含 base64 附件)',
-                    'GET  /api/platform/patients': '随访平台 M1/M4: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数 + wear_rate_7d',
+                    'GET  /api/platform/patients': '随访平台 M1/M4/M5: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数 + wear_rate_7d + task_due_count',
                     'POST /api/platform/patient': '随访平台 M1: UPSERT platform_patient (建档/改档)',
                     'POST /api/platform/bind': "随访平台 M1: 绑定/解绑 {patient_no, chain:'iwown'|'zhenmaiyi', key, unbind}",
                     'GET  /api/platform/patient/vitals?patientNo=&days=': '随访平台 M1: 单患者跨链路体征日聚合',
@@ -2012,6 +2366,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'POST /api/platform/alarm/ingest': '随访平台 M2: 扫 iwown_data alarm 行 -> platform_alarm (幂等; 也被自动摄入线程定时调用)',
                     'POST /api/platform/alarm/transition': "随访平台 M2: 报警状态流转 {alarm_id, action:'ack'|'call'|'visit'|'note'|'close', result_text, operator}",
                     'GET  /api/platform/compliance?patientNo=&days=': '随访平台 M4: 单患者每日佩戴率 + 未佩戴报警标注',
+                    'GET  /api/platform/plans?patientNo=&active=': '随访平台 M5: 随访计划列表',
+                    'POST /api/platform/plan': "随访平台 M5: 建/改随访计划 {id?, patient_no, name, frequency_days|null, next_due, active?, note?}",
+                    'GET  /api/platform/tasks?horizon_days=7': '随访平台 M5: 今日待办任务 (从计划现算, overdue 在前)',
+                    'POST /api/platform/task/complete': "随访平台 M5: 完成任务 {plan_id, method:'call'|'visit'|'note', result_text, operator}",
                 },
             })
 
@@ -2161,8 +2519,26 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(200, {'ok': True, **result})
 
+            elif pathname == '/api/platform/plan':
+                if not check_platform_token(self):
+                    return
+                result, err = upsert_platform_plan(body)
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, {'ok': True, **result})
+
+            elif pathname == '/api/platform/task/complete':
+                if not check_platform_token(self):
+                    return
+                result, err = platform_task_complete(body)
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, {'ok': True, **result})
+
             else:
-                self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register, POST /api/device/merge, POST /api/zhenmaiyi/upload, POST /api/platform/patient, POST /api/platform/bind, POST /api/platform/alarm/ingest, POST /api/platform/alarm/transition'})
+                self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register, POST /api/device/merge, POST /api/zhenmaiyi/upload, POST /api/platform/patient, POST /api/platform/bind, POST /api/platform/alarm/ingest, POST /api/platform/alarm/transition, POST /api/platform/plan, POST /api/platform/task/complete'})
 
         except Exception as e:
             traceback.print_exc()
@@ -2199,8 +2575,10 @@ if __name__ == '__main__':
         ensure_mac_column()
         # v10 patch: 启动时确保 zhenmaiyi 表存在 (idempotent), 接收浏览器端解析诊脉仪 zip 上传
         ensure_zhenmaiyi_table()
-        # 随访平台 1.0 M1: 启动时确保 platform_patient/alarm/followup_log 3 张表存在 (idempotent)
+        # 随访平台 1.0 M1 + 1.1 M5: 启动时确保 platform_patient/alarm/followup_log/plan 4 张表存在 (idempotent)
         ensure_platform_tables()
+        # M5 性能修复: 确保 platform_followup_log.idx_plan 索引存在 (idempotent, 老库需要 ALTER 补齐)
+        ensure_followup_log_plan_index()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -2251,6 +2629,10 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/alarms                  随访平台 M2: 报警工作台列表')
     print('[端点] POST /api/platform/alarm/transition        随访平台 M2: 报警状态流转 (state machine)')
     print('[端点] GET  /api/platform/compliance              随访平台 M4: 单患者每日佩戴率')
+    print('[端点] GET  /api/platform/plans                   随访平台 M5: 随访计划列表')
+    print('[端点] POST /api/platform/plan                    随访平台 M5: 建/改随访计划')
+    print('[端点] GET  /api/platform/tasks                   随访平台 M5: 今日待办任务 (从计划现算)')
+    print('[端点] POST /api/platform/task/complete           随访平台 M5: 完成任务 (推进/停用计划)')
     try:
         server.serve_forever()
     except KeyboardInterrupt:
