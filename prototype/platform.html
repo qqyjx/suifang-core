@@ -106,6 +106,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica
   background: #fff; color: #374151; font-size: 12.5px; cursor: pointer; font-family: inherit; }
 .card-actions button:hover { background: #f0fdfd; border-color: #0891b2; color: #0891b2; }
 
+/* 佩戴依从性环 (M4, patient-card 内, design doc §3.4/⑥ "佩戴率环") */
+.wear-row { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; margin-bottom: 10px;
+  border-bottom: 1px solid #f0f2f5; }
+.wear-ring { position: relative; width: 36px; height: 36px; flex-shrink: 0; }
+.wear-ring svg { display: block; }
+.wear-ring-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 9.5px; font-weight: 700; color: #1f2937; }
+.wear-ring.empty .wear-ring-label { color: #b0b6c0; }
+.wear-info { font-size: 12px; color: #9ca3af; line-height: 1.5; }
+.wear-info b { color: #1f2937; font-size: 13px; font-weight: 700; }
+.wear-info .muted { color: #b0b6c0; font-weight: 500; }
+
 .empty, .loading, .error { background: #fff; border-radius: 12px; padding: 56px 20px; text-align: center;
   color: #9ca3af; font-size: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); grid-column: 1 / -1; }
 .empty .icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
@@ -134,7 +146,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica
 .status-card h4 { font-size: 13px; color: #6b7280; margin-bottom: 8px; font-weight: 600; }
 .status-card .row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
 .status-card .row .k { color: #9ca3af; } .status-card .row .v { color: #1f2937; font-weight: 500; }
-.status-card .empty-inline { color: #9ca3af; font-size: 13px; padding: 8px 0; }
+.empty-inline { color: #9ca3af; font-size: 13px; padding: 8px 0; }
+
+/* 佩戴依从性明细条 (M4, 患者详情页) */
+.compliance-summary { font-size: 12.5px; color: #6b7280; margin-bottom: 10px; }
+.compliance-summary b { color: #1f2937; }
+.wear-bars { display: flex; align-items: flex-end; gap: 5px; height: 120px; padding: 20px 4px 0; overflow-x: auto; }
+.wear-bar-col { flex: 1; min-width: 20px; display: flex; flex-direction: column; align-items: center;
+  justify-content: flex-end; height: 100%; position: relative; cursor: default; }
+.wear-bar { width: 100%; max-width: 22px; border-radius: 3px 3px 0 0; background: #0891b2; min-height: 2px; }
+.wear-bar.low { background: #f59e0b; }
+.wear-bar.zero { background: #e5e7eb; }
+.wear-bar-alarm { position: absolute; top: -18px; font-size: 10.5px; color: #d04848; font-weight: 700; white-space: nowrap; }
+.wear-bar-date { font-size: 10px; color: #9ca3af; margin-top: 4px; }
 
 .charts-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
 @media (min-width: 900px) { .charts-grid { grid-template-columns: 1fr 1fr; } }
@@ -317,6 +341,15 @@ canvas.trend { width: 100%; height: 150px; display: block; }
       </div>
       <div id="detailAlarmsWrap" class="alarms" style="margin-bottom:20px;">
         <div class="loading">载入中…</div>
+      </div>
+
+      <div class="section-title">佩戴依从性</div>
+      <div class="chart-card" style="margin-bottom:16px;">
+        <div class="compliance-summary" id="complianceSummary">载入中…</div>
+        <div id="complianceBars" class="wear-bars"></div>
+        <div id="complianceEmpty" class="empty-inline" style="display:none;">
+          该患者未绑定 iwown 设备,暂无佩戴依从性数据(S101 链路无连续在线流,不在 M4 覆盖范围)
+        </div>
       </div>
 
       <div class="section-title">体征趋势</div>
@@ -603,6 +636,37 @@ function bindBadge(chain, on, label) {
     (on ? '✓' : '✕') + ' ' + label + '</span>';
 }
 
+/* 佩戴率环 (M4): rate 为 0~1 或 null(未绑定 iwown / 无佩戴数据时). 小号 SVG 圆环,
+   颜色按佩戴率分档(>=0.7 绿 / >=0.4 黄 / 其余红), 与工作台 sev-dot 的红黄灰配色呼应。 */
+function wearRingSvg(rate) {
+  const size = 36, stroke = 4, r = (size - stroke) / 2, c = 2 * Math.PI * r;
+  const cx = size / 2, cy = size / 2;
+  if (rate === null || rate === undefined) {
+    return '<div class="wear-ring empty" title="无佩戴数据">' +
+      '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+      '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="#eef0f3" stroke-width="' + stroke + '"/>' +
+      '</svg><span class="wear-ring-label">--</span></div>';
+  }
+  const pct = Math.max(0, Math.min(1, rate));
+  const dash = (c * pct).toFixed(1);
+  const color = pct >= 0.7 ? '#2faa55' : (pct >= 0.4 ? '#f59e0b' : '#d04848');
+  return '<div class="wear-ring" title="近 7 天平均佩戴率 ' + Math.round(pct * 100) + '%">' +
+    '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+    '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="#eef0f3" stroke-width="' + stroke + '"/>' +
+    '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + stroke + '" ' +
+      'stroke-dasharray="' + dash + ' ' + c.toFixed(1) + '" stroke-linecap="round" ' +
+      'transform="rotate(-90 ' + cx + ' ' + cy + ')"/>' +
+    '</svg><span class="wear-ring-label">' + Math.round(pct * 100) + '%</span></div>';
+}
+
+function wearRowHtml(rate) {
+  const info = (rate === null || rate === undefined)
+    ? '<span class="muted">无佩戴数据</span>'
+    : ('<b>' + Math.round(rate * 100) + '%</b>');
+  return '<div class="wear-row">' + wearRingSvg(rate) +
+    '<div class="wear-info">佩戴依从性(近 7 日)<br>' + info + '</div></div>';
+}
+
 function renderPatients() {
   const wrap = document.getElementById('patientsWrap');
   const q = listState.search.trim().toLowerCase();
@@ -640,6 +704,7 @@ function renderPatients() {
         (p.group_tag ? '<div class="patient-tag">' + escapeHtml(p.group_tag) + '</div>' : '') +
       '</div>' +
       '<div class="patient-body" onclick="goDetail(\'' + escapeHtml(p.patient_no) + '\')">' +
+        wearRowHtml(p.wear_rate_7d) +
         '<div class="badge-row">' +
           bindBadge('iwown', !!iw, iw ? ('iwown ' + iw) : 'iwown') +
           bindBadge('s101', !!s101, 'S101/R04') +
@@ -817,6 +882,52 @@ function renderDetail() {
   drawAllCharts(data);
   document.getElementById('detailAlarmLink').onclick = () => goAlarms(p.patient_no);
   fetchDetailAlarms(p.patient_no);
+  fetchCompliance(p.patient_no, detailState.days);
+}
+
+/* 佩戴依从性明细条 (M4): 每日一根柱, 柱高 = wear_hours/24, 有 not_worn 报警的那天柱顶标 ⚠N。
+   跟随患者详情页现有的 7/14/30 天 toggle (renderDetail 每次都重新调这个函数)。 */
+async function fetchCompliance(patientNo, days) {
+  const wrap = document.getElementById('complianceBars');
+  const emptyBox = document.getElementById('complianceEmpty');
+  const summary = document.getElementById('complianceSummary');
+  wrap.innerHTML = '';
+  emptyBox.style.display = 'none';
+  summary.textContent = '载入中…';
+  try {
+    const url = API_BASE + '/api/platform/compliance?patientNo=' +
+      encodeURIComponent(patientNo) + '&days=' + days;
+    const res = await fetch(url, { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+
+    if (!data.daily.length) {
+      summary.textContent = '';
+      emptyBox.style.display = '';
+      return;
+    }
+    const avg = data.summary.avg_wear_rate;
+    summary.innerHTML = '近 ' + data.days + ' 天平均佩戴率 <b>' +
+      (avg != null ? Math.round(avg * 100) + '%' : '--') + '</b> · ' +
+      data.summary.days_with_data + ' 天有数据';
+    wrap.innerHTML = data.daily.map(d => {
+      const rate = d.wear_rate || 0;
+      const heightPct = Math.max(2, Math.round(rate * 100));
+      const cls = rate === 0 ? 'zero' : (rate < 0.4 ? 'low' : '');
+      const alarmMark = d.not_worn_alarms > 0
+        ? '<span class="wear-bar-alarm" title="当日 ' + d.not_worn_alarms + ' 次未佩戴报警">⚠' + d.not_worn_alarms + '</span>'
+        : '';
+      return '<div class="wear-bar-col" title="' + d.date + ' · 佩戴 ' + d.wear_hours + 'h/24h (' +
+          Math.round(rate * 100) + '%)' + (d.not_worn_alarms ? ' · 未佩戴报警 ' + d.not_worn_alarms + ' 次' : '') + '">' +
+        alarmMark +
+        '<div class="wear-bar ' + cls + '" style="height:' + heightPct + '%"></div>' +
+        '<div class="wear-bar-date">' + d.date.slice(5) + '</div>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    summary.textContent = '';
+    wrap.innerHTML = '<div class="error">加载佩戴依从性失败: ' + escapeHtml(e.message) + '</div>';
+  }
 }
 
 /* 患者详情页的报警时间线 (design doc §3.3/⑥: 患者详情该患者报警时间线, 点击去工作台处理) */

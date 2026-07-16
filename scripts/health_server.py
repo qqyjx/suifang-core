@@ -38,6 +38,14 @@ API 端点：
 - POST /api/platform/alarm/transition      报警状态流转 {alarm_id, action:'ack'|'call'|'visit'|'note'|'close',
                                           result_text, operator}; 状态机 new->acked->followed->closed,
                                           每次成功流转落 1 行 platform_followup_log。
+  自动摄入: 环境变量 PLATFORM_INGEST_INTERVAL_MIN (默认 '10', '0' 关闭) 控制启动时是否拉起一个
+  daemon 线程, 每 N 分钟调用一次与 POST /api/platform/alarm/ingest 相同的核心函数
+  platform_alarm_ingest(), 不必再手动点"拉取新报警"按钮; 端点本身仍保留、仍走 token 门禁。
+
+随访平台 1.0 M4 (佩戴依从性, 见 docs/随访平台1.0设计方案.html §3.4/④⑤):
+- GET  /api/platform/compliance?patientNo=&days=  单患者每日佩戴率(佩戴小时数/24) + 当日未佩戴报警数标注,
+                                          纯查询视图, 不新增表; 未绑定 iwown 的患者返回空 daily。
+  /api/platform/patients 响应同时新增 wear_rate_7d (近 7 天平均佩戴率, 未绑定为 null), 供列表卡片显示。
 
 5.06-v9 决定: 不动 wearable_device_data schema (无 wx_openid / patient_no 列),
              患者标识统一写在大 JSON 每条记录的 '门诊号' 字段里, 切片仍按 deviceId 一台设备一行.
@@ -50,7 +58,9 @@ import os
 import json
 import re
 import gzip
+import time
 import datetime
+import threading
 import traceback
 import urllib.request
 import urllib.parse
@@ -1448,6 +1458,84 @@ def _iwown_daily_vitals(device_id, days=14):
         conn.close()
 
 
+def _iwown_compliance_daily(device_id, days=14):
+    """随访平台 M4 佩戴依从性 (design doc §3.4): 单台 iwown 设备的每日佩戴率。
+
+    佩戴率指标定义(供 GET /api/platform/compliance 与 /api/platform/patients.wear_rate_7d 共用):
+      wear_hours      = 当天(按 recorded_at 的日历日) COUNT(DISTINCT HOUR(recorded_at)),
+                         统计 data_type='health' 的帧覆盖了 0-23 点中的几个不同小时
+                         (同一小时内多帧只算 1 次, 不要求逐分钟连续, 是"覆盖时长"的近似值)。
+      wear_rate       = wear_hours / 24, 四舍五入保留 2 位小数 (1.0 = 全天 24 个小时段都有数据)。
+      not_worn_alarms = 同一日历日该设备 platform_alarm.alarm_type='not_worn' 的条数, 仅作标注
+                         (annotation), 不参与 wear_rate 计算, 用来在页面上跟"佩戴率骤降"的天数
+                         交叉核对。
+    每台设备用 1 条 GROUP BY DATE(recorded_at) 查询取整个窗口(不逐天循环查询), 另用 1 条小聚合
+    查询取 not_worn 报警按天计数, 两边按日期字符串在 Python 侧合并。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DATE(recorded_at) AS d, COUNT(DISTINCT HOUR(recorded_at)) AS wear_hours
+            FROM iwown_data
+            WHERE device_id = %s AND data_type = 'health' AND recorded_at IS NOT NULL
+              AND recorded_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            GROUP BY DATE(recorded_at)
+            ORDER BY d
+        """, (device_id, days))
+        wear_map = {}
+        for d, wear_hours in cur.fetchall():
+            date_str = d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)
+            wear_map[date_str] = int(wear_hours)
+
+        cur.execute("""
+            SELECT DATE(occurred_at) AS d, COUNT(*) AS n
+            FROM platform_alarm
+            WHERE device_id = %s AND alarm_type = 'not_worn' AND occurred_at IS NOT NULL
+              AND occurred_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            GROUP BY DATE(occurred_at)
+        """, (device_id, days))
+        alarm_map = {}
+        for d, n in cur.fetchall():
+            date_str = d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)
+            alarm_map[date_str] = int(n)
+        cur.close()
+
+        daily = []
+        for date_str in sorted(set(wear_map) | set(alarm_map)):
+            wear_hours = wear_map.get(date_str, 0)
+            daily.append({
+                'date': date_str,
+                'wear_hours': wear_hours,
+                'wear_rate': round(wear_hours / 24.0, 2),
+                'not_worn_alarms': alarm_map.get(date_str, 0),
+            })
+        return daily
+    finally:
+        conn.close()
+
+
+def platform_auto_ingest_loop(interval_min):
+    """随访平台 M4: 报警自动摄入后台线程 (design doc §3.4 提到的自动化 ingest, 替代人工点
+    "拉取新报警"按钮)。每 interval_min 分钟调用一次 platform_alarm_ingest() —— 与
+    POST /api/platform/alarm/ingest 端点复用同一份核心函数, 端点仍保留、仍走 token 门禁,
+    这个线程只是定时帮你点一次。只有 inserted>0 或抛异常时才打印一行日志(避免刷屏);
+    任何异常都在本轮内 catch 住继续下一轮, 绝不能让线程挂掉导致自动摄入从此停摆。
+    """
+    while True:
+        time.sleep(max(1, interval_min) * 60)
+        try:
+            result, err = platform_alarm_ingest()
+            if err:
+                print('[自动摄入] platform_alarm_ingest 出错:', err)
+            elif result and result.get('inserted', 0) > 0:
+                print('[自动摄入] 扫描 {} 条, 新增 {} 条报警事件'.format(
+                    result.get('scanned', 0), result.get('inserted', 0)))
+        except Exception as e:
+            # catch-all: 任何异常都不能让这个 daemon 线程退出
+            print('[自动摄入] 线程内异常(已捕获, 继续下一轮):', e)
+
+
 # ============ HTTP Handler ============
 class HealthDataHandler(BaseHTTPRequestHandler):
 
@@ -1675,6 +1763,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
 
         elif pathname == '/api/platform/patients':
             # 随访平台 M1: 患者列表 + 三链路绑定态 + 最近上传时间 + 未关闭报警数
+            # M4 新增: wear_rate_7d (近 7 天平均佩戴率), 纯附加字段, 不改动已有字段
             try:
                 conn = get_connection()
                 cur = conn.cursor()
@@ -1706,8 +1795,41 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     "WHERE status != 'closed' AND patient_no IS NOT NULL GROUP BY patient_no"
                 )
                 alarm_open_map = {p_no: n for p_no, n in cur.fetchall()}
+
+                # M4: 近 7 天平均佩戴率, 两条聚合查询覆盖所有已绑定设备(GROUP BY device_id,
+                # 不逐患者单独查询), 与 _iwown_compliance_daily() 用同一套口径合并:
+                # 1) 每设备每日 wear_hours; 2) 每设备每日 not_worn 报警数(用来把"当天 0 帧但
+                # 有未佩戴报警"的日子也算进分母, 否则这天会因为 iwown_data 没有行而在
+                # GROUP BY 里直接消失, 跟详情页 compliance summary 的均值口径对不上)。
+                cur.execute("""
+                    SELECT device_id, DATE(recorded_at) AS d, COUNT(DISTINCT HOUR(recorded_at)) AS day_hours
+                    FROM iwown_data
+                    WHERE data_type = 'health' AND recorded_at IS NOT NULL
+                      AND recorded_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+                    GROUP BY device_id, DATE(recorded_at)
+                """)
+                device_day_hours = {}
+                for dev, d, day_hours in cur.fetchall():
+                    date_str = d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)
+                    device_day_hours.setdefault(dev, {})[date_str] = int(day_hours)
+
+                cur.execute("""
+                    SELECT device_id, DATE(occurred_at) AS d
+                    FROM platform_alarm
+                    WHERE alarm_type = 'not_worn' AND device_id IS NOT NULL AND occurred_at IS NOT NULL
+                      AND occurred_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+                    GROUP BY device_id, DATE(occurred_at)
+                """)
+                for dev, d in cur.fetchall():
+                    date_str = d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d)
+                    device_day_hours.setdefault(dev, {}).setdefault(date_str, 0)
                 cur.close()
                 conn.close()
+
+                wear_rate_map = {}
+                for dev, day_hours_map in device_day_hours.items():
+                    rates = [h / 24.0 for h in day_hours_map.values()]
+                    wear_rate_map[dev] = round(sum(rates) / len(rates), 2) if rates else None
 
                 s101_map = _s101_scan_by_patient()
 
@@ -1728,6 +1850,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                         },
                         'last_upload': {'iwown': iwown_last, 's101': s101_entry['latest'] if s101_entry else None},
                         'alarm_open': alarm_open_map.get(p_no, 0),
+                        'wear_rate_7d': wear_rate_map.get(iw['device_id']) if iw else None,
                     })
                 self._send_json(200, {'ok': True, 'patients': patients})
             except Exception as e:
@@ -1823,6 +1946,48 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json(200, result)
 
+        elif pathname == '/api/platform/compliance':
+            # 随访平台 M4: 单患者佩戴依从性明细 (design doc §3.4). 指标定义见
+            # _iwown_compliance_daily() 顶部注释。未绑定 iwown 的患者(如仅 S101 的 S101 链路
+            # 患者) 返回 daily=[] + summary 全 null, 这是设计范围内的行为, 不是 bug
+            # (design doc: S101 链路没有连续在线流, M4 只覆盖 iwown 佩戴场景)。
+            patient_no = (query.get('patientNo') or [None])[0]
+            try:
+                days = max(1, min(90, int((query.get('days') or ['14'])[0])))
+            except (ValueError, TypeError):
+                days = 14
+            if not patient_no:
+                self._send_json(400, {'ok': False, 'error': '缺少 patientNo'})
+                return
+            try:
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    'SELECT device_id FROM iwown_device WHERE patient_no = %s '
+                    'ORDER BY last_seen DESC LIMIT 1', (patient_no,)
+                )
+                row = cur.fetchone()
+                cur.close()
+                conn.close()
+
+                if not row:
+                    self._send_json(200, {
+                        'ok': True, 'patient_no': patient_no, 'days': days, 'daily': [],
+                        'summary': {'avg_wear_rate': None, 'days_with_data': 0},
+                    })
+                    return
+
+                daily = _iwown_compliance_daily(row[0], days=days)
+                rates = [d['wear_rate'] for d in daily]
+                avg_rate = round(sum(rates) / len(rates), 2) if rates else None
+                self._send_json(200, {
+                    'ok': True, 'patient_no': patient_no, 'days': days, 'daily': daily,
+                    'summary': {'avg_wear_rate': avg_rate, 'days_with_data': len(daily)},
+                })
+            except Exception as e:
+                traceback.print_exc()
+                self._send_json(500, {'ok': False, 'error': str(e)})
+
         else:
             self._send_json(200, {
                 'service': '智能随访-可穿戴设备数据接收服务',
@@ -1839,13 +2004,14 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                     'POST /api/zhenmaiyi/upload': 'v10 patch: 浏览器解析诊脉仪 zip 后批量入库 (zhenmaiyi 表, UPSERT by case_id)',
                     'GET  /api/zhenmaiyi/list': 'v10 patch: 列全部诊脉仪记录 (不含 base64 附件)',
-                    'GET  /api/platform/patients': '随访平台 M1: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数',
+                    'GET  /api/platform/patients': '随访平台 M1/M4: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数 + wear_rate_7d',
                     'POST /api/platform/patient': '随访平台 M1: UPSERT platform_patient (建档/改档)',
                     'POST /api/platform/bind': "随访平台 M1: 绑定/解绑 {patient_no, chain:'iwown'|'zhenmaiyi', key, unbind}",
                     'GET  /api/platform/patient/vitals?patientNo=&days=': '随访平台 M1: 单患者跨链路体征日聚合',
                     'GET  /api/platform/alarms?status=&patientNo=&limit=': '随访平台 M2: 报警工作台列表 (status 支持 open meta 值)',
-                    'POST /api/platform/alarm/ingest': '随访平台 M2: 扫 iwown_data alarm 行 -> platform_alarm (幂等)',
+                    'POST /api/platform/alarm/ingest': '随访平台 M2: 扫 iwown_data alarm 行 -> platform_alarm (幂等; 也被自动摄入线程定时调用)',
                     'POST /api/platform/alarm/transition': "随访平台 M2: 报警状态流转 {alarm_id, action:'ack'|'call'|'visit'|'note'|'close', result_text, operator}",
+                    'GET  /api/platform/compliance?patientNo=&days=': '随访平台 M4: 单患者每日佩戴率 + 未佩戴报警标注',
                 },
             })
 
@@ -2055,6 +2221,19 @@ if __name__ == '__main__':
         print('[警告] PLATFORM_TOKEN 未配置, POST /api/platform/* 写接口不做鉴权 (开发模式). '
               '生产部署前请 systemd 加 Environment="PLATFORM_TOKEN=xxx" 后重启')
 
+    # 随访平台 1.0 M4: 报警自动摄入线程. PLATFORM_INGEST_INTERVAL_MIN 未设时默认 10 分钟一次,
+    # 设为 '0' 关闭(退回纯手动点"拉取新报警"按钮); 解析失败(非数字)也按默认 10 处理。
+    try:
+        _ingest_interval_min = int(os.environ.get('PLATFORM_INGEST_INTERVAL_MIN') or '10')
+    except (TypeError, ValueError):
+        _ingest_interval_min = 10
+    if _ingest_interval_min > 0:
+        threading.Thread(target=platform_auto_ingest_loop, args=(_ingest_interval_min,), daemon=True).start()
+        print('[启动] 报警自动摄入线程已启动, 每 {} 分钟调用一次 platform_alarm_ingest() '
+              '(PLATFORM_INGEST_INTERVAL_MIN 调整间隔 / 设为 0 关闭)'.format(_ingest_interval_min))
+    else:
+        print('[启动] 报警自动摄入线程已禁用 (PLATFORM_INGEST_INTERVAL_MIN=0), 只能手动 POST /api/platform/alarm/ingest')
+
     server = HTTPServer(('0.0.0.0', PORT), HealthDataHandler)
     print('[启动] 智能随访数据接收服务 v5.06-v9: http://0.0.0.0:{}'.format(PORT))
     print('[模式] 一台设备一行 + 大 JSON 汇总; 患者标识 = 大 JSON 每条记录的 "门诊号" 字段')
@@ -2071,6 +2250,7 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/alarm/ingest            随访平台 M2: iwown 报警行 -> platform_alarm (幂等)')
     print('[端点] GET  /api/platform/alarms                  随访平台 M2: 报警工作台列表')
     print('[端点] POST /api/platform/alarm/transition        随访平台 M2: 报警状态流转 (state machine)')
+    print('[端点] GET  /api/platform/compliance              随访平台 M4: 单患者每日佩戴率')
     try:
         server.serve_forever()
     except KeyboardInterrupt:
