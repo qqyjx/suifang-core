@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>随访平台使用说明 · 智能随访系统</title>
+<style>
+  :root {
+    --primary: #1565a8;
+    --primary-dark: #0d4a7d;
+    --accent: #18a999;
+    --bg: #f4f7fa;
+    --card: #ffffff;
+    --text: #2b3440;
+    --muted: #6b7886;
+    --border: #dde5ec;
+    --ok: #1e9e63;
+    --warn: #d98a1c;
+    --risk: #c4453a;
+    --tag-blue-bg: #e8f1fa;
+    --tag-green-bg: #e6f5ef;
+    --tag-orange-bg: #fbf1e2;
+    --tag-red-bg: #faeae8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; background: var(--bg); color: var(--text); line-height: 1.75; }
+  header { background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 60%, var(--accent) 100%); color: #fff; padding: 38px 24px 30px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 8px; }
+  header h1 { font-size: 26px; font-weight: 700; letter-spacing: 1px; }
+  header .sub { margin-top: 8px; font-size: 14px; opacity: .92; }
+  header .meta { margin-top: 14px; font-size: 13px; opacity: .85; }
+  nav.toc { position: sticky; top: 0; z-index: 50; background: #fff; border-bottom: 1px solid var(--border); box-shadow: 0 1px 6px rgba(20,40,60,.06); }
+  nav.toc .wrap { display: flex; gap: 4px; overflow-x: auto; }
+  nav.toc a { display: block; padding: 12px 16px; font-size: 14px; color: var(--muted); text-decoration: none; white-space: nowrap; border-bottom: 3px solid transparent; }
+  nav.toc a:hover { color: var(--primary); }
+  main { padding: 28px 24px 60px; }
+  section { margin-bottom: 44px; }
+  h2 { font-size: 21px; color: var(--primary-dark); padding-left: 12px; border-left: 5px solid var(--accent); margin-bottom: 6px; }
+  h2 .num { color: var(--accent); margin-right: 6px; }
+  h3 { font-size: 17px; color: var(--primary-dark); margin: 22px 0 10px; }
+  .lead { font-size: 14px; color: var(--muted); margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: #fff; }
+  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; margin: 10px 0 14px; }
+  th { background: #eef4f9; color: var(--primary-dark); text-align: left; padding: 9px 12px; white-space: nowrap; border-bottom: 2px solid var(--border); }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .tag { display: inline-block; padding: 1px 9px; border-radius: 20px; font-size: 12px; white-space: nowrap; }
+  .tag.blue { background: var(--tag-blue-bg); color: var(--primary); }
+  .tag.green { background: var(--tag-green-bg); color: var(--ok); }
+  .tag.orange { background: var(--tag-orange-bg); color: var(--warn); }
+  .tag.red { background: var(--tag-red-bg); color: var(--risk); }
+  .note { background: var(--tag-blue-bg); border-left: 4px solid var(--primary); border-radius: 6px; padding: 12px 16px; font-size: 13.5px; margin: 12px 0; }
+  .warn-box { background: var(--tag-orange-bg); border-left: 4px solid var(--warn); border-radius: 6px; padding: 12px 16px; font-size: 13.5px; margin: 12px 0; }
+  code { background: #eef2f6; padding: 1px 6px; border-radius: 4px; font-size: 12.5px; font-family: Consolas, monospace; color: #0d4a7d; }
+  ul.plain { padding-left: 20px; font-size: 14px; }
+  ul.plain li { margin-bottom: 6px; }
+  /* 按钮标签徽章: 用于在正文里精确引用平台上的真实按钮文案 */
+  .ui-btn { display: inline-block; padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: #fff; font-size: 13px; color: var(--primary-dark); font-weight: 600;
+    box-shadow: 0 1px 2px rgba(20,40,60,.08); white-space: nowrap; }
+  /* 步骤列表 */
+  ol.steps { list-style: none; padding-left: 0; counter-reset: step; margin: 10px 0; }
+  ol.steps li { position: relative; padding: 7px 0 7px 36px; font-size: 14px; }
+  ol.steps li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: 7px; width: 23px; height: 23px; border-radius: 50%;
+    background: var(--primary); color: #fff; font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* FAQ */
+  dl.faq dt { font-size: 14.5px; font-weight: 700; color: var(--primary-dark); margin-top: 16px;
+    padding-left: 22px; position: relative; }
+  dl.faq dt::before { content: "Q"; position: absolute; left: 0; top: 0; color: var(--accent); font-weight: 800; }
+  dl.faq dd { margin: 4px 0 0 22px; font-size: 14px; color: var(--text); }
+  a.inline { color: var(--primary); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>随访平台使用说明</h1>
+    <div class="sub">医护 / CRC 操作手册 — 建档、绑定设备、看数据、处理报警</div>
+    <div class="meta">面向:医护 / CRC 操作人员(零技术背景) · 2026-07-16 · 入口:<code>https://qqyjx.github.io/suifang/prototype/platform.html</code></div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#s1">① 平台是什么</a>
+    <a href="#s2">② 快速上手</a>
+    <a href="#s3">③ 建档与设备绑定</a>
+    <a href="#s4">④ 看患者数据</a>
+    <a href="#s5">⑤ 报警处理</a>
+    <a href="#s6">⑥ 常见问题</a>
+    <a href="#s7">⑦ 求助</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+<section id="s1">
+  <h2><span class="num">①</span>平台是什么</h2>
+  <p class="lead">一句话讲清楚:随访平台把患者身上三条设备链路产生的数据,按"人"串起来看。</p>
+  <div class="card">
+    <p>患者的体征数据来自三条互相独立的设备链路(iwown 4G 手表 / S101·R04 蓝牙手表和戒指 / 诊脉仪),以前只能分别去三个看板里按设备找数据。随访平台把这三条链路"绑"到同一个患者名下,医护打开一个页面,就能看到这个患者是谁、最近体征怎么样、这几天有没有好好戴设备、有没有报警要处理 — 不用再挨个看板去核对同一个人。</p>
+  </div>
+  <div class="table-scroll"><table>
+    <tr><th>链路</th><th>患者/设备端怎么用</th><th>医护需要做的事</th></tr>
+    <tr>
+      <td><b>iwown 4G 手表</b></td>
+      <td>患者直接戴上即可,4G 蜂窝网络直连服务器自动上传,全程<b>免操作</b>(不用装小程序、不用带手机)</td>
+      <td>建档后在"绑定/解绑"里填设备号(15 位)</td>
+    </tr>
+    <tr>
+      <td><b>S101 / R04</b>(蓝牙手表/戒指)</td>
+      <td>需要患者(或家属)手机装<b>微信小程序</b>,打开小程序把手表连上才会采数据</td>
+      <td>无需单独绑定,小程序里录入的门诊号与建档门诊号一致即自动归户</td>
+    </tr>
+    <tr>
+      <td><b>诊脉仪</b></td>
+      <td>医护现场检测,导出 .zip 后在诊脉仪看板里解析、确认入库</td>
+      <td>建档时把患者的诊脉仪病例号(case_id)在"绑定/解绑"里填进去</td>
+    </tr>
+  </table></div>
+</section>
+
+<section id="s2">
+  <h2><span class="num">②</span>快速上手</h2>
+  <p class="lead">打开链接即用,写操作首次需要一次性输入口令。</p>
+  <div class="card">
+    <p><b>打开方式</b>:浏览器或手机直接打开 <code>https://qqyjx.github.io/suifang/prototype/platform.html</code>,不用装 App、不用登录账号。</p>
+    <p style="margin-top:10px"><b>看数据不用口令</b>:浏览患者列表、患者详情、报警列表都是只读浏览,直接看就行。</p>
+    <p style="margin-top:10px"><b>写操作第一次会要口令</b>:第一次点 <span class="ui-btn">＋ 建档</span> 保存、<span class="ui-btn">绑定/解绑</span> 提交,或在报警工作台里点处理按钮时,页面会弹出一个访问口令输入框。这个口令向平台管理员<b>肖逸凡</b>索取,填一次之后浏览器会记住,同一台设备/浏览器以后不用再填(除非清了浏览器数据或换了新设备/新浏览器)。</p>
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="num">③</span>患者建档与设备绑定</h2>
+  <p class="lead">先建档,再把设备/病例号绑到这个患者名下。</p>
+
+  <h3>3.1 建档</h3>
+  <div class="card">
+    <ol class="steps">
+      <li>患者列表页右上角点 <span class="ui-btn">＋ 建档</span></li>
+      <li><b>门诊号(patient_no, 主键) *</b> 必填 — 务必与 HIS 门诊号完全一致。这是绑定和查询这个患者的唯一依据,填错、多个空格或大小写不一致,都会导致设备数据对不上人</li>
+      <li>姓名 / 性别 / 年龄 / 分组(队列) / 备注 按需填写,都可以之后再补</li>
+      <li>点 <span class="ui-btn">保存</span></li>
+    </ol>
+    <div class="note">已建档患者想改信息,在该患者卡片下方点 <span class="ui-btn">改档</span>,同一个弹窗改完再点保存即可(门诊号本身建档后不能改)。</div>
+  </div>
+
+  <h3>3.2 绑定 / 解绑设备</h3>
+  <div class="card">
+    <ol class="steps">
+      <li>患者卡片下方点 <span class="ui-btn">绑定/解绑</span></li>
+      <li>下拉框"链路"里选 <b>iwown 4G 手表 (key = device_id)</b> 或 <b>诊脉仪 (key = case_id)</b></li>
+      <li>iwown:在下面输入框填<b>15 位设备号</b>(手表表底或包装上能看到,格式类似 <code>DEVWATCH00000001</code>);诊脉仪:填诊脉仪病例号(case_id)</li>
+      <li>点 <span class="ui-btn">提交</span></li>
+    </ol>
+    <p style="font-size:13.5px; color:var(--muted); margin-top:6px;">S101/R04 不需要在这里绑定 — 只要小程序里录入的门诊号跟建档门诊号一致,数据会自动归到这个患者名下。</p>
+    <div class="warn-box"><b>绑错了怎么办</b>:直接重新绑定即可。同一个设备号/病例号再绑给另一个患者,会把这台设备<b>迁移</b>到新患者名下,原来那个患者的卡片上就不会再显示这台设备的数据了。如果只是想解除绑定而不换人,勾选 <span class="ui-btn">解绑 (清空该链路绑定)</span> 后点提交即可。</div>
+  </div>
+</section>
+
+<section id="s4">
+  <h2><span class="num">④</span>看患者数据</h2>
+  <p class="lead">患者列表看概况,点进详情页看趋势和依从性。</p>
+
+  <h3>4.1 患者列表卡片各元素</h3>
+  <div class="card">
+    <ul class="plain">
+      <li><b>佩戴率环</b>:圆环 + 百分比,是这个患者<b>近 7 天 iwown 手表</b>的平均佩戴率;显示"--"代表还没绑 iwown 设备,或没有佩戴数据(不是佩戴率为 0)</li>
+      <li><b>绑定徽标</b>:iwown / S101·R04 / 诊脉仪 三个小标签,打勾 = 已绑定,叉号 = 未绑定</li>
+      <li><b>报警角标</b>:卡片右上角红色 ⚠ 数字,是这个患者当前待处理/进行中的报警条数,点一下会直接跳到报警工作台并筛选出这个患者</li>
+      <li><b>最近上传</b>:iwown / S101 各自最近一次收到数据的时间,长时间没更新可能是设备离线或没戴</li>
+    </ul>
+  </div>
+
+  <h3>4.2 患者详情页</h3>
+  <div class="card">
+    <p>点开患者卡片进详情页,顶部有 <span class="ui-btn">7 天</span> / <span class="ui-btn">14 天</span> / <span class="ui-btn">30 天</span> 三个切换按钮,决定下面所有图表和统计的时间窗口。</p>
+    <ul class="plain" style="margin-top:10px">
+      <li><b>五类体征趋势图</b>:心率(bpm)/血氧(%)/血压(mmHg)/体温(℃)/步数(步/日),iwown 和 S101 两条链路的数据画在同一张图上对比(用图例颜色区分)</li>
+      <li><b>佩戴依从性明细条</b>:每天一根柱子,<b>柱高 = 当天佩戴覆盖的小时数 / 24 小时</b>,柱子越高说明这天戴的时间越长;柱子顶上出现 <b>⚠ 数字</b> 代表当天有对应次数的"未佩戴"报警,可以跟柱子矮的那几天对照着看</li>
+      <li><b>报警时间线</b>:这个患者最近的报警记录,只读摘要,点了会跳去报警工作台处理</li>
+      <li><b>设备状态条</b>:iwown 设备的电量/信号/最近在线时间,诊脉仪最近一次的体质结论和主脉象</li>
+    </ul>
+  </div>
+</section>
+
+<section id="s5">
+  <h2><span class="num">⑤</span>报警处理</h2>
+  <p class="lead">工作台集中处理所有患者的报警,危急报警优先。</p>
+
+  <div class="card">
+    <p><b>入口</b>:患者列表右上角点 <span class="ui-btn">🚨 报警工作台</span>(角标数字是全平台当前未处理报警总数);也可以从某个患者的报警角标或详情页"报警时间线"点进去,会自动带上这个患者的筛选。</p>
+  </div>
+
+  <h3>5.1 状态含义</h3>
+  <div class="table-scroll"><table>
+    <tr><th>页签</th><th>含义</th></tr>
+    <tr><td><span class="ui-btn">待处理</span></td><td>报警刚发生,还没人看过</td></tr>
+    <tr><td><span class="ui-btn">已知晓</span></td><td>医护已经看到、确认知道了</td></tr>
+    <tr><td><span class="ui-btn">已回访</span></td><td>已联系/上门过患者,记录过回访结果</td></tr>
+    <tr><td><span class="ui-btn">已关闭</span></td><td>这条报警处理完毕,归档</td></tr>
+    <tr><td><span class="ui-btn">全部</span></td><td>不筛选状态,看所有历史报警</td></tr>
+  </table></div>
+
+  <h3>5.2 处理流程</h3>
+  <div class="card">
+    <p>点开一条报警会弹出处理框:</p>
+    <ol class="steps">
+      <li>填 <b>操作人</b>(填一次会记住,下次自动带出)</li>
+      <li>先点 <span class="ui-btn">✓ 知晓</span>,确认收到这条报警(待处理 → 已知晓)</li>
+      <li>电话或上门联系患者后,"回访方式"选 <b>电话</b> / <b>上门</b>,在"处理/回访结果"里写清楚联系情况,点 <span class="ui-btn">📞 记录回访</span>(状态变为已回访;这一步可以重复多次记录,比如打了两次电话都能分别记一条)</li>
+      <li>确认这件事处理完了,点 <span class="ui-btn">✕ 关闭</span>(转为已关闭)</li>
+    </ol>
+  </div>
+
+  <div class="warn-box"><b>优先级</b>:<b>跌倒</b> 和 <b>SOS</b> 是最高等级(红色圆点标记),要优先处理;心率/血氧/血压/体温越限是黄色提示,久坐/未佩戴/低电量是灰色提示,优先级依次降低。</div>
+
+  <div class="note">报警不是实时到账的:手表触发报警后,服务器每 <b>10 分钟</b>自动扫一次原始数据、生成报警记录,不需要人工点什么按钮。如果着急想马上看到最新报警,可以点右上角 <span class="ui-btn">⟳ 拉取新报警</span> 手动触发一次。</div>
+</section>
+
+<section id="s6">
+  <h2><span class="num">⑥</span>常见问题</h2>
+  <p class="lead">遇到问题先翻这里,答案都对照系统实际行为写的。</p>
+
+  <dl class="faq">
+    <dt>口令(访问令牌)忘了怎么办?</dt>
+    <dd>向平台管理员肖逸凡重新索取,在下次做写操作时弹出的框里填入即可。填过一次浏览器会记住,不用每次都问,也不用自己找地方保存。</dd>
+
+    <dt>患者建档了,但看不到他的手表/诊脉仪数据?</dt>
+    <dd>先检查是否已做过"绑定/解绑"(iwown、诊脉仪都要绑,S101 靠门诊号自动归户);再确认门诊号跟建档时填的完全一致,哪怕多一个空格或大小写不同都算对不上号。</dd>
+
+    <dt>佩戴率为什么显示很低,或者一直是"--"?</dt>
+    <dd>佩戴率只统计 iwown 4G 手表当天有数据覆盖的小时数(0~24 小时),S101/诊脉仪不参与这个统计。没绑 iwown 设备的患者,佩戴率环固定显示"--",代表没有数据可算,不是佩戴率为 0。</dd>
+
+    <dt>手表明明报警了,报警工作台里怎么没看到?</dt>
+    <dd>报警不是实时到账的,服务器每 10 分钟自动扫一次原始数据才会生成报警记录。着急的话点报警工作台右上角"⟳ 拉取新报警"手动刷新一次就能看到最新的。</dd>
+
+    <dt>手机能用这个平台吗?</dt>
+    <dd>能。它是普通网页,手机、平板、电脑浏览器直接打开链接就行,页面对手机屏幕做过适配,不需要装 App 或小程序(S101/R04 的数据采集本身仍需要患者那边装小程序连手表,平台本身不用)。</dd>
+
+    <dt>页面上的数据多久更新一次?</dt>
+    <dd>患者列表和详情页不会自动刷新,需要手动点"⟳ 刷新"或重新打开页面才能看到最新数据;报警记录后台每 10 分钟自动生成,但工作台列表同样要手动刷新或切换页签才会显示出来。</dd>
+
+    <dt>报警状态点错了,或者忘了记一条回访内容,怎么办?</dt>
+    <dd>状态只能往前推进(待处理 → 已知晓 → 已回访 → 已关闭),不能回退,但同一条报警可以反复点"📞 记录回访"补充多条处理记录,之前几次的回访内容都会保留在处理记录里,随时能翻看核对。</dd>
+  </dl>
+</section>
+
+<section id="s7">
+  <h2><span class="num">⑦</span>求助</h2>
+  <div class="card">
+    <p>遇到解决不了的问题(口令、平台报错、数据对不上等),联系平台管理员<b>肖逸凡</b>。</p>
+    <p style="margin-top:10px">更多文档(设计方案、FAQ、设备接入手册等)见文档中心:<a class="inline" href="https://qqyjx.github.io/suifang/docs/">https://qqyjx.github.io/suifang/docs/</a></p>
+  </div>
+</section>
+
+</main>
+</body>
+</html>
