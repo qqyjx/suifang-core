@@ -198,6 +198,7 @@ canvas.trend { width: 100%; height: 150px; display: block; }
 .form-msg.err { color: #d04848; } .form-msg.ok { color: #2faa55; }
 
 .footer-note { margin-top: 24px; font-size: 12px; color: #9ca3af; text-align: center; line-height: 1.7; }
+.footer-note a { color: #6b7280; text-decoration: underline; }
 
 /* ============ 报警工作台 (M2) ============ */
 .header .btn.alarm-nav { position: relative; }
@@ -295,7 +296,7 @@ canvas.trend { width: 100%; height: 150px; display: block; }
     <div class="header">
       <div>
         <h1>随访平台 1.0 · 患者中心</h1>
-        <div class="sub">以患者为中心 · 跨三链路(iwown/S101·R04/诊脉仪)绑定与体征视图 · M1 只读版本</div>
+        <div class="sub">以患者为中心 · 跨三链路(iwown/S101·R04/诊脉仪)绑定与体征视图 · 报警闭环 · 随访任务</div>
       </div>
       <div class="actions">
         <div class="btn" id="refreshBtn">⟳ 刷新</div>
@@ -333,8 +334,9 @@ canvas.trend { width: 100%; height: 150px; display: block; }
     </div>
 
     <div class="footer-note">
-      数据来源 <code id="apiFooterShow">--</code>/api/platform/* · 设计方案见
-      <code>docs/随访平台1.0设计方案.html</code> · M1 只读版本(建档/绑定除外)
+      数据来源 <code id="apiFooterShow">--</code>/api/platform/* ·
+      <a href="../docs/随访平台1.0设计方案.html" target="_blank" rel="noopener">设计方案</a> ·
+      <a href="../docs/随访平台使用说明.html" target="_blank" rel="noopener">使用说明</a>
     </div>
   </div>
 
