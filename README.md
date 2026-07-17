@@ -33,7 +33,8 @@
 | 📊 [**S101 数据看板**](https://qqyjx.github.io/suifang/prototype/data-dashboard.html) | 给医院看数据 (S101 手表) | **实时**拉 `/api/data`，按门诊号聚合显示，30s 自动刷新 + 手动刷新按钮 |
 | 🩺 [**诊脉仪数据看板**](https://qqyjx.github.io/suifang/prototype/pulse-dashboard.html) | 给医院看数据 (诊脉仪) | 上传诊脉仪导出的 .zip，**浏览器本地解析**体质+脉诊+答题+脉象图+报告 PDF；预览确认后可一键**入库到六元** MySQL (zhenmaiyi 表) |
 | 📶 [**iwown 4G 手表看板**](https://qqyjx.github.io/suifang/prototype/iwown-dashboard.html) | 给医院看数据 (iwown 4G 手表) | 拉 `/iwown/api/iwown/list`，4G 手表直传二进制 protobuf 入库六元 (iwown_data 表)，详见 [iwown/](iwown/) |
-| 🩹 [**随访平台 1.0**](https://qqyjx.github.io/suifang/prototype/platform.html) | 以患者为中心的随访工作台 | 患者建档/三链路设备绑定/跨设备体征趋势；走 `/api/platform/*`（需服务端部署 v11+），设计见 [设计方案](https://qqyjx.github.io/suifang/docs/%E9%9A%8F%E8%AE%BF%E5%B9%B3%E5%8F%B01.0%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.html) |
+| 🩹 [**随访平台 1.0**](https://qqyjx.github.io/suifang/prototype/platform.html) | 以患者为中心的随访工作台（生产入口） | 患者建档/三链路设备绑定/跨设备体征趋势/报警工作台/佩戴依从性/随访任务；走 `/api/platform/*` 真实生产数据，设计见 [设计方案](https://qqyjx.github.io/suifang/docs/%E9%9A%8F%E8%AE%BF%E5%B9%B3%E5%8F%B01.0%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.html)，操作见 [使用说明](https://qqyjx.github.io/suifang/docs/%E9%9A%8F%E8%AE%BF%E5%B9%B3%E5%8F%B0%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.html) |
+| 🎭 [**随访平台演示版**](https://qqyjx.github.io/suifang/prototype/platform-demo.html) | 给领导/同事演示用 | 与生产版同一套 UI，**内嵌演示数据**（3 名测试患者/报警/计划），全部交互可操作，刷新即重置；零后端依赖，不碰生产数据 |
 | 🩺 [极简患者界面](https://qqyjx.github.io/suifang/prototype/patient-demo.html) | 患者本人界面演示 | 仅"连接/断开"一个按钮，三态切换 |
 | 📋 [医护管理界面](https://qqyjx.github.io/suifang/prototype/index.html) | 4-Tab 架构原型 | 首页 / 测量 / 数据 / 我的 |
 

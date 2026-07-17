@@ -1,0 +1,2187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>智能随访 · 随访平台 1.0</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { -webkit-text-size-adjust: 100%; }
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+  "Microsoft YaHei", sans-serif; color: #1f2937; background: #f5f7fa;
+  padding: 20px 16px 64px; min-height: 100vh; font-size: 15px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased; }
+.container { max-width: 1200px; margin: 0 auto; }
+
+/* Tabs (与 S101/诊脉仪/iwown 三看板同一工程习惯) */
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; background: #fff;
+  border-radius: 12px; padding: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); max-width: max-content;
+  flex-wrap: wrap; }
+.tab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px;
+  border-radius: 8px; font-size: 14px; font-weight: 500; color: #6b7280;
+  cursor: pointer; text-decoration: none; transition: all .15s; user-select: none; }
+.tab:hover { background: #f3f4f6; color: #1f2937; }
+.tab.active { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%);
+  color: #fff; box-shadow: 0 2px 8px rgba(8,145,178,0.32); }
+
+/* Header */
+.header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%); color: #fff;
+  border-radius: 16px; padding: 24px 28px; margin-bottom: 16px;
+  box-shadow: 0 4px 16px rgba(8,145,178,0.25);
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.header h1 { font-size: 22px; font-weight: 600; letter-spacing: 1px; margin-bottom: 4px; }
+.header .sub { font-size: 13px; opacity: 0.9; }
+.header .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.header .btn { background: rgba(255,255,255,0.2); color: #fff; padding: 8px 16px;
+  border-radius: 20px; font-size: 13px; cursor: pointer; border: 1px solid rgba(255,255,255,0.3);
+  transition: background 0.2s; }
+.header .btn:hover { background: rgba(255,255,255,0.32); }
+.header .btn.primary { background: #fff; color: #0891b2; border-color: #fff; font-weight: 600; }
+.header .btn.primary:hover { background: #ecfeff; }
+
+/* Status bar */
+.status-bar { background: #fff; border-radius: 12px; padding: 14px 20px; margin-bottom: 16px;
+  display: flex; flex-wrap: wrap; gap: 18px; align-items: center; font-size: 13px; color: #6b7280;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.status-bar .item { display: flex; align-items: center; gap: 6px; }
+.status-bar .label { color: #9ca3af; }
+.status-bar .value { color: #1f2937; font-weight: 500; }
+.status-bar a.link { color: #0891b2; cursor: pointer; text-decoration: none; }
+.status-bar a.link:hover { text-decoration: underline; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: #2faa55; } .dot-err { background: #d04848; } .dot-warn { background: #f59e0b; }
+
+.banner { border-radius: 10px; padding: 13px 18px; margin-bottom: 16px; font-size: 13px; }
+.banner-warn { background: #fffbeb; border-left: 4px solid #f59e0b; color: #92400e; }
+.banner code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px; }
+
+.section-title { font-size: 15px; font-weight: 600; color: #1f2937; margin: 20px 0 12px;
+  padding-left: 12px; border-left: 4px solid #0891b2; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.section-title .meta { font-size: 12px; color: #9ca3af; font-weight: 400; }
+.section-title .meta a.link { color: #0891b2; text-decoration: none; }
+.section-title .meta a.link:hover { text-decoration: underline; }
+
+/* Toolbar */
+.toolbar { display: grid; grid-template-columns: 1.5fr auto; gap: 10px; margin-bottom: 16px; }
+.search-wrap { position: relative; }
+.search-wrap .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #9ca3af; pointer-events: none; font-size: 14px; }
+.search-wrap input { width: 100%; height: 38px; padding: 0 12px 0 34px; border: 1px solid #e5e7eb;
+  border-radius: 8px; font-size: 14px; background: #fff; font-family: inherit; outline: none; transition: border-color .15s, box-shadow .15s; }
+.search-wrap input:focus { border-color: #0891b2; box-shadow: 0 0 0 3px rgba(8,145,178,0.12); }
+.toolbar button { height: 38px; padding: 0 14px; border: 1px solid #e5e7eb;
+  border-radius: 8px; background: #fff; font-size: 14px; cursor: pointer; font-family: inherit; color: #374151; }
+.toolbar button:hover { background: #f9fafb; }
+
+/* Patient cards */
+.patients { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 760px) { .patients { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1140px) { .patients { grid-template-columns: 1fr 1fr 1fr; } }
+
+.patient-card { background: #fff; border-radius: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  overflow: hidden; transition: box-shadow .15s, transform .15s; }
+.patient-card:hover { box-shadow: 0 4px 18px rgba(8,145,178,.18); }
+.patient-header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%);
+  color: #fff; padding: 14px 18px; cursor: pointer; position: relative; }
+.patient-name { font-size: 17px; font-weight: 600; }
+.patient-no { font-size: 12px; opacity: .92; margin-top: 2px; letter-spacing: .5px; }
+.patient-tag { display: inline-block; background: rgba(255,255,255,0.22);
+  padding: 2px 9px; border-radius: 10px; font-size: 11px; margin-top: 6px; letter-spacing: 0.5px; }
+.alarm-badge { position: absolute; top: 12px; right: 14px; background: #fee2e2; color: #b91c1c;
+  font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 10px; }
+.patient-body { padding: 14px 18px; cursor: pointer; }
+.badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.bind-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.bind-badge.on.iwown { background: #ecfeff; color: #0e7490; }
+.bind-badge.on.s101 { background: #eef4ff; color: #2c6ef2; }
+.bind-badge.on.zmy { background: #fef3c7; color: #b45309; }
+.bind-badge.off { background: #f3f4f6; color: #9ca3af; }
+.metric-row { display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 0; font-size: 12.5px; border-bottom: 1px solid #f0f2f5; }
+.metric-row:last-child { border-bottom: none; }
+.metric-row .key { color: #6b7280; }
+.metric-row .val { color: #1f2937; font-weight: 500; }
+.metric-row .val.muted { color: #9ca3af; font-weight: 400; }
+.card-actions { display: flex; gap: 8px; padding: 10px 18px 14px; border-top: 1px solid #f3f4f6; }
+.card-actions button { flex: 1; height: 32px; border-radius: 8px; border: 1px solid #e5e7eb;
+  background: #fff; color: #374151; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+.card-actions button:hover { background: #f0fdfd; border-color: #0891b2; color: #0891b2; }
+
+/* 佩戴依从性环 (M4, patient-card 内, design doc §3.4/⑥ "佩戴率环") */
+.wear-row { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; margin-bottom: 10px;
+  border-bottom: 1px solid #f0f2f5; }
+.wear-ring { position: relative; width: 36px; height: 36px; flex-shrink: 0; }
+.wear-ring svg { display: block; }
+.wear-ring-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 9.5px; font-weight: 700; color: #1f2937; }
+.wear-ring.is-empty .wear-ring-label { color: #b0b6c0; }
+.wear-info { font-size: 12px; color: #9ca3af; line-height: 1.5; }
+.wear-info b { color: #1f2937; font-size: 13px; font-weight: 700; }
+.wear-info .muted { color: #b0b6c0; font-weight: 500; }
+
+.empty, .loading, .error { background: #fff; border-radius: 12px; padding: 56px 20px; text-align: center;
+  color: #9ca3af; font-size: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); grid-column: 1 / -1; }
+.empty .icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
+.error { color: #d04848; }
+
+/* Detail view */
+.back-btn { display: inline-flex; align-items: center; gap: 6px; background: #fff; color: #374151;
+  border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer;
+  margin-bottom: 14px; font-family: inherit; }
+.back-btn:hover { border-color: #0891b2; color: #0891b2; }
+
+.detail-header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%); color: #fff;
+  border-radius: 16px; padding: 22px 26px; margin-bottom: 16px; display: flex; justify-content: space-between;
+  align-items: flex-start; flex-wrap: wrap; gap: 14px; box-shadow: 0 4px 16px rgba(8,145,178,0.25); }
+.detail-header h2 { font-size: 21px; font-weight: 600; }
+.detail-header .sub { font-size: 13px; opacity: .92; margin-top: 6px; }
+.day-toggle { display: flex; gap: 4px; background: rgba(255,255,255,.18); border-radius: 10px; padding: 4px; }
+.day-toggle button { background: transparent; border: none; color: #fff; opacity: .8; padding: 6px 14px;
+  border-radius: 7px; font-size: 13px; cursor: pointer; font-family: inherit; }
+.day-toggle button.active { background: #fff; color: #0891b2; opacity: 1; font-weight: 600; }
+
+.status-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.status-card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  flex: 1; min-width: 240px; border-left: 3px solid #0891b2; }
+.status-card.zmy { border-left-color: #b45309; }
+.status-card h4 { font-size: 13px; color: #6b7280; margin-bottom: 8px; font-weight: 600; }
+.status-card .row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+.status-card .row .k { color: #9ca3af; } .status-card .row .v { color: #1f2937; font-weight: 500; }
+.empty-inline { color: #9ca3af; font-size: 13px; padding: 8px 0; }
+
+/* 佩戴依从性明细条 (M4, 患者详情页) */
+.compliance-summary { font-size: 12.5px; color: #6b7280; margin-bottom: 10px; }
+.compliance-summary b { color: #1f2937; }
+.wear-bars { display: flex; align-items: flex-end; gap: 5px; height: 120px; padding: 20px 4px 0; overflow-x: auto; }
+.wear-bar-col { flex: 1; min-width: 20px; display: flex; flex-direction: column; align-items: center;
+  justify-content: flex-end; height: 100%; position: relative; cursor: default; }
+.wear-bar { width: 100%; max-width: 22px; border-radius: 3px 3px 0 0; background: #0891b2; min-height: 2px; }
+.wear-bar.low { background: #f59e0b; }
+.wear-bar.zero { background: #e5e7eb; }
+.wear-bar-alarm { position: absolute; top: -18px; font-size: 10.5px; color: #d04848; font-weight: 700; white-space: nowrap; }
+.wear-bar-date { font-size: 10px; color: #9ca3af; margin-top: 4px; }
+
+.charts-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 900px) { .charts-grid { grid-template-columns: 1fr 1fr; } }
+.chart-card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+.chart-card .chart-title { font-size: 13.5px; font-weight: 600; color: #1f2937; margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: space-between; }
+.legend { display: flex; gap: 12px; font-size: 11.5px; color: #6b7280; margin-bottom: 8px; flex-wrap: wrap; }
+.legend .dot-lg { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+canvas.trend { width: 100%; height: 150px; display: block; }
+
+/* Modal */
+.modal-mask { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none;
+  align-items: flex-start; justify-content: center; z-index: 100; padding: 24px 12px; overflow-y: auto; }
+.modal-mask.open { display: flex; }
+.modal { background: #fff; border-radius: 16px; max-width: 480px; width: 100%; margin: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,.25); overflow: hidden; }
+.modal-header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%); color: #fff;
+  padding: 16px 22px; display: flex; justify-content: space-between; align-items: center; }
+.modal-header h3 { font-size: 16px; font-weight: 600; }
+.modal-close { background: rgba(255,255,255,.2); color: #fff; border: 0; width: 28px; height: 28px;
+  border-radius: 50%; cursor: pointer; font-size: 16px; line-height: 1; }
+.modal-close:hover { background: rgba(255,255,255,.32); }
+.modal-body { padding: 20px 22px; }
+.form-row { margin-bottom: 12px; }
+.form-row label { display: block; font-size: 12.5px; color: #6b7280; margin-bottom: 4px; }
+.form-row input, .form-row select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #e5e7eb;
+  border-radius: 8px; font-size: 13.5px; font-family: inherit; outline: none; }
+.form-row input:focus, .form-row select:focus { border-color: #0891b2; }
+.form-hint { font-size: 11.5px; color: #9ca3af; margin-top: 8px; }
+.form-actions { display: flex; gap: 10px; margin-top: 16px; }
+.form-actions button { flex: 1; height: 38px; border-radius: 8px; border: 1px solid #e5e7eb; font-size: 13.5px;
+  cursor: pointer; font-family: inherit; background: #fff; color: #374151; }
+.form-actions button.primary { background: #0891b2; color: #fff; border-color: #0891b2; }
+.form-actions button.primary:hover { background: #0e7490; }
+.form-actions button:hover { background: #f9fafb; }
+.form-msg { font-size: 12.5px; margin-top: 10px; }
+.form-msg.err { color: #d04848; } .form-msg.ok { color: #2faa55; }
+
+.footer-note { margin-top: 24px; font-size: 12px; color: #9ca3af; text-align: center; line-height: 1.7; }
+
+/* ============ 报警工作台 (M2) ============ */
+.header .btn.alarm-nav { position: relative; }
+.header .btn.alarm-nav .nav-badge { position: absolute; top: -7px; right: -7px; background: #fee2e2;
+  color: #b91c1c; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 9px; }
+.alarm-badge-link { cursor: pointer; }
+.alarm-badge-link:hover { filter: brightness(0.95); }
+
+.status-tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+.status-tab { padding: 7px 14px; border-radius: 20px; font-size: 13px; font-weight: 500;
+  color: #6b7280; background: #fff; border: 1px solid #e5e7eb; cursor: pointer; user-select: none; }
+.status-tab:hover { border-color: #0891b2; color: #0891b2; }
+.status-tab.active { background: #0891b2; color: #fff; border-color: #0891b2; }
+
+.alarms { display: flex; flex-direction: column; gap: 8px; }
+.alarm-row { background: #fff; border-radius: 12px; padding: 12px 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  display: grid; grid-template-columns: 14px 1.3fr 1.3fr 1fr 1.4fr; gap: 14px; align-items: center;
+  cursor: pointer; transition: box-shadow .15s; font-size: 13px; }
+.alarm-row:hover { box-shadow: 0 3px 12px rgba(8,145,178,.15); }
+@media (max-width: 900px) { .alarm-row { grid-template-columns: 1fr; gap: 4px; } }
+.sev-dot { width: 10px; height: 10px; border-radius: 50%; }
+.sev-dot.crit { background: #d04848; } .sev-dot.warn { background: #f59e0b; } .sev-dot.info { background: #9ca3af; }
+.alarm-type-label { font-weight: 600; color: #1f2937; }
+.alarm-type-label .sub { font-size: 11px; color: #9ca3af; font-weight: 400; display: block; }
+.alarm-patient { color: #374151; }
+.alarm-patient .sub { font-size: 11px; color: #9ca3af; display: block; }
+.alarm-time { color: #6b7280; font-size: 12px; }
+.alarm-payload { color: #6b7280; font-size: 12px; }
+.alarm-payload a { color: #0891b2; text-decoration: none; }
+.alarm-payload a:hover { text-decoration: underline; }
+.status-pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; }
+.status-pill.new { background: #fee2e2; color: #b91c1c; }
+.status-pill.acked { background: #fef3c7; color: #b45309; }
+.status-pill.followed { background: #e0f2fe; color: #0369a1; }
+.status-pill.closed { background: #f3f4f6; color: #6b7280; }
+
+.followup-history { margin: 10px 0 4px; border-top: 1px solid #f3f4f6; padding-top: 10px; }
+.followup-history .fh-item { font-size: 12.5px; padding: 6px 0; border-bottom: 1px dashed #f0f2f5; }
+.followup-history .fh-item:last-child { border-bottom: none; }
+.followup-history .fh-meta { color: #9ca3af; font-size: 11.5px; }
+.form-row textarea { width: 100%; padding: 8px 10px; border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 13.5px; font-family: inherit; outline: none; resize: vertical; min-height: 64px; }
+.form-row textarea:focus { border-color: #0891b2; }
+.am-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.am-actions button { flex: 1; min-width: 90px; height: 36px; border-radius: 8px; border: 1px solid #e5e7eb;
+  font-size: 13px; cursor: pointer; font-family: inherit; background: #fff; color: #374151; }
+.am-actions button:hover { background: #f0fdfd; border-color: #0891b2; color: #0891b2; }
+.am-actions button.danger:hover { background: #fef2f2; border-color: #d04848; color: #d04848; }
+
+/* ============ 随访任务 (M5) ============ */
+.header .btn.tasks-nav { position: relative; }
+.header .btn.tasks-nav .nav-badge { position: absolute; top: -7px; right: -7px; background: #fee2e2;
+  color: #b91c1c; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 9px; }
+
+.task-row { background: #fff; border-radius: 12px; padding: 12px 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  display: grid; grid-template-columns: 1.3fr 1.3fr 1fr 1.1fr auto; gap: 14px; align-items: center; font-size: 13px; }
+@media (max-width: 900px) { .task-row { grid-template-columns: 1fr; gap: 6px; } }
+.task-patient { color: #374151; cursor: pointer; }
+.task-patient:hover { color: #0891b2; }
+.task-patient .sub { font-size: 11px; color: #9ca3af; display: block; }
+.task-plan-name { font-weight: 600; color: #1f2937; }
+.task-plan-name .sub { font-size: 11px; color: #9ca3af; font-weight: 400; display: block; }
+.task-due { color: #6b7280; font-size: 12px; }
+.overdue-tag { display: inline-block; background: #fee2e2; color: #b91c1c; font-size: 11px;
+  font-weight: 700; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
+.task-last-done { color: #9ca3af; font-size: 12px; }
+.task-actions button { height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid #e5e7eb;
+  background: #fff; color: #374151; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+.task-actions button:hover { background: #f0fdfd; border-color: #0891b2; color: #0891b2; }
+
+/* 患者详情页 随访计划卡 (M5) */
+.plan-card-list { display: flex; flex-direction: column; gap: 8px; }
+.plan-row { background: #fff; border-radius: 10px; padding: 10px 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  display: flex; justify-content: space-between; align-items: center; font-size: 13px; flex-wrap: wrap; gap: 8px; }
+.plan-row .info b { color: #1f2937; }
+.plan-row .info .sub { color: #9ca3af; font-size: 11.5px; display: block; margin-top: 2px; }
+.status-pill.inactive { background: #f3f4f6; color: #9ca3af; }
+.plan-row button { height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid #e5e7eb;
+  background: #fff; color: #374151; font-size: 12px; cursor: pointer; font-family: inherit; }
+.plan-row button:hover { border-color: #d04848; color: #d04848; }
+</style>
+</head>
+<body>
+<div style="background:#fffbeb; border-bottom:2px solid #f59e0b; color:#92400e; font-size:13px;
+  padding:9px 16px; display:flex; align-items:center; justify-content:center; gap:14px; flex-wrap:wrap; text-align:center;">
+  <span>演示版 · 内嵌演示数据(可交互, 刷新即重置) · 生产版:
+    <a href="https://qqyjx.github.io/suifang/prototype/platform.html" target="_blank" rel="noopener"
+      style="color:#92400e; text-decoration:underline;">qqyjx.github.io/suifang/prototype/platform.html</a></span>
+  <button type="button" onclick="location.reload()" style="background:#fff; border:1px solid #f59e0b; color:#92400e;
+    border-radius:8px; padding:4px 12px; font-size:12.5px; cursor:pointer; font-family:inherit;">重置演示数据</button>
+</div>
+<div class="container">
+
+  <div class="tabs">
+    <a class="tab" href="https://qqyjx.github.io/suifang/prototype/data-dashboard.html" target="_blank" rel="noopener">⌚ S101</a>
+    <a class="tab" href="https://qqyjx.github.io/suifang/prototype/pulse-dashboard.html" target="_blank" rel="noopener">🩺 诊脉仪</a>
+    <a class="tab" href="https://qqyjx.github.io/suifang/prototype/iwown-dashboard.html" target="_blank" rel="noopener">📶 iwown 4G</a>
+    <a class="tab active" href="#">🩹 随访平台</a>
+  </div>
+
+  <!-- ============ 列表视图 ============ -->
+  <div id="viewList">
+    <div class="header">
+      <div>
+        <h1>随访平台 1.0 · 患者中心</h1>
+        <div class="sub">以患者为中心 · 跨三链路(iwown/S101·R04/诊脉仪)绑定与体征视图 · M1 只读版本</div>
+      </div>
+      <div class="actions">
+        <div class="btn" id="refreshBtn">⟳ 刷新</div>
+        <div class="btn alarm-nav" id="alarmNavBtn">🚨 报警工作台<span class="nav-badge" id="alarmNavBadge" style="display:none;">0</span></div>
+        <div class="btn tasks-nav" id="tasksNavBtn">📋 随访任务<span class="nav-badge" id="tasksNavBadge" style="display:none;">0</span></div>
+        <div class="btn primary" id="addPatientBtn">＋ 建档</div>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <div class="item"><span class="dot" id="dot"></span><span class="label">服务</span><span class="value" id="svcState">检测中…</span></div>
+      <div class="item"><span class="label">API</span><span class="value" id="apiBaseShow">--</span><a class="link" id="changeApiBtn">切换</a></div>
+      <div class="item"><span class="label">患者数</span><span class="value" id="patientCount">--</span></div>
+      <div class="item"><span class="label">最后刷新</span><span class="value" id="lastRefresh">--</span></div>
+    </div>
+
+    <div id="offlineBanner" class="banner banner-warn" style="display:none;">
+      ⚠ 连不到随访平台 API (<code id="offlineApiShow"></code>)。检查 health_server.py 是否已启动、
+      DB_* 环境变量是否指向正确的数据库，或点击上方"切换"改成本地调试地址，例如
+      <code>http://127.0.0.1:3000</code>（也可加 URL 参数 <code>?api=http://127.0.0.1:3000</code>）。
+    </div>
+
+    <div class="section-title">患者列表 <span class="meta" id="listMeta"></span></div>
+
+    <div class="toolbar">
+      <div class="search-wrap">
+        <span class="icon">🔍</span>
+        <input type="text" id="searchInput" placeholder="搜索姓名 / 门诊号 / 分组" autocomplete="off">
+      </div>
+      <button type="button" id="resetBtn">重置</button>
+    </div>
+
+    <div id="patientsWrap" class="patients">
+      <div class="loading">正在加载患者列表…</div>
+    </div>
+
+    <div class="footer-note">
+      数据来源 <code id="apiFooterShow">--</code>/api/platform/* · 设计方案见
+      <code>docs/随访平台1.0设计方案.html</code> · M1 只读版本(建档/绑定除外)
+    </div>
+  </div>
+
+  <!-- ============ 详情视图 ============ -->
+  <div id="viewDetail" style="display:none;">
+    <button class="back-btn" id="backBtn">‹ 返回患者列表</button>
+
+    <div class="detail-header">
+      <div>
+        <h2 id="dName">--</h2>
+        <div class="sub" id="dSub">--</div>
+      </div>
+      <div class="day-toggle" id="dayToggle">
+        <button data-days="7">7 天</button>
+        <button data-days="14" class="active">14 天</button>
+        <button data-days="30">30 天</button>
+      </div>
+    </div>
+
+    <div id="detailLoading" class="loading">载入中…</div>
+    <div id="detailError" class="error" style="display:none;"></div>
+
+    <div id="detailContent" style="display:none;">
+      <div class="status-row">
+        <div class="status-card" id="iwownStatusCard">
+          <h4>📶 iwown 设备状态</h4>
+          <div class="empty-inline">--</div>
+        </div>
+        <div class="status-card zmy" id="zmyStatusCard">
+          <h4>🩺 诊脉仪最新一次</h4>
+          <div class="empty-inline">--</div>
+        </div>
+      </div>
+
+      <div class="section-title">随访计划
+        <span class="meta"><a class="link" style="cursor:pointer;" id="planAddBtn">＋ 新建计划</a></span>
+      </div>
+      <div id="planListWrap" class="plan-card-list" style="margin-bottom:20px;">
+        <div class="loading">载入中…</div>
+      </div>
+
+      <div class="section-title">报警时间线
+        <span class="meta"><a class="link" style="cursor:pointer;" id="detailAlarmLink">在报警工作台处理 →</a></span>
+      </div>
+      <div id="detailAlarmsWrap" class="alarms" style="margin-bottom:20px;">
+        <div class="loading">载入中…</div>
+      </div>
+
+      <div class="section-title">佩戴依从性</div>
+      <div class="chart-card" style="margin-bottom:16px;">
+        <div class="compliance-summary" id="complianceSummary">载入中…</div>
+        <div id="complianceBars" class="wear-bars"></div>
+        <div id="complianceEmpty" class="empty-inline" style="display:none;">
+          该患者未绑定 iwown 设备,暂无佩戴依从性数据(S101 链路无连续在线流,不在 M4 覆盖范围)
+        </div>
+      </div>
+
+      <div class="section-title">体征趋势</div>
+      <div class="charts-grid">
+        <div class="chart-card">
+          <div class="chart-title">心率 (bpm)</div>
+          <div class="legend" id="legend-hr"></div>
+          <canvas class="trend" id="chart-hr" width="480" height="150"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">血氧 (%)</div>
+          <div class="legend" id="legend-spo2"></div>
+          <canvas class="trend" id="chart-spo2" width="480" height="150"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">血压 (mmHg)</div>
+          <div class="legend" id="legend-bp"></div>
+          <canvas class="trend" id="chart-bp" width="480" height="150"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">体温 (℃)</div>
+          <div class="legend" id="legend-temp"></div>
+          <canvas class="trend" id="chart-temp" width="480" height="150"></canvas>
+        </div>
+        <div class="chart-card" style="grid-column: 1 / -1;">
+          <div class="chart-title">步数 (步/日)</div>
+          <div class="legend" id="legend-step"></div>
+          <canvas class="trend" id="chart-step" width="960" height="150"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 报警工作台视图 ============ -->
+  <div id="viewAlarms" style="display:none;">
+    <div class="header">
+      <div>
+        <h2 style="font-size:22px; font-weight:600;">报警工作台</h2>
+        <div class="sub" id="amSub">全部患者</div>
+      </div>
+      <div class="actions">
+        <div class="btn" id="amBackBtn">‹ 返回患者列表</div>
+        <div class="btn primary" id="amIngestBtn">⟳ 拉取新报警</div>
+      </div>
+    </div>
+
+    <div id="amIngestMsg" class="banner banner-warn" style="display:none;"></div>
+
+    <div class="status-tabs" id="amStatusTabs">
+      <span class="status-tab active" data-status="new">待处理</span>
+      <span class="status-tab" data-status="acked">已知晓</span>
+      <span class="status-tab" data-status="followed">已回访</span>
+      <span class="status-tab" data-status="closed">已关闭</span>
+      <span class="status-tab" data-status="all">全部</span>
+    </div>
+
+    <div id="amWrap" class="alarms">
+      <div class="loading">正在加载报警列表…</div>
+    </div>
+
+    <div class="footer-note">
+      数据来源 <code id="amApiFooterShow">--</code>/api/platform/alarms · 状态机 new→acked→followed→closed,
+      详情见 <code>docs/随访平台1.0设计方案.html</code> §3.3
+    </div>
+  </div>
+
+  <!-- ============ 随访任务视图 (M5) ============ -->
+  <div id="viewTasks" style="display:none;">
+    <div class="header">
+      <div>
+        <h2 style="font-size:22px; font-weight:600;">随访任务</h2>
+        <div class="sub" id="tkSub">从随访计划现算 · 逾期 / 今日到期 / 未来 7 天</div>
+      </div>
+      <div class="actions">
+        <div class="btn" id="tkBackBtn">‹ 返回患者列表</div>
+        <div class="btn primary" id="tkRefreshBtn">⟳ 刷新</div>
+      </div>
+    </div>
+
+    <div class="section-title">🔴 逾期 <span class="meta" id="tkOverdueMeta"></span></div>
+    <div id="tkOverdueWrap" class="alarms" style="margin-bottom:20px;">
+      <div class="loading">正在加载…</div>
+    </div>
+
+    <div class="section-title">🟡 今日到期 <span class="meta" id="tkTodayMeta"></span></div>
+    <div id="tkTodayWrap" class="alarms" style="margin-bottom:20px;">
+      <div class="loading">正在加载…</div>
+    </div>
+
+    <div class="section-title">🟢 未来 7 天 <span class="meta" id="tkFutureMeta"></span></div>
+    <div id="tkFutureWrap" class="alarms">
+      <div class="loading">正在加载…</div>
+    </div>
+
+    <div class="footer-note">
+      数据来源 <code id="tkApiFooterShow">--</code>/api/platform/tasks · 任务从 platform_plan 现算, 不单独存储 ·
+      详情见 <code>docs/随访平台1.0设计方案.html</code>
+    </div>
+  </div>
+
+</div>
+
+<!-- 报警处理 modal -->
+<div class="modal-mask" id="alarmModal">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width: 560px;">
+    <div class="modal-header">
+      <h3 id="amTitle">处理报警</h3>
+      <button class="modal-close" id="amClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="amDetailBox" style="margin-bottom:12px; font-size:13px; color:#374151; line-height:1.8;"></div>
+
+      <div class="followup-history" id="amHistoryBox"></div>
+
+      <div class="form-row">
+        <label>操作人</label>
+        <input type="text" id="amOperator" placeholder="填写你的姓名(记住本机)">
+      </div>
+      <div class="form-row">
+        <label>回访方式 (记录回访用)</label>
+        <select id="amMethod">
+          <option value="call">电话</option>
+          <option value="visit">上门</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>处理/回访结果</label>
+        <textarea id="amResultText" placeholder="例: 电话联系患者本人, 确认无碍, 已重新佩戴设备"></textarea>
+      </div>
+      <div class="form-msg" id="amMsg"></div>
+      <div class="am-actions">
+        <button id="amAckBtn">✓ 知晓</button>
+        <button id="amFollowBtn">📞 记录回访</button>
+        <button class="danger" id="amCloseBtn">✕ 关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 建档/改档 modal -->
+<div class="modal-mask" id="patientFormModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="pfTitle">建档</h3>
+      <button class="modal-close" id="pfClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>门诊号 (patient_no, 主键) *</label>
+        <input type="text" id="pfPatientNo" placeholder="例: DEV0003">
+      </div>
+      <div class="form-row"><label>姓名</label><input type="text" id="pfName"></div>
+      <div class="form-row">
+        <label>性别</label>
+        <select id="pfGender"><option value="">未填</option><option value="F">女</option><option value="M">男</option></select>
+      </div>
+      <div class="form-row"><label>年龄</label><input type="number" id="pfAge" min="0" max="150"></div>
+      <div class="form-row"><label>分组/队列</label><input type="text" id="pfGroup"></div>
+      <div class="form-row"><label>备注</label><input type="text" id="pfNote"></div>
+      <div class="form-msg" id="pfMsg"></div>
+      <div class="form-actions">
+        <button id="pfCancel">取消</button>
+        <button class="primary" id="pfSave">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 绑定/解绑 modal -->
+<div class="modal-mask" id="bindModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="bmTitle">绑定链路</h3>
+      <button class="modal-close" id="bmClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>链路</label>
+        <select id="bmChain">
+          <option value="iwown">iwown 4G 手表 (key = device_id)</option>
+          <option value="zhenmaiyi">诊脉仪 (key = case_id)</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label id="bmKeyLabel">device_id</label>
+        <input type="text" id="bmKey" placeholder="例: DEVWATCH00000001">
+      </div>
+      <div class="form-hint">留空 key 并勾选"解绑"可解除当前绑定。</div>
+      <div class="form-row" style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+        <input type="checkbox" id="bmUnbind" style="width:auto; height:auto;">
+        <label style="margin:0;">解绑 (清空该链路绑定)</label>
+      </div>
+      <div class="form-msg" id="bmMsg"></div>
+      <div class="form-actions">
+        <button id="bmCancel">取消</button>
+        <button class="primary" id="bmSave">提交</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 完成随访 modal (M5) -->
+<div class="modal-mask" id="taskCompleteModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="tcTitle">完成随访</h3>
+      <button class="modal-close" id="tcClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div id="tcDetailBox" style="margin-bottom:12px; font-size:13px; color:#374151; line-height:1.8;"></div>
+      <div class="form-row">
+        <label>随访方式</label>
+        <select id="tcMethod">
+          <option value="call">电话</option>
+          <option value="visit">上门</option>
+          <option value="note">记录</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>操作人</label>
+        <input type="text" id="tcOperator" placeholder="填写你的姓名(记住本机)">
+      </div>
+      <div class="form-row">
+        <label>随访结果</label>
+        <textarea id="tcResultText" placeholder="例: 电话联系患者本人, 状态平稳, 已完成本次随访"></textarea>
+      </div>
+      <div class="form-msg" id="tcMsg"></div>
+      <div class="form-actions">
+        <button id="tcCancel">取消</button>
+        <button class="primary" id="tcSubmit">✓ 完成随访</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 新建随访计划 modal (M5) -->
+<div class="modal-mask" id="planFormModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3>新建随访计划</h3>
+      <button class="modal-close" id="planFormClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row"><label>计划名 *</label><input type="text" id="planName" placeholder="例: 术后1月电话随访"></div>
+      <div class="form-row"><label>周期天数 (留空 = 一次性)</label><input type="number" id="planFreq" min="1" placeholder="例: 30"></div>
+      <div class="form-row"><label>首次到期日期 *</label><input type="date" id="planNextDue"></div>
+      <div class="form-row"><label>备注</label><input type="text" id="planNote"></div>
+      <div class="form-msg" id="planFormMsg"></div>
+      <div class="form-actions">
+        <button id="planFormCancel">取消</button>
+        <button class="primary" id="planFormSave">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+
+/* ================= 演示版内嵌数据 shim =================
+   本 shim 在生产版 platform.html (M5) 主脚本之前加载, 用捕获自本地联调服务器
+   (health_server.py, 2026-07-16 19:33 重新捕获) 的真实响应作为固定数据, 覆盖 window.fetch,
+   使页面在没有任何后端、没有任何网络请求的情况下可交互运行。
+   拦截的 13 个接口与主脚本里实际调用的接口一一对应:
+     GET  /api/status
+     GET  /api/platform/patients
+     GET  /api/platform/patient/vitals
+     GET  /api/platform/compliance
+     GET  /api/platform/alarms              (工作台 + 患者详情时间线共用同一路径)
+     GET  /api/platform/plans               (M5 新增, 患者详情随访计划卡)
+     GET  /api/platform/tasks               (M5 新增, 随访任务视图)
+     POST /api/platform/patient
+     POST /api/platform/bind
+     POST /api/platform/alarm/ingest
+     POST /api/platform/alarm/transition
+     POST /api/platform/plan                (M5 新增, 新建/停用计划)
+     POST /api/platform/task/complete       (M5 新增, 完成随访)
+   写接口一律放行(不做 token 校验), 保证不会触发生产版的 403 重新弹窗鉴权分支。
+
+   M5 任务现算逻辑: 与生产版一致, 随访任务不单独存储, 而是每次请求时从 store.plans
+   现算(见 computeTasksPayload); "今日" 固定为下方 DEMO_TODAY(取自本次捕获 tasks 接口
+   返回的 today 字段), 不用浏览器真实日期, 使逾期/今日到期/未来 7 天三个分组不随实际
+   运行时间漂移。患者卡片上的 task_due_count(到期+逾期数)、alarm_open(未关闭报警数)、
+   wear_rate_7d(近 7 天佩戴率均值)均在每次 GET /api/platform/patients 时从
+   store.plans / store.alarms / store.compliance 现算, 不是写死的静态字段, 因此
+   新建计划/完成随访/报警流转之后角标与患者卡片会自动保持一致。 */
+(function () {
+  'use strict';
+
+  /* ---- 演示 "今日" 固定锚点 (取自 2026-07-16 19:33 捕获的 GET /api/platform/tasks 响应 today 字段),
+     仅用于任务到期分组与 overdue_days / next_due 推算, 与 nowStr() 记录的真实操作时间戳分开。 ---- */
+  var DEMO_TODAY = '2026-07-16';
+
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function nowStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
+      pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+  function parseISODate(s) { var m = s.split('-'); return Date.UTC(+m[0], +m[1] - 1, +m[2]); }
+  function addDaysISO(s, n) {
+    var d = new Date(parseISODate(s) + n * 86400000);
+    return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+  }
+  function diffDaysISO(a, b) { return Math.round((parseISODate(a) - parseISODate(b)) / 86400000); }
+
+  /* ---- 患者基础档案 (捕获自 GET /api/platform/patients, 2026-07-16 19:33) ---- */
+  var PATIENTS = [
+    { patient_no: 'DEV0001', name: '测试患者A', gender: 'F', age: 68, group_tag: '随访平台联调',
+      note: 'M1 验收用: iwown 真机设备绑定 + 日趋势', zhenmaiyi_case_id: null,
+      created_at: '2026-07-15 01:53:06', updated_at: '2026-07-15 01:53:06',
+      bindings: { iwown: 'DEVWATCH00000001', s101: false, zhenmaiyi: null },
+      last_upload: { iwown: '2026-07-16 04:00:00', s101: null } },
+    { patient_no: 'DEV0002', name: '测试患者B', gender: 'M', age: 55, group_tag: '随访平台联调',
+      note: 'M1 验收用: 仅 S101 数据, 无 iwown 绑定', zhenmaiyi_case_id: null,
+      created_at: '2026-07-15 01:53:06', updated_at: '2026-07-15 01:53:06',
+      bindings: { iwown: null, s101: true, zhenmaiyi: null },
+      last_upload: { iwown: null, s101: '2026-07-15T20:25:00.000Z' } },
+    { patient_no: 'DEV0003', name: '测试患者C', gender: 'F', age: 72, group_tag: '随访平台联调',
+      note: null, zhenmaiyi_case_id: null,
+      created_at: '2026-07-15 01:53:06', updated_at: '2026-07-15 01:53:06',
+      bindings: { iwown: null, s101: false, zhenmaiyi: null },
+      last_upload: { iwown: null, s101: null } },
+  ];
+
+  /* ---- iwown 日趋势 (DEV0001, 07-12/13/14/16 为 2026-07-16 19:33 重新捕获的真实锚点, 与上一版
+     捕获值逐字段一致, 说明该窗口内底层数据未变; 07-03~07-11 沿用上一版按锚点趋势外推的演示补全值
+     (同一批数据, 未变); 07-15 在本次真实捕获中 iwown daily 里缺失 —— 与当天 compliance 佩戴 0
+     小时 + 6 次未佩戴报警一致(未佩戴 = 当天设备没有产生体征上传), 因此这里如实保留这个缺口而不是
+     像上一版那样补一条"降低数值"的演示行, 使"佩戴依从性明细条"与"体征趋势图"的 07-15 空档
+     互相印证。 ---- */
+  var IWOWN_DAILY_DEV0001 = [
+    { date: '2026-07-03', hr_avg: 68.7, hr_min: 58, hr_max: 82, spo2_avg: 95.4, spo2_min: 93, spo2_max: 97, sbp: 116.9, dbp: 73.2, temperature: 36.45, step: 7061 },
+    { date: '2026-07-04', hr_avg: 66.7, hr_min: 56, hr_max: 77, spo2_avg: 95.1, spo2_min: 92, spo2_max: 97, sbp: 117.4, dbp: 73.4, temperature: 36.49, step: 8780 },
+    { date: '2026-07-05', hr_avg: 64.2, hr_min: 52, hr_max: 74, spo2_avg: 95.5, spo2_min: 93, spo2_max: 97, sbp: 118.4, dbp: 72.9, temperature: 36.42, step: 8735 },
+    { date: '2026-07-06', hr_avg: 63.4, hr_min: 52, hr_max: 72, spo2_avg: 95.2, spo2_min: 93, spo2_max: 97, sbp: 116.1, dbp: 72.8, temperature: 36.34, step: 8764 },
+    { date: '2026-07-07', hr_avg: 62.7, hr_min: 51, hr_max: 76, spo2_avg: 94.8, spo2_min: 91, spo2_max: 97, sbp: 113.9, dbp: 73.3, temperature: 36.39, step: 7928 },
+    { date: '2026-07-08', hr_avg: 63.4, hr_min: 52, hr_max: 75, spo2_avg: 94.6, spo2_min: 91, spo2_max: 96, sbp: 113.3, dbp: 72.4, temperature: 36.34, step: 8493 },
+    { date: '2026-07-09', hr_avg: 62.1, hr_min: 53, hr_max: 72, spo2_avg: 94.6, spo2_min: 91, spo2_max: 96, sbp: 112.1, dbp: 73.7, temperature: 36.38, step: 8683 },
+    { date: '2026-07-10', hr_avg: 60.0, hr_min: 48, hr_max: 70, spo2_avg: 94.5, spo2_min: 91, spo2_max: 96, sbp: 110.9, dbp: 72.8, temperature: 36.47, step: 8316 },
+    { date: '2026-07-11', hr_avg: 60.0, hr_min: 50, hr_max: 73, spo2_avg: 94.5, spo2_min: 92, spo2_max: 96, sbp: 110.0, dbp: 73.0, temperature: 36.42, step: 7283 },
+    { date: '2026-07-12', hr_avg: 75.0, hr_min: 58, hr_max: 88, spo2_avg: 96.3, spo2_min: 93, spo2_max: 98, sbp: 116.7, dbp: 77.7, temperature: 36.3, step: 7073 },
+    { date: '2026-07-13', hr_avg: 73.8, hr_min: 58, hr_max: 99, spo2_avg: 97.1, spo2_min: 92, spo2_max: 100, sbp: 122.0, dbp: 75.6, temperature: 36.59, step: 7717 },
+    { date: '2026-07-14', hr_avg: 76.5, hr_min: 55, hr_max: 102, spo2_avg: 96.4, spo2_min: 92, spo2_max: 100, sbp: 121.8, dbp: 75.1, temperature: 36.48, step: 7779 },
+    { date: '2026-07-16', hr_avg: 74.0, hr_min: 58, hr_max: 98, spo2_avg: 97.6, spo2_min: 94, spo2_max: 100, sbp: 117.8, dbp: 79.4, temperature: 36.54, step: 8480 },
+  ];
+  /* ---- S101 日趋势 (DEV0002, 07-13/14/15 为真实捕获锚点, 本次重捕获值逐字段不变; 07-02~07-12 为
+     沿用上一版的外推演示补全值) ---- */
+  var S101_DAILY_DEV0002 = [
+    { date: '2026-07-02', hr_avg: 73.0, hr_min: 71, hr_max: 75, spo2_avg: 97.1, spo2_min: 96, spo2_max: 98, sbp: 121.0, dbp: 76.6, temperature: 36.55, step: 8238 },
+    { date: '2026-07-03', hr_avg: 75.0, hr_min: 73, hr_max: 77, spo2_avg: 97.0, spo2_min: 96, spo2_max: 98, sbp: 119.9, dbp: 78.1, temperature: 36.55, step: 7831 },
+    { date: '2026-07-04', hr_avg: 73.0, hr_min: 71, hr_max: 75, spo2_avg: 97.4, spo2_min: 96, spo2_max: 98, sbp: 118.5, dbp: 77.1, temperature: 36.59, step: 7941 },
+    { date: '2026-07-05', hr_avg: 71.0, hr_min: 69, hr_max: 73, spo2_avg: 97.3, spo2_min: 96, spo2_max: 98, sbp: 118.9, dbp: 77.0, temperature: 36.54, step: 8007 },
+    { date: '2026-07-06', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 97.5, spo2_min: 96, spo2_max: 98, sbp: 117.4, dbp: 78.2, temperature: 36.59, step: 8294 },
+    { date: '2026-07-07', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 97.1, spo2_min: 96, spo2_max: 98, sbp: 117.1, dbp: 78.1, temperature: 36.68, step: 8690 },
+    { date: '2026-07-08', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 97.6, spo2_min: 96, spo2_max: 98, sbp: 118.1, dbp: 78.1, temperature: 36.6, step: 8830 },
+    { date: '2026-07-09', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 97.9, spo2_min: 96, spo2_max: 98, sbp: 118.1, dbp: 77.2, temperature: 36.57, step: 8495 },
+    { date: '2026-07-10', hr_avg: 71.0, hr_min: 69, hr_max: 73, spo2_avg: 98.4, spo2_min: 97, spo2_max: 99, sbp: 119.8, dbp: 78.5, temperature: 36.59, step: 8495 },
+    { date: '2026-07-11', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 98.0, spo2_min: 97, spo2_max: 99, sbp: 119.3, dbp: 80.0, temperature: 36.65, step: 8240 },
+    { date: '2026-07-12', hr_avg: 67.0, hr_min: 65, hr_max: 69, spo2_avg: 97.7, spo2_min: 96, spo2_max: 98, sbp: 119.6, dbp: 78.7, temperature: 36.7, step: 8575 },
+    { date: '2026-07-13', hr_avg: 73.5, hr_min: 72, hr_max: 75, spo2_avg: 97.5, spo2_min: 97, spo2_max: 98, sbp: 120.0, dbp: 76.5, temperature: 36.5, step: 8700 },
+    { date: '2026-07-14', hr_avg: 72.0, hr_min: 70, hr_max: 74, spo2_avg: 96.5, spo2_min: 96, spo2_max: 97, sbp: 119.5, dbp: 76.5, temperature: 36.5, step: 8100 },
+    { date: '2026-07-15', hr_avg: 75.0, hr_min: 73, hr_max: 77, spo2_avg: 98.0, spo2_min: 97, spo2_max: 99, sbp: 123.5, dbp: 77.0, temperature: 36.6, step: 9200 },
+  ];
+
+  var VITALS_EXTRA = {
+    DEV0001: {
+      iwown: { daily: IWOWN_DAILY_DEV0001, device: { device_id: 'DEVWATCH00000001', battery: 80, rssi: -68, last_seen: '2026-07-15 07:03:11' } },
+      s101: { count: 0, devices: [], earliest: null, latest: null, daily: [] },
+      zhenmaiyi: null,
+    },
+    DEV0002: {
+      iwown: { daily: [], device: null },
+      s101: { count: 240, devices: [9001], earliest: '2026-07-13T08:15:00.000Z', latest: '2026-07-15T20:25:00.000Z', daily: S101_DAILY_DEV0002 },
+      zhenmaiyi: null,
+    },
+    DEV0003: {
+      iwown: { daily: [], device: null },
+      s101: { count: 0, devices: [], earliest: null, latest: null, daily: [] },
+      zhenmaiyi: null,
+    },
+  };
+
+  /* ---- 佩戴依从性明细 (DEV0001; 07-12~07-16 为 2026-07-16 19:33 重新捕获的真实值 —— 与上一版相比
+     仅 07-15 未佩戴报警数从 3 条变为 6 条(联调期间又产生了几条同类报警), wear_hours/wear_rate 不变;
+     07-03~07-11 沿用上一版外推的演示补全值, 呈现依从性逐步下滑后又回升的曲线, 呼应报警工作台里
+     07-15/16 集中出现未佩戴报警的叙事。 ---- */
+  var COMPLIANCE_DEV0001 = [
+    { date: '2026-07-03', wear_hours: 19, wear_rate: 0.79, not_worn_alarms: 0 },
+    { date: '2026-07-04', wear_hours: 21, wear_rate: 0.88, not_worn_alarms: 0 },
+    { date: '2026-07-05', wear_hours: 18, wear_rate: 0.75, not_worn_alarms: 0 },
+    { date: '2026-07-06', wear_hours: 16, wear_rate: 0.67, not_worn_alarms: 0 },
+    { date: '2026-07-07', wear_hours: 20, wear_rate: 0.83, not_worn_alarms: 0 },
+    { date: '2026-07-08', wear_hours: 15, wear_rate: 0.63, not_worn_alarms: 0 },
+    { date: '2026-07-09', wear_hours: 13, wear_rate: 0.54, not_worn_alarms: 0 },
+    { date: '2026-07-10', wear_hours: 10, wear_rate: 0.42, not_worn_alarms: 0 },
+    { date: '2026-07-11', wear_hours: 9, wear_rate: 0.38, not_worn_alarms: 0 },
+    { date: '2026-07-12', wear_hours: 3, wear_rate: 0.12, not_worn_alarms: 0 },
+    { date: '2026-07-13', wear_hours: 8, wear_rate: 0.33, not_worn_alarms: 0 },
+    { date: '2026-07-14', wear_hours: 16, wear_rate: 0.67, not_worn_alarms: 0 },
+    { date: '2026-07-15', wear_hours: 0, wear_rate: 0.0, not_worn_alarms: 6 },
+    { date: '2026-07-16', wear_hours: 5, wear_rate: 0.21, not_worn_alarms: 1 },
+  ];
+  var COMPLIANCE_EXTRA = {
+    DEV0001: { daily: COMPLIANCE_DEV0001, avg_wear_rate: 0.52, days_with_data: 14 },
+    DEV0002: { daily: [], avg_wear_rate: null, days_with_data: 0 },
+    DEV0003: { daily: [], avg_wear_rate: null, days_with_data: 0 },
+  };
+
+  /* ---- 报警 (捕获自 GET /api/platform/alarms?status=all&limit=200, 2026-07-16 19:33; 联调期间
+     反复触发生成了 4 条重复的 not_worn/new 噪声记录(id 11/12/13 + 与 id1 同结构), 演示版只保留
+     一条代表性记录并剔除噪声, 与上一版一致地覆盖 5 条待处理(id 1/4/5/6/9)/1 条已知晓(id 10, 由
+     捕获到的 new 状态人工推进为 acked 并补一条处理记录, 演示状态机的下一步)/1 条已关闭且带 3 条
+     处理历史(id 3) ---- */
+  var ALARMS = [
+    { id: 9, patient_no: 'DEV0001', patient_name: '测试患者A', device_id: 'DEVWATCH00000001', alarm_type: 'not_worn', severity: 'info', lat: null, lng: null,
+      payload_json: { Alarminfo: { wearstate: true, time_stamp: { date_time: { seconds: 1784271600 } } } },
+      status: 'new', occurred_at: '2026-07-16 05:00:00', created_at: '2026-07-16 05:58:08', followup_count: 0, followups: [] },
+    { id: 6, patient_no: 'DEV0001', patient_name: '测试患者A', device_id: 'DEVWATCH00000001', alarm_type: 'low_battery', severity: 'info', lat: null, lng: null,
+      payload_json: { Alarminfo: { time_stamp: { date_time: { seconds: 1784296500 } }, lowpowerPercentage: 8 } },
+      status: 'new', occurred_at: '2026-07-15 13:45:00', created_at: '2026-07-15 07:49:26', followup_count: 0, followups: [] },
+    { id: 5, patient_no: 'DEV0001', patient_name: '测试患者A', device_id: 'DEVWATCH00000001', alarm_type: 'not_worn', severity: 'info', lat: null, lng: null,
+      payload_json: { Alarminfo: { wearstate: true, time_stamp: { date_time: { seconds: 1784283300 } } } },
+      status: 'new', occurred_at: '2026-07-15 10:15:00', created_at: '2026-07-15 07:49:26', followup_count: 0, followups: [] },
+    { id: 10, patient_no: 'DEV0001', patient_name: '测试患者A', device_id: 'DEVWATCH00000001', alarm_type: 'not_worn', severity: 'warn', lat: null, lng: null,
+      payload_json: null,
+      status: 'acked', occurred_at: '2026-07-15 09:30:00', created_at: '2026-07-16 05:59:38', followup_count: 1,
+      followups: [ { action: 'ack', result_text: null, operator: '护士乙', created_at: '2026-07-16 06:05:00' } ] },
+    { id: 1, patient_no: 'DEV0001', patient_name: '测试患者A', device_id: 'DEVWATCH00000001', alarm_type: 'not_worn', severity: 'warn', lat: null, lng: null,
+      payload_json: null,
+      status: 'new', occurred_at: '2026-07-15 09:30:00', created_at: '2026-07-15 01:53:06', followup_count: 0, followups: [] },
+    { id: 4, patient_no: 'DEV0001', patient_name: '测试患者A', device_id: 'DEVWATCH00000001', alarm_type: 'hr', severity: 'warn', lat: null, lng: null,
+      payload_json: { alarm: { alarm_hr: [ { hr: 138, time_stamp: { date_time: { seconds: 1784269800 } } } ] } },
+      status: 'new', occurred_at: '2026-07-15 07:10:00', created_at: '2026-07-15 07:49:26', followup_count: 0, followups: [] },
+    { id: 3, patient_no: 'DEV0001', patient_name: '测试患者A', device_id: 'DEVWATCH00000001', alarm_type: 'sos', severity: 'crit', lat: 39.916527, lng: 116.397128,
+      payload_json: { alarm: { gnssinfo: [ { gps_type: 'GPS_WGS84', latitude: 39.916527, longitude: 116.397128, time_stamp: { date_time: { seconds: 1784263800 } } } ], SOS_Notification_time: { date_time: { seconds: 1784263800 } } } },
+      status: 'closed', occurred_at: '2026-07-15 05:30:00', created_at: '2026-07-15 07:49:26', followup_count: 3,
+      followups: [
+        { action: 'ack', result_text: null, operator: '护士甲', created_at: '2026-07-15 07:50:18' },
+        { action: 'call', result_text: '电话联系患者本人确认无碍', operator: '护士甲', created_at: '2026-07-15 07:50:18' },
+        { action: 'close', result_text: '已处理完毕', operator: '护士甲', created_at: '2026-07-15 07:50:18' },
+      ] },
+  ];
+
+  /* ---- 随访计划 (M5, 捕获自 GET /api/platform/plans + GET /api/platform/tasks?horizon_days=7,
+     2026-07-16 19:33; note 字段清理掉联调期间的内部测试措辞, 语义不变。刻意保留四种状态覆盖
+     M5 全部分组逻辑:
+       id9  DEV0001 循环计划, next_due 07-09 < 今日 07-16 → 逾期 7 天
+       id10 DEV0002 一次性计划, next_due 07-16 = 今日      → 今日到期
+       id5  DEV0001 循环计划, next_due 07-23 (今日+7 边界)  → 未来 7 天(含边界)
+       id11 DEV0001 循环计划, next_due 07-26 (今日+10)     → 超出 7 天窗口, 不出现在待办任务里
+       id8  DEV0001 循环计划, active=false                 → 已停用, 不出现在待办任务里
+     last_done 为 GET /api/platform/plans 响应里没有的字段, 只在现算任务(computeTasksPayload)时
+     附加, 与生产版 tasks 接口字段一致。 ---- */
+  var PLANS = [
+    { id: 9, patient_no: 'DEV0001', patient_name: '测试患者A', name: '术后1月电话随访',
+      frequency_days: 7, next_due: '2026-07-09', active: true,
+      note: '已逾期循环计划, 完成后 next_due 从完成当日起算', last_done: null,
+      created_at: '2026-07-16 08:57:03', updated_at: '2026-07-16 08:57:03' },
+    { id: 10, patient_no: 'DEV0002', patient_name: '测试患者B', name: '出院首次电话随访',
+      frequency_days: null, next_due: '2026-07-16', active: true,
+      note: '一次性计划, 完成后自动停用', last_done: null,
+      created_at: '2026-07-16 08:57:03', updated_at: '2026-07-16 08:57:03' },
+    { id: 5, patient_no: 'DEV0001', patient_name: '测试患者A', name: '术后6周电话随访',
+      frequency_days: 7, next_due: '2026-07-23', active: true,
+      note: '未来 7 天窗口内的循环计划', last_done: '2026-07-16 07:57:35',
+      created_at: '2026-07-16 07:36:25', updated_at: '2026-07-16 07:57:35' },
+    { id: 11, patient_no: 'DEV0001', patient_name: '测试患者A', name: '慢病季度随访',
+      frequency_days: 30, next_due: '2026-07-26', active: true,
+      note: '未来到期循环计划, 超出 7 天窗口不应出现在待办任务里', last_done: null,
+      created_at: '2026-07-16 08:57:03', updated_at: '2026-07-16 08:57:03' },
+    { id: 8, patient_no: 'DEV0001', patient_name: '测试患者A', name: '早期随访计划(已停用示例)',
+      frequency_days: 14, next_due: '2026-07-20', active: false,
+      note: '已停用计划不再出现在待办任务里', last_done: null,
+      created_at: '2026-07-16 08:06:05', updated_at: '2026-07-16 08:09:44' },
+  ];
+
+  var STATUS_FIXTURE = { status: 'running', mysql: 'connected', total_devices: 8, error: null, server_time: '2026-07-16 19:33:16 (演示固定值)' };
+
+  /* ---- 内存态存储 (刷新页面即用上面的初始快照重建, 满足"刷新即重置") ---- */
+  var store = {
+    patients: clone(PATIENTS),
+    vitals: clone(VITALS_EXTRA),
+    compliance: clone(COMPLIANCE_EXTRA),
+    alarms: clone(ALARMS),
+    plans: clone(PLANS),
+    nextAlarmId: 14,
+    nextPlanId: 12,
+    ingestCalls: 0,
+  };
+
+  function findPatient(no) {
+    for (var i = 0; i < store.patients.length; i++) if (store.patients[i].patient_no === no) return store.patients[i];
+    return null;
+  }
+  function findPlan(id) {
+    for (var i = 0; i < store.plans.length; i++) if (store.plans[i].id === id) return store.plans[i];
+    return null;
+  }
+
+  /* 患者卡片/头部角标上的 3 个派生字段全部现算, 不写死静态值: alarm_open(未关闭报警数),
+     task_due_count(到期+逾期的待办任务数, 与工作台"逾期+今日到期"口径一致), wear_rate_7d
+     (近 7 天佩戴率均值, 取该患者 compliance.daily 按日期排序后的最后 7 条)。 */
+  function recomputeDerived() {
+    store.patients.forEach(function (p) {
+      p.alarm_open = store.alarms.filter(function (a) { return a.patient_no === p.patient_no && a.status !== 'closed'; }).length;
+      p.task_due_count = store.plans.filter(function (pl) {
+        return pl.active && pl.patient_no === p.patient_no && pl.next_due <= DEMO_TODAY;
+      }).length;
+      var c = store.compliance[p.patient_no];
+      if (c && c.daily && c.daily.length) {
+        var last7 = c.daily.slice(-7).map(function (d) { return d.wear_rate; })
+          .filter(function (v) { return v !== null && v !== undefined; });
+        p.wear_rate_7d = last7.length ? Math.round((last7.reduce(function (s, v) { return s + v; }, 0) / last7.length) * 100) / 100 : null;
+      } else {
+        p.wear_rate_7d = null;
+      }
+    });
+  }
+  recomputeDerived();
+
+  function jsonResponse(status, data) {
+    return {
+      ok: status >= 200 && status < 300,
+      status: status,
+      json: function () { return Promise.resolve(data); },
+      text: function () { return Promise.resolve(JSON.stringify(data)); },
+    };
+  }
+
+  function parseUrl(u) {
+    try { return new URL(u, location.href); } catch (e) { return null; }
+  }
+
+  function getPatientsPayload() {
+    recomputeDerived();
+    return { ok: true, patients: clone(store.patients) };
+  }
+
+  function lastNDays(daily, days) {
+    return days && daily.length > days ? daily.slice(daily.length - days) : daily;
+  }
+
+  function getVitalsPayload(patientNo, days) {
+    var p = findPatient(patientNo);
+    if (!p) return { ok: false, error: '未找到患者 ' + patientNo };
+    var v = store.vitals[patientNo] || { iwown: { daily: [], device: null }, s101: { count: 0, devices: [], earliest: null, latest: null, daily: [] }, zhenmaiyi: null };
+    return {
+      ok: true,
+      patient: {
+        patient_no: p.patient_no, name: p.name, gender: p.gender, age: p.age, group_tag: p.group_tag,
+        zhenmaiyi_case_id: p.zhenmaiyi_case_id, note: p.note, created_at: p.created_at, updated_at: p.updated_at,
+      },
+      iwown: { daily: lastNDays(v.iwown.daily, days), device: v.iwown.device },
+      s101: { count: v.s101.count, devices: v.s101.devices, earliest: v.s101.earliest, latest: v.s101.latest, daily: lastNDays(v.s101.daily, days) },
+      zhenmaiyi: v.zhenmaiyi,
+    };
+  }
+
+  function getCompliancePayload(patientNo, days) {
+    var p = findPatient(patientNo);
+    if (!p) return { ok: false, error: '未找到患者 ' + patientNo };
+    var c = store.compliance[patientNo] || { daily: [], avg_wear_rate: null, days_with_data: 0 };
+    var daily = lastNDays(c.daily, days);
+    return {
+      ok: true, patient_no: patientNo, days: days,
+      daily: clone(daily),
+      summary: { avg_wear_rate: c.avg_wear_rate, days_with_data: c.days_with_data },
+    };
+  }
+
+  function getAlarmsPayload(status, patientNo, limit) {
+    var list = store.alarms.slice().sort(function (a, b) { return b.id - a.id; });
+    if (status && status !== 'all' && status !== '') list = list.filter(function (a) { return a.status === status; });
+    if (patientNo) list = list.filter(function (a) { return a.patient_no === patientNo; });
+    if (limit) list = list.slice(0, limit);
+    return { ok: true, count: list.length, alarms: clone(list) };
+  }
+
+  function serializePlan(p) {
+    return {
+      id: p.id, patient_no: p.patient_no, patient_name: p.patient_name, name: p.name,
+      frequency_days: p.frequency_days, next_due: p.next_due, active: p.active, note: p.note,
+      created_at: p.created_at, updated_at: p.updated_at,
+    };
+  }
+
+  function getPlansPayload(patientNo) {
+    var list = store.plans.filter(function (p) { return !patientNo || p.patient_no === patientNo; });
+    list = list.slice().sort(function (a, b) {
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      return a.next_due < b.next_due ? -1 : (a.next_due > b.next_due ? 1 : 0);
+    });
+    return { ok: true, count: list.length, plans: list.map(serializePlan) };
+  }
+
+  /* 随访任务现算 (M5 核心逻辑, 与生产版一致: 不单独存表, 每次请求都从 store.plans 里筛
+     active && next_due <= 今日+horizon_days 的计划现算)。 */
+  function computeTasksPayload(horizonDays) {
+    var limitDate = addDaysISO(DEMO_TODAY, horizonDays);
+    var tasks = store.plans.filter(function (p) { return p.active && p.next_due <= limitDate; })
+      .map(function (p) {
+        return {
+          plan_id: p.id, patient_no: p.patient_no, patient_name: p.patient_name,
+          plan_name: p.name, next_due: p.next_due,
+          overdue_days: Math.max(0, diffDaysISO(DEMO_TODAY, p.next_due)),
+          frequency_days: p.frequency_days, note: p.note, last_done: p.last_done || null,
+        };
+      });
+    tasks.sort(function (a, b) { return a.next_due < b.next_due ? -1 : (a.next_due > b.next_due ? 1 : 0); });
+    return { ok: true, today: DEMO_TODAY, count: tasks.length, tasks: tasks };
+  }
+
+  function upsertPatientPayload(body) {
+    var no = body.patient_no;
+    if (!no) return { ok: false, error: '门诊号必填' };
+    var existing = findPatient(no);
+    if (existing) {
+      existing.name = body.name || existing.name;
+      existing.gender = body.gender || existing.gender;
+      existing.age = body.age != null ? body.age : existing.age;
+      existing.group_tag = body.group_tag || existing.group_tag;
+      existing.note = body.note || existing.note;
+      existing.updated_at = nowStr();
+      return { ok: true, action: 'updated' };
+    }
+    var np = {
+      patient_no: no, name: body.name || '', gender: body.gender || null, age: body.age != null ? body.age : null,
+      group_tag: body.group_tag || '', note: body.note || '', zhenmaiyi_case_id: null,
+      created_at: nowStr(), updated_at: nowStr(),
+      bindings: { iwown: null, s101: false, zhenmaiyi: null },
+      last_upload: { iwown: null, s101: null },
+      alarm_open: 0, task_due_count: 0, wear_rate_7d: null,
+    };
+    store.patients.push(np);
+    store.vitals[no] = { iwown: { daily: [], device: null }, s101: { count: 0, devices: [], earliest: null, latest: null, daily: [] }, zhenmaiyi: null };
+    store.compliance[no] = { daily: [], avg_wear_rate: null, days_with_data: 0 };
+    return { ok: true, action: 'created' };
+  }
+
+  function bindPayload(body) {
+    var p = findPatient(body.patient_no);
+    if (!p) return { ok: false, error: '未找到患者 ' + body.patient_no };
+    var chain = body.chain, unbind = !!body.unbind, key = body.key || null;
+    if (chain === 'iwown') {
+      p.bindings.iwown = unbind ? null : key;
+      if (!unbind && key) p.last_upload.iwown = nowStr();
+    } else if (chain === 'zhenmaiyi') {
+      p.bindings.zhenmaiyi = unbind ? null : key;
+      p.zhenmaiyi_case_id = unbind ? null : key;
+    } else {
+      return { ok: false, error: '未知链路 ' + chain };
+    }
+    p.updated_at = nowStr();
+    return { ok: true };
+  }
+
+  function ingestPayload() {
+    store.ingestCalls += 1;
+    if (store.ingestCalls === 1) {
+      var t = nowStr();
+      var a1 = { id: store.nextAlarmId++, patient_no: 'DEV0002', patient_name: '测试患者B', device_id: 'S101-9001',
+        alarm_type: 'bp', severity: 'warn', lat: null, lng: null,
+        payload_json: { alarm: { alarm_Bp: [ { sbp: 152, dbp: 96, time_stamp: { date_time: { seconds: Math.floor(Date.now() / 1000) } } } ] } },
+        status: 'new', occurred_at: t, created_at: t, followup_count: 0, followups: [] };
+      var a2 = { id: store.nextAlarmId++, patient_no: 'DEV0001', patient_name: '测试患者A', device_id: 'DEVWATCH00000001',
+        alarm_type: 'sedentary', severity: 'info', lat: null, lng: null, payload_json: null,
+        status: 'new', occurred_at: t, created_at: t, followup_count: 0, followups: [] };
+      store.alarms.unshift(a1, a2);
+      return { ok: true, scanned: 41, inserted: 2 };
+    }
+    return { ok: true, scanned: 0, inserted: 0 };
+  }
+
+  function transitionPayload(body) {
+    var alarm = null;
+    for (var i = 0; i < store.alarms.length; i++) if (store.alarms[i].id === body.alarm_id) { alarm = store.alarms[i]; break; }
+    if (!alarm) return { ok: false, error: '未找到报警 id=' + body.alarm_id };
+    var action = body.action;
+    var nextStatus = alarm.status;
+    if (action === 'ack') nextStatus = 'acked';
+    else if (action === 'call' || action === 'visit') nextStatus = 'followed';
+    else if (action === 'close') nextStatus = 'closed';
+    alarm.status = nextStatus;
+    alarm.followups.push({ action: action, result_text: body.result_text || null, operator: body.operator || null, created_at: nowStr() });
+    alarm.followup_count = alarm.followups.length;
+    return { ok: true, status: nextStatus };
+  }
+
+  /* 新建/停用随访计划 (M5): body 带 id → 就地更新(停用走 {id, active:0}); 不带 id → 新建计划,
+     分配自增 id, 立即出现在 plans/tasks 里(前提是 next_due <= 今日+horizon, 与生产版"计划改动
+     即时反映在现算任务列表"的语义一致, 不需要额外的"发布"步骤)。 */
+  function planUpsertPayload(body) {
+    if (body.id != null) {
+      var plan = findPlan(body.id);
+      if (!plan) return { ok: false, error: '未找到随访计划 id=' + body.id };
+      if (body.active !== undefined) plan.active = !!body.active;
+      if (body.name) plan.name = body.name;
+      if (body.frequency_days !== undefined) plan.frequency_days = body.frequency_days;
+      if (body.next_due) plan.next_due = body.next_due;
+      if (body.note !== undefined) plan.note = body.note;
+      plan.updated_at = nowStr();
+      return { ok: true, action: 'updated' };
+    }
+    var p = findPatient(body.patient_no);
+    if (!p) return { ok: false, error: '未找到患者 ' + body.patient_no };
+    if (!body.name) return { ok: false, error: '计划名必填' };
+    if (!body.next_due) return { ok: false, error: '首次到期日期必填' };
+    var np = {
+      id: store.nextPlanId++, patient_no: body.patient_no, patient_name: p.name,
+      name: body.name, frequency_days: body.frequency_days || null, next_due: body.next_due,
+      active: true, note: body.note || null, last_done: null,
+      created_at: nowStr(), updated_at: nowStr(),
+    };
+    store.plans.push(np);
+    return { ok: true, action: 'created', id: np.id };
+  }
+
+  /* 完成随访 (M5): 追加一条带 plan_id 的随访记录(仅存于该计划的 last_done, 供任务列表"上次随访"
+     展示); 循环计划 next_due = 演示今日 + frequency_days(用固定的 DEMO_TODAY 而非浏览器真实日期,
+     使重复访问 demo 时到期分组保持稳定); 一次性计划完成后 active=0, 从待办任务与 task_due_count
+     里消失。 */
+  function completeTaskPayload(body) {
+    var plan = findPlan(body.plan_id);
+    if (!plan) return { ok: false, error: '未找到随访计划 id=' + body.plan_id };
+    if (!plan.active) return { ok: false, error: '该计划已停用' };
+    plan.last_done = nowStr();
+    plan.updated_at = nowStr();
+    var nextDue = null;
+    if (plan.frequency_days) {
+      nextDue = addDaysISO(DEMO_TODAY, plan.frequency_days);
+      plan.next_due = nextDue;
+    } else {
+      plan.active = false;
+    }
+    return { ok: true, next_due: nextDue };
+  }
+
+  window.fetch = function (url, options) {
+    var u = parseUrl(url);
+    var path = u ? u.pathname : String(url);
+    var search = u ? u.searchParams : new URLSearchParams();
+    var method = (options && options.method) || 'GET';
+    var bodyObj = {};
+    try { bodyObj = options && options.body ? JSON.parse(options.body) : {}; } catch (e) { bodyObj = {}; }
+
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        if (method === 'GET' && /\/api\/status$/.test(path)) {
+          return resolve(jsonResponse(200, clone(STATUS_FIXTURE)));
+        }
+        if (method === 'GET' && /\/api\/platform\/patients$/.test(path)) {
+          return resolve(jsonResponse(200, getPatientsPayload()));
+        }
+        if (method === 'GET' && /\/api\/platform\/patient\/vitals$/.test(path)) {
+          var vdays = parseInt(search.get('days') || '14', 10);
+          return resolve(jsonResponse(200, getVitalsPayload(search.get('patientNo'), vdays)));
+        }
+        if (method === 'GET' && /\/api\/platform\/compliance$/.test(path)) {
+          var cdays = parseInt(search.get('days') || '14', 10);
+          return resolve(jsonResponse(200, getCompliancePayload(search.get('patientNo'), cdays)));
+        }
+        if (method === 'GET' && /\/api\/platform\/alarms$/.test(path)) {
+          var limit = parseInt(search.get('limit') || '50', 10);
+          return resolve(jsonResponse(200, getAlarmsPayload(search.get('status'), search.get('patientNo'), limit)));
+        }
+        if (method === 'GET' && /\/api\/platform\/plans$/.test(path)) {
+          return resolve(jsonResponse(200, getPlansPayload(search.get('patientNo'))));
+        }
+        if (method === 'GET' && /\/api\/platform\/tasks$/.test(path)) {
+          var horizon = parseInt(search.get('horizon_days') || '7', 10);
+          return resolve(jsonResponse(200, computeTasksPayload(horizon)));
+        }
+        if (method === 'POST' && /\/api\/platform\/patient$/.test(path)) {
+          return resolve(jsonResponse(200, upsertPatientPayload(bodyObj)));
+        }
+        if (method === 'POST' && /\/api\/platform\/bind$/.test(path)) {
+          return resolve(jsonResponse(200, bindPayload(bodyObj)));
+        }
+        if (method === 'POST' && /\/api\/platform\/alarm\/ingest$/.test(path)) {
+          return resolve(jsonResponse(200, ingestPayload()));
+        }
+        if (method === 'POST' && /\/api\/platform\/alarm\/transition$/.test(path)) {
+          return resolve(jsonResponse(200, transitionPayload(bodyObj)));
+        }
+        if (method === 'POST' && /\/api\/platform\/plan$/.test(path)) {
+          return resolve(jsonResponse(200, planUpsertPayload(bodyObj)));
+        }
+        if (method === 'POST' && /\/api\/platform\/task\/complete$/.test(path)) {
+          return resolve(jsonResponse(200, completeTaskPayload(bodyObj)));
+        }
+        resolve(jsonResponse(404, { ok: false, error: '演示版 shim: 未知接口 ' + path }));
+      }, 90);
+    });
+  };
+})();
+
+</script>
+
+<script>
+/* ================= 配置: API_BASE 可通过 ?api= 覆盖并持久化到 localStorage ================= */
+const DEFAULT_API_BASE = 'https://dc.ncrc.org.cn/api2';
+const LS_API_KEY = 'suifang_platform_api_base';
+const LS_TOKEN_KEY = 'suifang_platform_token';
+const LS_OPERATOR_KEY = 'suifang_platform_operator';
+
+function resolveApiBase() {
+  const params = new URLSearchParams(location.search);
+  const apiParam = params.get('api');
+  if (apiParam) {
+    localStorage.setItem(LS_API_KEY, apiParam);
+    return apiParam;
+  }
+  return localStorage.getItem(LS_API_KEY) || DEFAULT_API_BASE;
+}
+
+let API_BASE = resolveApiBase();
+document.getElementById('apiBaseShow').textContent = API_BASE;
+document.getElementById('apiFooterShow').textContent = API_BASE;
+document.getElementById('offlineApiShow').textContent = API_BASE;
+
+function platformHeaders(json) {
+  const h = {};
+  if (json) h['Content-Type'] = 'application/json';
+  const token = localStorage.getItem(LS_TOKEN_KEY);
+  if (token) h['X-Platform-Token'] = token;
+  return h;
+}
+
+function promptForToken() {
+  const tok = prompt('写接口需要 X-Platform-Token (与服务端 PLATFORM_TOKEN 一致), 会记住在本机:',
+    localStorage.getItem(LS_TOKEN_KEY) || '');
+  if (tok !== null) localStorage.setItem(LS_TOKEN_KEY, tok.trim());
+  return tok;
+}
+
+/* 带写接口鉴权重试的 fetch: 403 时(未存 token 或 token 错) 弹一次 prompt 重试一次。 */
+async function platformFetch(url, options) {
+  let res = await fetch(url, options);
+  if (res.status === 403) {
+    const before = localStorage.getItem(LS_TOKEN_KEY) || '';
+    const tok = promptForToken();
+    if (tok !== null && tok.trim() !== before) {
+      const opts2 = Object.assign({}, options);
+      opts2.headers = platformHeaders(!!(options && options.headers && options.headers['Content-Type']));
+      res = await fetch(url, opts2);
+    }
+  }
+  return res;
+}
+
+document.getElementById('changeApiBtn').addEventListener('click', () => {
+  const v = prompt('输入新的 API_BASE (例如本地调试 http://127.0.0.1:3000):', API_BASE);
+  if (!v) return;
+  localStorage.setItem(LS_API_KEY, v.trim());
+  const tok = prompt('可选: 写接口 X-Platform-Token (留空 = 不带该 header, 与服务端 PLATFORM_TOKEN 是否设置对应):',
+    localStorage.getItem(LS_TOKEN_KEY) || '');
+  if (tok !== null) localStorage.setItem(LS_TOKEN_KEY, tok.trim());
+  location.reload();
+});
+
+/* ================= 工具函数 ================= */
+function fmt(v, unit) {
+  if (v === null || v === undefined || v === '') return '<span class="val muted">--</span>';
+  return '<span class="val">' + escapeHtml(String(v)) + (unit || '') + '</span>';
+}
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function genderLabel(g) { return g === 'F' ? '女' : (g === 'M' ? '男' : '--'); }
+
+/* ================= 列表视图状态 ================= */
+const listState = { patients: [], search: '' };
+
+async function fetchStatus() {
+  try {
+    const res = await fetch(API_BASE + '/api/status', { cache: 'no-store' });
+    if (!res.ok) throw new Error('status ' + res.status);
+    const st = await res.json();
+    document.getElementById('svcState').textContent = st.status || 'running';
+    document.getElementById('dot').className = 'dot ' + (st.mysql === 'connected' ? 'dot-ok' : 'dot-warn');
+    return true;
+  } catch (e) {
+    document.getElementById('svcState').textContent = '未连接';
+    document.getElementById('dot').className = 'dot dot-err';
+    return false;
+  }
+}
+
+async function fetchPatients() {
+  const wrap = document.getElementById('patientsWrap');
+  try {
+    const [svcOk, res] = await Promise.all([
+      fetchStatus(),
+      fetch(API_BASE + '/api/platform/patients', { cache: 'no-store' }),
+    ]);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '未知错误');
+    listState.patients = data.patients || [];
+    document.getElementById('offlineBanner').style.display = 'none';
+    document.getElementById('patientCount').textContent = listState.patients.length;
+    document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString('zh-CN');
+    renderPatients();
+    updateAlarmNavBadge();
+    fetchTasksBadge();
+  } catch (e) {
+    document.getElementById('offlineBanner').style.display = '';
+    wrap.innerHTML = '<div class="error">加载患者列表失败: ' + escapeHtml(e.message) + '</div>';
+    document.getElementById('patientCount').textContent = '--';
+  }
+}
+
+function bindBadge(chain, on, label) {
+  return '<span class="bind-badge ' + (on ? 'on ' + chain : 'off') + '">' +
+    (on ? '✓' : '✕') + ' ' + label + '</span>';
+}
+
+/* 佩戴率环 (M4): rate 为 0~1 或 null(未绑定 iwown / 无佩戴数据时). 小号 SVG 圆环,
+   颜色按佩戴率分档(>=0.7 绿 / >=0.4 黄 / 其余红), 与工作台 sev-dot 的红黄灰配色呼应。 */
+function wearRingSvg(rate) {
+  const size = 36, stroke = 4, r = (size - stroke) / 2, c = 2 * Math.PI * r;
+  const cx = size / 2, cy = size / 2;
+  if (rate === null || rate === undefined) {
+    return '<div class="wear-ring is-empty" title="无佩戴数据">' +
+      '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+      '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="#eef0f3" stroke-width="' + stroke + '"/>' +
+      '</svg><span class="wear-ring-label">--</span></div>';
+  }
+  const pct = Math.max(0, Math.min(1, rate));
+  const dash = (c * pct).toFixed(1);
+  const color = pct >= 0.7 ? '#2faa55' : (pct >= 0.4 ? '#f59e0b' : '#d04848');
+  return '<div class="wear-ring" title="近 7 天平均佩戴率 ' + Math.round(pct * 100) + '%">' +
+    '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+    '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="#eef0f3" stroke-width="' + stroke + '"/>' +
+    '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + stroke + '" ' +
+      'stroke-dasharray="' + dash + ' ' + c.toFixed(1) + '" stroke-linecap="round" ' +
+      'transform="rotate(-90 ' + cx + ' ' + cy + ')"/>' +
+    '</svg><span class="wear-ring-label">' + Math.round(pct * 100) + '%</span></div>';
+}
+
+function wearRowHtml(rate) {
+  const info = (rate === null || rate === undefined)
+    ? '<span class="muted">无佩戴数据</span>'
+    : ('<b>' + Math.round(rate * 100) + '%</b>');
+  return '<div class="wear-row">' + wearRingSvg(rate) +
+    '<div class="wear-info">佩戴依从性(近 7 日)<br>' + info + '</div></div>';
+}
+
+function renderPatients() {
+  const wrap = document.getElementById('patientsWrap');
+  const q = listState.search.trim().toLowerCase();
+  let list = listState.patients;
+  if (q) {
+    list = list.filter(p =>
+      String(p.name || '').toLowerCase().includes(q) ||
+      String(p.patient_no || '').toLowerCase().includes(q) ||
+      String(p.group_tag || '').toLowerCase().includes(q));
+  }
+  document.getElementById('listMeta').textContent = '共 ' + listState.patients.length + ' 人' +
+    (q ? (' · 筛选出 ' + list.length + ' 人') : '');
+
+  if (!list.length) {
+    wrap.innerHTML = '<div class="empty"><div class="icon">🧑‍⚕️</div>' +
+      (listState.patients.length ? '未找到匹配的患者' : '暂无患者') +
+      '<br><span style="font-size:12px;">' +
+      (listState.patients.length ? '试试调整搜索关键字' : '点击右上角"＋ 建档"添加第一个测试患者') +
+      '</span></div>';
+    return;
+  }
+
+  wrap.innerHTML = list.map(p => {
+    const iw = p.bindings.iwown;
+    const s101 = p.bindings.s101;
+    const zmy = p.bindings.zhenmaiyi;
+    const alarmBadge = p.alarm_open > 0 ?
+      '<span class="alarm-badge alarm-badge-link" onclick="event.stopPropagation(); goAlarms(\'' + escapeHtml(p.patient_no) + '\')">⚠ ' + p.alarm_open + '</span>' : '';
+    return '<div class="patient-card">' +
+      '<div class="patient-header" onclick="goDetail(\'' + escapeHtml(p.patient_no) + '\')">' +
+        alarmBadge +
+        '<div class="patient-name">' + escapeHtml(p.name || '(未命名)') + '</div>' +
+        '<div class="patient-no">门诊号 ' + escapeHtml(p.patient_no) + ' · ' + genderLabel(p.gender) +
+          (p.age ? (' · ' + p.age + ' 岁') : '') + '</div>' +
+        (p.group_tag ? '<div class="patient-tag">' + escapeHtml(p.group_tag) + '</div>' : '') +
+      '</div>' +
+      '<div class="patient-body" onclick="goDetail(\'' + escapeHtml(p.patient_no) + '\')">' +
+        wearRowHtml(p.wear_rate_7d) +
+        '<div class="badge-row">' +
+          bindBadge('iwown', !!iw, iw ? ('iwown ' + iw) : 'iwown') +
+          bindBadge('s101', !!s101, 'S101/R04') +
+          bindBadge('zmy', !!zmy, '诊脉仪') +
+        '</div>' +
+        '<div class="metric-row"><span class="key">iwown 最近上传</span>' + fmt(p.last_upload.iwown) + '</div>' +
+        '<div class="metric-row"><span class="key">S101 最近上传</span>' + fmt(p.last_upload.s101) + '</div>' +
+        (p.note ? '<div class="metric-row"><span class="key">备注</span>' + fmt(p.note) + '</div>' : '') +
+      '</div>' +
+      '<div class="card-actions">' +
+        '<button onclick="event.stopPropagation(); openBindModal(\'' + escapeHtml(p.patient_no) + '\')">绑定/解绑</button>' +
+        '<button onclick="event.stopPropagation(); openPatientForm(\'' + escapeHtml(p.patient_no) + '\')">改档</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function goDetail(patientNo) {
+  location.hash = '#/patient/' + encodeURIComponent(patientNo);
+}
+
+function goAlarms(patientNo) {
+  location.hash = patientNo ? ('#/alarms?patientNo=' + encodeURIComponent(patientNo)) : '#/alarms';
+}
+
+function updateAlarmNavBadge() {
+  const total = listState.patients.reduce((sum, p) => sum + (p.alarm_open || 0), 0);
+  const el = document.getElementById('alarmNavBadge');
+  if (total > 0) { el.style.display = ''; el.textContent = total; } else { el.style.display = 'none'; }
+}
+document.getElementById('alarmNavBtn').addEventListener('click', () => goAlarms(null));
+
+/* 随访任务导航角标 (M5): 逾期+今日到期任务数, 直接对已拉到的 listState.patients 各自的
+   task_due_count 求和, 不再单独发请求 —— 与 updateAlarmNavBadge() 同一模式, 靠 fetchPatients()
+   刷新患者数组时顺带算好, 列表加载时才知道有多少待办。语义与之前略有不同: 不再是"未来 7 天
+   窗口内"的任务数, 而是"现在就要处理"的到期+逾期数, 与报警角标的"需要立即关注"口径对齐。 */
+function fetchTasksBadge() {
+  const el = document.getElementById('tasksNavBadge');
+  const total = listState.patients.reduce((sum, p) => sum + (p.task_due_count || 0), 0);
+  if (total > 0) { el.style.display = ''; el.textContent = total; } else { el.style.display = 'none'; }
+}
+document.getElementById('tasksNavBtn').addEventListener('click', () => { location.hash = '#/tasks'; });
+
+/* ================= 建档/改档 modal ================= */
+function openPatientForm(patientNo) {
+  document.getElementById('pfMsg').textContent = '';
+  const existing = patientNo ? listState.patients.find(p => p.patient_no === patientNo) : null;
+  document.getElementById('pfTitle').textContent = existing ? ('改档 · ' + existing.patient_no) : '建档';
+  document.getElementById('pfPatientNo').value = existing ? existing.patient_no : '';
+  document.getElementById('pfPatientNo').disabled = !!existing;
+  document.getElementById('pfName').value = existing ? (existing.name || '') : '';
+  document.getElementById('pfGender').value = existing ? (existing.gender || '') : '';
+  document.getElementById('pfAge').value = existing ? (existing.age || '') : '';
+  document.getElementById('pfGroup').value = existing ? (existing.group_tag || '') : '';
+  document.getElementById('pfNote').value = existing ? (existing.note || '') : '';
+  document.getElementById('patientFormModal').classList.add('open');
+}
+document.getElementById('addPatientBtn').addEventListener('click', () => openPatientForm(null));
+document.getElementById('pfClose').addEventListener('click', () => document.getElementById('patientFormModal').classList.remove('open'));
+document.getElementById('pfCancel').addEventListener('click', () => document.getElementById('patientFormModal').classList.remove('open'));
+
+document.getElementById('pfSave').addEventListener('click', async () => {
+  const msg = document.getElementById('pfMsg');
+  const patient_no = document.getElementById('pfPatientNo').value.trim();
+  if (!patient_no) { msg.textContent = '门诊号必填'; msg.className = 'form-msg err'; return; }
+  const body = {
+    patient_no,
+    name: document.getElementById('pfName').value.trim(),
+    gender: document.getElementById('pfGender').value || null,
+    age: document.getElementById('pfAge').value ? parseInt(document.getElementById('pfAge').value, 10) : null,
+    group_tag: document.getElementById('pfGroup').value.trim(),
+    note: document.getElementById('pfNote').value.trim(),
+  };
+  msg.textContent = '保存中…'; msg.className = 'form-msg';
+  try {
+    const res = await fetch(API_BASE + '/api/platform/patient', {
+      method: 'POST', headers: platformHeaders(true), body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '已保存 (' + data.action + ')'; msg.className = 'form-msg ok';
+    await fetchPatients();
+    setTimeout(() => document.getElementById('patientFormModal').classList.remove('open'), 500);
+  } catch (e) {
+    msg.textContent = '保存失败: ' + e.message; msg.className = 'form-msg err';
+  }
+});
+
+/* ================= 绑定/解绑 modal ================= */
+let bindTargetPatient = null;
+function openBindModal(patientNo) {
+  bindTargetPatient = patientNo;
+  document.getElementById('bmTitle').textContent = '绑定/解绑 · ' + patientNo;
+  document.getElementById('bmKey').value = '';
+  document.getElementById('bmUnbind').checked = false;
+  document.getElementById('bmMsg').textContent = '';
+  document.getElementById('bindModal').classList.add('open');
+}
+document.getElementById('bmChain').addEventListener('change', e => {
+  document.getElementById('bmKeyLabel').textContent = e.target.value === 'iwown' ? 'device_id' : 'case_id (诊脉仪病例ID)';
+});
+document.getElementById('bmClose').addEventListener('click', () => document.getElementById('bindModal').classList.remove('open'));
+document.getElementById('bmCancel').addEventListener('click', () => document.getElementById('bindModal').classList.remove('open'));
+
+document.getElementById('bmSave').addEventListener('click', async () => {
+  const msg = document.getElementById('bmMsg');
+  const chain = document.getElementById('bmChain').value;
+  const unbind = document.getElementById('bmUnbind').checked;
+  const key = document.getElementById('bmKey').value.trim();
+  if (!unbind && !key) { msg.textContent = 'key 必填 (或勾选解绑)'; msg.className = 'form-msg err'; return; }
+  msg.textContent = '提交中…'; msg.className = 'form-msg';
+  try {
+    const res = await fetch(API_BASE + '/api/platform/bind', {
+      method: 'POST', headers: platformHeaders(true),
+      body: JSON.stringify({ patient_no: bindTargetPatient, chain, key: key || null, unbind }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '操作成功'; msg.className = 'form-msg ok';
+    await fetchPatients();
+    setTimeout(() => document.getElementById('bindModal').classList.remove('open'), 500);
+  } catch (e) {
+    msg.textContent = '操作失败: ' + e.message; msg.className = 'form-msg err';
+  }
+});
+
+/* ================= 详情视图 ================= */
+const detailState = { patientNo: null, days: 14, data: null, plans: [] };
+
+async function fetchDetail() {
+  document.getElementById('detailLoading').style.display = '';
+  document.getElementById('detailError').style.display = 'none';
+  document.getElementById('detailContent').style.display = 'none';
+  try {
+    const url = API_BASE + '/api/platform/patient/vitals?patientNo=' +
+      encodeURIComponent(detailState.patientNo) + '&days=' + detailState.days;
+    const res = await fetch(url, { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    detailState.data = data;
+    renderDetail();
+  } catch (e) {
+    document.getElementById('detailLoading').style.display = 'none';
+    document.getElementById('detailError').style.display = '';
+    document.getElementById('detailError').textContent = '加载患者详情失败: ' + e.message;
+  }
+}
+
+function renderDetail() {
+  const data = detailState.data;
+  const p = data.patient;
+  document.getElementById('dName').textContent = (p.name || '(未命名)') + ' · ' + p.patient_no;
+  document.getElementById('dSub').textContent =
+    genderLabel(p.gender) + (p.age ? (' · ' + p.age + ' 岁') : '') +
+    (p.group_tag ? (' · ' + p.group_tag) : '') + (p.note ? (' · ' + p.note) : '');
+
+  // iwown 设备状态条
+  const iwCard = document.getElementById('iwownStatusCard');
+  const dev = data.iwown && data.iwown.device;
+  if (dev) {
+    iwCard.innerHTML = '<h4>📶 iwown 设备状态</h4>' +
+      '<div class="row"><span class="k">设备 ID</span><span class="v">' + escapeHtml(dev.device_id) + '</span></div>' +
+      '<div class="row"><span class="k">电量</span><span class="v">' + (dev.battery != null ? dev.battery + '%' : '--') + '</span></div>' +
+      '<div class="row"><span class="k">信号 RSSI</span><span class="v">' + (dev.rssi != null ? dev.rssi + ' dBm' : '--') + '</span></div>' +
+      '<div class="row"><span class="k">最近在线</span><span class="v">' + (dev.last_seen || '--') + '</span></div>';
+  } else {
+    iwCard.innerHTML = '<h4>📶 iwown 设备状态</h4><div class="empty-inline">未绑定 iwown 设备 · 可在患者列表点"绑定/解绑"</div>';
+  }
+
+  // 诊脉仪卡
+  const zmyCard = document.getElementById('zmyStatusCard');
+  const z = data.zhenmaiyi;
+  if (z) {
+    zmyCard.innerHTML = '<h4>🩺 诊脉仪最新一次</h4>' +
+      '<div class="row"><span class="k">检测时间</span><span class="v">' + (z.detect_time || '--') + '</span></div>' +
+      '<div class="row"><span class="k">体质结论</span><span class="v">' + escapeHtml(z.conclusion || '--') + '</span></div>' +
+      '<div class="row"><span class="k">主脉象</span><span class="v">' + escapeHtml(z.pulse_label || '--') + '</span></div>';
+  } else {
+    zmyCard.innerHTML = '<h4>🩺 诊脉仪最新一次</h4><div class="empty-inline">' +
+      (p.zhenmaiyi_case_id ? '未查到 case_id=' + escapeHtml(p.zhenmaiyi_case_id) + ' 的记录' : '未绑定诊脉仪 case_id') + '</div>';
+  }
+
+  document.getElementById('detailLoading').style.display = 'none';
+  document.getElementById('detailContent').style.display = '';
+
+  drawAllCharts(data);
+  document.getElementById('detailAlarmLink').onclick = () => goAlarms(p.patient_no);
+  fetchDetailAlarms(p.patient_no);
+  fetchCompliance(p.patient_no, detailState.days);
+  fetchPatientPlans(p.patient_no);
+}
+
+/* ================= 随访计划 (M5, 患者详情页) ================= */
+async function fetchPatientPlans(patientNo) {
+  const wrap = document.getElementById('planListWrap');
+  wrap.innerHTML = '<div class="loading">载入中…</div>';
+  try {
+    const url = API_BASE + '/api/platform/plans?patientNo=' + encodeURIComponent(patientNo);
+    const res = await fetch(url, { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    detailState.plans = data.plans || [];
+    renderPatientPlans();
+  } catch (e) {
+    wrap.innerHTML = '<div class="error">加载随访计划失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderPatientPlans() {
+  const wrap = document.getElementById('planListWrap');
+  const plans = detailState.plans || [];
+  if (!plans.length) {
+    wrap.innerHTML = '<div class="empty-inline">暂无随访计划 · 点击"＋ 新建计划"添加</div>';
+    return;
+  }
+  wrap.innerHTML = plans.map(p => {
+    const freqLabel = p.frequency_days ? ('每 ' + p.frequency_days + ' 天') : '一次性';
+    return '<div class="plan-row">' +
+      '<div class="info"><b>' + escapeHtml(p.name) + '</b>' +
+        '<span class="status-pill ' + (p.active ? 'new' : 'inactive') + '" style="margin-left:6px;">' +
+          (p.active ? '启用中' : '已停用') + '</span>' +
+        '<span class="sub">' + freqLabel + ' · 下次到期 ' + escapeHtml(p.next_due) +
+          (p.note ? (' · ' + escapeHtml(p.note)) : '') + '</span></div>' +
+      (p.active ? '<button onclick="deactivatePlan(' + p.id + ')">停用</button>' : '') +
+    '</div>';
+  }).join('');
+}
+
+async function deactivatePlan(planId) {
+  if (!confirm('确认停用该随访计划? 停用后不再出现在待办任务里。')) return;
+  try {
+    const res = await platformFetch(API_BASE + '/api/platform/plan', {
+      method: 'POST', headers: platformHeaders(true),
+      body: JSON.stringify({ id: planId, active: 0 }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    await fetchPatientPlans(detailState.patientNo);
+    fetchTasksBadge();
+  } catch (e) {
+    alert('停用失败: ' + e.message);
+  }
+}
+
+function openPlanForm() {
+  document.getElementById('planName').value = '';
+  document.getElementById('planFreq').value = '';
+  document.getElementById('planNextDue').value = '';
+  document.getElementById('planNote').value = '';
+  document.getElementById('planFormMsg').textContent = '';
+  document.getElementById('planFormModal').classList.add('open');
+}
+document.getElementById('planAddBtn').addEventListener('click', openPlanForm);
+document.getElementById('planFormClose').addEventListener('click', () => document.getElementById('planFormModal').classList.remove('open'));
+document.getElementById('planFormCancel').addEventListener('click', () => document.getElementById('planFormModal').classList.remove('open'));
+
+document.getElementById('planFormSave').addEventListener('click', async () => {
+  const msg = document.getElementById('planFormMsg');
+  const btn = document.getElementById('planFormSave');
+  const name = document.getElementById('planName').value.trim();
+  const nextDue = document.getElementById('planNextDue').value;
+  if (!name) { msg.textContent = '计划名必填'; msg.className = 'form-msg err'; return; }
+  if (!nextDue) { msg.textContent = '首次到期日期必填'; msg.className = 'form-msg err'; return; }
+  const freqRaw = document.getElementById('planFreq').value.trim();
+  const body = {
+    patient_no: detailState.patientNo,
+    name,
+    frequency_days: freqRaw ? parseInt(freqRaw, 10) : null,
+    next_due: nextDue,
+    note: document.getElementById('planNote').value.trim() || null,
+  };
+  msg.textContent = '保存中…'; msg.className = 'form-msg';
+  btn.disabled = true;
+  try {
+    const res = await platformFetch(API_BASE + '/api/platform/plan', {
+      method: 'POST', headers: platformHeaders(true), body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '已保存'; msg.className = 'form-msg ok';
+    await fetchPatientPlans(detailState.patientNo);
+    fetchTasksBadge();
+    setTimeout(() => document.getElementById('planFormModal').classList.remove('open'), 500);
+  } catch (e) {
+    msg.textContent = '保存失败: ' + e.message; msg.className = 'form-msg err';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* 佩戴依从性明细条 (M4): 每日一根柱, 柱高 = wear_hours/24, 有 not_worn 报警的那天柱顶标 ⚠N。
+   跟随患者详情页现有的 7/14/30 天 toggle (renderDetail 每次都重新调这个函数)。 */
+async function fetchCompliance(patientNo, days) {
+  const wrap = document.getElementById('complianceBars');
+  const emptyBox = document.getElementById('complianceEmpty');
+  const summary = document.getElementById('complianceSummary');
+  wrap.innerHTML = '';
+  emptyBox.style.display = 'none';
+  summary.textContent = '载入中…';
+  try {
+    const url = API_BASE + '/api/platform/compliance?patientNo=' +
+      encodeURIComponent(patientNo) + '&days=' + days;
+    const res = await fetch(url, { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+
+    if (!data.daily.length) {
+      summary.textContent = '';
+      emptyBox.style.display = '';
+      return;
+    }
+    const avg = data.summary.avg_wear_rate;
+    summary.innerHTML = '近 ' + data.days + ' 天平均佩戴率 <b>' +
+      (avg != null ? Math.round(avg * 100) + '%' : '--') + '</b> · ' +
+      data.summary.days_with_data + ' 天有数据';
+    wrap.innerHTML = data.daily.map(d => {
+      const rate = d.wear_rate || 0;
+      const heightPct = Math.max(2, Math.round(rate * 100));
+      const cls = rate === 0 ? 'zero' : (rate < 0.4 ? 'low' : '');
+      const alarmMark = d.not_worn_alarms > 0
+        ? '<span class="wear-bar-alarm" title="当日 ' + d.not_worn_alarms + ' 次未佩戴报警">⚠' + d.not_worn_alarms + '</span>'
+        : '';
+      return '<div class="wear-bar-col" title="' + d.date + ' · 佩戴 ' + d.wear_hours + 'h/24h (' +
+          Math.round(rate * 100) + '%)' + (d.not_worn_alarms ? ' · 未佩戴报警 ' + d.not_worn_alarms + ' 次' : '') + '">' +
+        alarmMark +
+        '<div class="wear-bar ' + cls + '" style="height:' + heightPct + '%"></div>' +
+        '<div class="wear-bar-date">' + d.date.slice(5) + '</div>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    summary.textContent = '';
+    wrap.innerHTML = '<div class="error">加载佩戴依从性失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+/* 患者详情页的报警时间线 (design doc §3.3/⑥: 患者详情该患者报警时间线, 点击去工作台处理) */
+async function fetchDetailAlarms(patientNo) {
+  const wrap = document.getElementById('detailAlarmsWrap');
+  wrap.innerHTML = '<div class="loading">载入中…</div>';
+  try {
+    const url = API_BASE + '/api/platform/alarms?patientNo=' + encodeURIComponent(patientNo) + '&status=all&limit=10';
+    const res = await fetch(url, { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    renderAlarmRows(wrap, data.alarms || [], { clickable: true, gotoWorkbench: true });
+  } catch (e) {
+    wrap.innerHTML = '<div class="error">加载报警时间线失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function toSeries(daily, field) {
+  return (daily || []).map(d => ({ date: d.date, value: d[field] === undefined ? null : d[field] }));
+}
+
+function legendHtml(items) {
+  return items.map(it => '<span><span class="dot-lg" style="background:' + it.color + '"></span>' + it.label + '</span>').join('');
+}
+
+function drawAllCharts(data) {
+  const iwDaily = (data.iwown && data.iwown.daily) || [];
+  const s101Daily = (data.s101 && data.s101.daily) || [];
+  const COL_IW = '#0891b2', COL_IW2 = '#67e8f9', COL_S101 = '#2c6ef2', COL_S101_2 = '#93c5fd';
+
+  ['hr', 'spo2', 'temp', 'step'].forEach(name => {
+    const field = name === 'temp' ? 'temperature' : (name === 'hr' ? 'hr_avg' : (name === 'spo2' ? 'spo2_avg' : 'step'));
+    const series = [
+      { label: 'iwown', color: COL_IW, data: toSeries(iwDaily, field) },
+      { label: 'S101/R04', color: COL_S101, data: toSeries(s101Daily, field) },
+    ];
+    document.getElementById('legend-' + name).innerHTML = legendHtml(series.map(s => ({ label: s.label, color: s.color })));
+    drawTrend('chart-' + name, series, { minZero: name === 'step' });
+  });
+
+  // 血压: 4 条线 (两链路 × 收缩/舒张)
+  const bpSeries = [
+    { label: 'iwown 收缩压', color: COL_IW, data: toSeries(iwDaily, 'sbp') },
+    { label: 'iwown 舒张压', color: COL_IW2, data: toSeries(iwDaily, 'dbp') },
+    { label: 'S101 收缩压', color: COL_S101, data: toSeries(s101Daily, 'sbp') },
+    { label: 'S101 舒张压', color: COL_S101_2, data: toSeries(s101Daily, 'dbp') },
+  ];
+  document.getElementById('legend-bp').innerHTML = legendHtml(bpSeries.map(s => ({ label: s.label, color: s.color })));
+  drawTrend('chart-bp', bpSeries, {});
+}
+
+/* 通用趋势折线图 (canvas 手绘, 技法沿用 prototype/pulse-dashboard.html drawPulseWaveform 的
+   "取值范围归一化 + fillText 标注"思路, 这里扩展为多序列 + 日期轴 + 网格). */
+function drawTrend(canvasId, seriesList, opts) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const padL = 40, padR = 12, padT = 10, padB = 22;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#fafbfc';
+  ctx.fillRect(0, 0, W, H);
+
+  const dateSet = new Set();
+  seriesList.forEach(s => s.data.forEach(pt => { if (pt.value !== null && pt.value !== undefined) dateSet.add(pt.date); }));
+  const dates = Array.from(dateSet).sort();
+
+  if (!dates.length) {
+    ctx.fillStyle = '#9ca3af';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('暂无数据', W / 2, H / 2);
+    return;
+  }
+
+  let vals = [];
+  seriesList.forEach(s => s.data.forEach(pt => { if (pt.value !== null && pt.value !== undefined) vals.push(pt.value); }));
+  let vMin = Math.min.apply(null, vals), vMax = Math.max.apply(null, vals);
+  if (vMin === vMax) { vMin -= 1; vMax += 1; }
+  const pad = (vMax - vMin) * 0.18 || 1;
+  vMin -= pad; vMax += pad;
+  if (opts && opts.minZero) vMin = Math.min(vMin, 0);
+
+  const xStep = dates.length > 1 ? (W - padL - padR) / (dates.length - 1) : 0;
+  const xOf = i => padL + i * xStep;
+  const yOf = v => H - padB - ((v - vMin) / (vMax - vMin)) * (H - padT - padB);
+
+  ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1; ctx.font = '10px sans-serif'; ctx.fillStyle = '#9ca3af';
+  for (let i = 0; i <= 3; i++) {
+    const v = vMin + (vMax - vMin) * i / 3;
+    const y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(v.toFixed(1), 2, y + 3);
+  }
+  ctx.textAlign = 'center';
+  const xTicks = dates.length <= 6 ? dates.map((d, i) => i) : [0, Math.floor((dates.length - 1) / 2), dates.length - 1];
+  xTicks.forEach(i => ctx.fillText(dates[i].slice(5), xOf(i), H - 6));
+
+  seriesList.forEach(s => {
+    if (!s.data.some(pt => pt.value !== null && pt.value !== undefined)) return;
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.beginPath();
+    let started = false;
+    dates.forEach((d, i) => {
+      const pt = s.data.find(p => p.date === d);
+      if (!pt || pt.value === null || pt.value === undefined) { started = false; return; }
+      const x = xOf(i), y = yOf(pt.value);
+      if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+    });
+    ctx.stroke();
+    ctx.fillStyle = s.color;
+    dates.forEach((d, i) => {
+      const pt = s.data.find(p => p.date === d);
+      if (!pt || pt.value === null || pt.value === undefined) return;
+      ctx.beginPath(); ctx.arc(xOf(i), yOf(pt.value), 2.6, 0, Math.PI * 2); ctx.fill();
+    });
+  });
+}
+
+document.getElementById('dayToggle').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-days]');
+  if (!btn) return;
+  document.querySelectorAll('#dayToggle button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  detailState.days = parseInt(btn.dataset.days, 10);
+  fetchDetail();
+});
+document.getElementById('backBtn').addEventListener('click', () => { location.hash = ''; });
+
+/* ================= 报警工作台 (M2) ================= */
+document.getElementById('amApiFooterShow').textContent = API_BASE;
+
+const ALARM_TYPE_LABELS = {
+  fall: '跌倒', sos: 'SOS', hr: '心率越限', spo2: '血氧越限', bp: '血压越限',
+  temp: '体温越限', sedentary: '久坐', not_worn: '未佩戴', low_battery: '低电量', unknown: '未分类',
+};
+const STATUS_LABELS = { new: '待处理', acked: '已知晓', followed: '已回访', closed: '已关闭' };
+
+const alarmsState = { status: 'new', patientNo: null, alarms: [] };
+let amCurrentAlarm = null;
+
+function alarmTypeLabel(t) { return ALARM_TYPE_LABELS[t] || ALARM_TYPE_LABELS.unknown; }
+
+/* payload_json 摘要: 按 alarm_type 抽关键字段, 与 health_server.py classify_iwown_alarm() 的
+   分类字段对应 (见该函数注释里的映射表)。 */
+function summarizeAlarmPayload(a) {
+  const p = a.payload_json;
+  if (!p || typeof p !== 'object') return '--';
+  const alarm = p.alarm || {};
+  const info = p.Alarminfo || {};
+  try {
+    if (a.alarm_type === 'hr' && alarm.alarm_hr && alarm.alarm_hr[0]) return '心率 ' + alarm.alarm_hr[0].hr + ' bpm';
+    if (a.alarm_type === 'spo2' && alarm.alarm_spo2 && alarm.alarm_spo2[0]) return '血氧 ' + alarm.alarm_spo2[0].spo2 + '%';
+    if (a.alarm_type === 'bp' && alarm.alarm_Bp && alarm.alarm_Bp[0]) return '血压 ' + alarm.alarm_Bp[0].sbp + '/' + alarm.alarm_Bp[0].dbp;
+    if (a.alarm_type === 'temp' && alarm.alarm_Temperature && alarm.alarm_Temperature[0]) return '体温 ' + alarm.alarm_Temperature[0].temperature;
+    if (a.alarm_type === 'low_battery') return '电量 ' + (info.lowpowerPercentage != null ? info.lowpowerPercentage : info.poweroffPercentage) + '%';
+    if (a.alarm_type === 'not_worn') return '未佩戴信号';
+    if (a.alarm_type === 'fall') return '检测到跌倒';
+    if (a.alarm_type === 'sos') return 'SOS 求助' + (a.lat != null ? ' (含定位)' : '');
+  } catch (e) { /* 忽略, 走下面 fallback */ }
+  return JSON.stringify(p).slice(0, 60) + '…';
+}
+
+function mapLinkHtml(lat, lng) {
+  if (lat == null || lng == null) return '--';
+  const q = lat + ',' + lng;
+  return '<a href="https://www.google.com/maps?q=' + encodeURIComponent(q) + '" target="_blank" rel="noopener">' +
+    lat.toFixed(6) + ', ' + lng.toFixed(6) + '</a>';
+}
+
+/* 报警行列表渲染, 复用于工作台视图 + 患者详情报警时间线。
+   opts.clickable=false 时不弹处理框(目前两处都可点); opts.gotoWorkbench=true 时点击行跳转工作台而不是原地弹窗
+   (详情页的时间线是只读摘要, 处理动作统一在工作台做, 避免两处维护同一套状态机交互)。 */
+function renderAlarmRows(wrap, alarms, opts) {
+  opts = opts || {};
+  if (!alarms.length) {
+    wrap.innerHTML = '<div class="empty"><div class="icon">✅</div>暂无报警' +
+      '<br><span style="font-size:12px;">当前筛选条件下没有报警记录</span></div>';
+    return;
+  }
+  wrap.innerHTML = alarms.map(a => {
+    const onclick = opts.gotoWorkbench
+      ? 'goAlarms(\'' + escapeHtml(a.patient_no || '') + '\')'
+      : 'openAlarmModal(' + a.id + ')';
+    return '<div class="alarm-row" onclick="' + onclick + '">' +
+      '<span class="sev-dot ' + escapeHtml(a.severity || 'info') + '"></span>' +
+      '<div class="alarm-type-label">' + escapeHtml(alarmTypeLabel(a.alarm_type)) +
+        '<span class="status-pill ' + escapeHtml(a.status) + '">' + escapeHtml(STATUS_LABELS[a.status] || a.status) + '</span>' +
+        '<span class="sub">' + (a.followup_count || 0) + ' 条回访记录</span></div>' +
+      '<div class="alarm-patient">' + escapeHtml(a.patient_name || '(未命名)') +
+        '<span class="sub">门诊号 ' + escapeHtml(a.patient_no || '--') + '</span></div>' +
+      '<div class="alarm-time">' + escapeHtml(a.occurred_at || a.created_at || '--') + '</div>' +
+      '<div class="alarm-payload">' + summarizeAlarmPayload(a) + ' · ' + mapLinkHtml(a.lat, a.lng) + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function fetchAlarms() {
+  const wrap = document.getElementById('amWrap');
+  wrap.innerHTML = '<div class="loading">正在加载报警列表…</div>';
+  try {
+    let url = API_BASE + '/api/platform/alarms?limit=200';
+    url += '&status=' + encodeURIComponent(alarmsState.status === 'all' ? '' : alarmsState.status);
+    if (alarmsState.patientNo) url += '&patientNo=' + encodeURIComponent(alarmsState.patientNo);
+    const res = await fetch(url, { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    alarmsState.alarms = data.alarms || [];
+    renderAlarmRows(wrap, alarmsState.alarms, { clickable: true });
+  } catch (e) {
+    wrap.innerHTML = '<div class="error">加载报警列表失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+document.getElementById('amStatusTabs').addEventListener('click', e => {
+  const tab = e.target.closest('.status-tab');
+  if (!tab) return;
+  document.querySelectorAll('#amStatusTabs .status-tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  alarmsState.status = tab.dataset.status;
+  fetchAlarms();
+});
+
+document.getElementById('amBackBtn').addEventListener('click', () => { location.hash = ''; });
+
+document.getElementById('amIngestBtn').addEventListener('click', async () => {
+  const msgBox = document.getElementById('amIngestMsg');
+  msgBox.style.display = ''; msgBox.className = 'banner banner-warn'; msgBox.textContent = '拉取中…';
+  try {
+    const res = await platformFetch(API_BASE + '/api/platform/alarm/ingest', {
+      method: 'POST', headers: platformHeaders(true), body: '{}',
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msgBox.textContent = '拉取完成: 扫描 ' + data.scanned + ' 行, 新增 ' + data.inserted + ' 条报警';
+    setTimeout(() => { msgBox.style.display = 'none'; }, 4000);
+    await fetchAlarms();
+    await fetchPatients();
+  } catch (e) {
+    msgBox.textContent = '拉取失败: ' + e.message;
+  }
+});
+
+/* ---- 报警处理 modal ---- */
+function openAlarmModal(alarmId) {
+  const a = alarmsState.alarms.find(x => x.id === alarmId);
+  if (!a) return;
+  amCurrentAlarm = a;
+  document.getElementById('amTitle').textContent = alarmTypeLabel(a.alarm_type) + ' · ' + (a.patient_name || a.patient_no || '');
+  document.getElementById('amDetailBox').innerHTML =
+    '患者: ' + escapeHtml(a.patient_name || '--') + ' (门诊号 ' + escapeHtml(a.patient_no || '--') + ')<br>' +
+    '设备: ' + escapeHtml(a.device_id || '--') + ' · 发生时间: ' + escapeHtml(a.occurred_at || '--') + '<br>' +
+    '摘要: ' + summarizeAlarmPayload(a) + ' · 定位: ' + mapLinkHtml(a.lat, a.lng) + '<br>' +
+    '当前状态: <span class="status-pill ' + escapeHtml(a.status) + '">' + escapeHtml(STATUS_LABELS[a.status] || a.status) + '</span>';
+
+  const hist = (a.followups || []);
+  document.getElementById('amHistoryBox').innerHTML = hist.length
+    ? hist.map(f => '<div class="fh-item">' +
+        '<b>' + escapeHtml(f.action) + '</b> ' + escapeHtml(f.result_text || '') +
+        '<div class="fh-meta">' + escapeHtml(f.operator || '匿名') + ' · ' + escapeHtml(f.created_at || '') + '</div>' +
+      '</div>').join('')
+    : '<div class="fh-item" style="color:#9ca3af;">暂无处理记录</div>';
+
+  document.getElementById('amOperator').value = localStorage.getItem(LS_OPERATOR_KEY) || '';
+  document.getElementById('amResultText').value = '';
+  document.getElementById('amMsg').textContent = '';
+
+  document.getElementById('amAckBtn').disabled = a.status !== 'new';
+  document.getElementById('amFollowBtn').disabled = !(a.status === 'acked' || a.status === 'followed');
+  document.getElementById('amCloseBtn').disabled = a.status === 'closed';
+
+  document.getElementById('alarmModal').classList.add('open');
+}
+document.getElementById('amClose').addEventListener('click', () => document.getElementById('alarmModal').classList.remove('open'));
+
+async function submitTransition(action) {
+  const msg = document.getElementById('amMsg');
+  if (!amCurrentAlarm) return;
+  const operator = document.getElementById('amOperator').value.trim();
+  localStorage.setItem(LS_OPERATOR_KEY, operator);
+  const resultText = document.getElementById('amResultText').value.trim();
+  const finalAction = action === 'follow' ? document.getElementById('amMethod').value : action;
+  msg.textContent = '提交中…'; msg.className = 'form-msg';
+  try {
+    const res = await platformFetch(API_BASE + '/api/platform/alarm/transition', {
+      method: 'POST', headers: platformHeaders(true),
+      body: JSON.stringify({ alarm_id: amCurrentAlarm.id, action: finalAction, result_text: resultText || null, operator: operator || null }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '已更新为 ' + (STATUS_LABELS[data.status] || data.status); msg.className = 'form-msg ok';
+    await fetchAlarms();
+    await fetchPatients();
+    setTimeout(() => document.getElementById('alarmModal').classList.remove('open'), 500);
+  } catch (e) {
+    msg.textContent = '操作失败: ' + e.message; msg.className = 'form-msg err';
+  }
+}
+document.getElementById('amAckBtn').addEventListener('click', () => submitTransition('ack'));
+document.getElementById('amFollowBtn').addEventListener('click', () => submitTransition('follow'));
+document.getElementById('amCloseBtn').addEventListener('click', () => submitTransition('close'));
+
+/* ================= 随访任务视图 (M5) ================= */
+document.getElementById('tkApiFooterShow').textContent = API_BASE;
+const tasksState = { tasks: [], today: null };
+let tcCurrentTask = null;
+
+async function fetchTasks() {
+  const wraps = ['tkOverdueWrap', 'tkTodayWrap', 'tkFutureWrap'].map(id => document.getElementById(id));
+  wraps.forEach(w => { w.innerHTML = '<div class="loading">正在加载…</div>'; });
+  try {
+    const res = await fetch(API_BASE + '/api/platform/tasks?horizon_days=7', { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    tasksState.tasks = data.tasks || [];
+    tasksState.today = data.today;
+    renderTasks();
+  } catch (e) {
+    wraps.forEach(w => { w.innerHTML = '<div class="error">加载随访任务失败: ' + escapeHtml(e.message) + '</div>'; });
+  }
+}
+
+function renderTasks() {
+  const today = tasksState.today;
+  const overdue = tasksState.tasks.filter(t => t.next_due < today);
+  const dueToday = tasksState.tasks.filter(t => t.next_due === today);
+  const future = tasksState.tasks.filter(t => t.next_due > today);
+  document.getElementById('tkOverdueMeta').textContent = overdue.length + ' 条';
+  document.getElementById('tkTodayMeta').textContent = dueToday.length + ' 条';
+  document.getElementById('tkFutureMeta').textContent = future.length + ' 条';
+  renderTaskGroup('tkOverdueWrap', overdue, '暂无逾期任务');
+  renderTaskGroup('tkTodayWrap', dueToday, '今日无到期任务');
+  renderTaskGroup('tkFutureWrap', future, '未来 7 天内暂无到期任务');
+}
+
+function renderTaskGroup(wrapId, list, emptyText) {
+  const wrap = document.getElementById(wrapId);
+  if (!list.length) {
+    wrap.innerHTML = '<div class="empty" style="padding:24px 20px;"><div class="icon" style="font-size:28px;">✅</div>' + emptyText + '</div>';
+    return;
+  }
+  wrap.innerHTML = list.map(t => {
+    const overdueTag = t.overdue_days > 0 ? '<span class="overdue-tag">逾期 ' + t.overdue_days + ' 天</span>' : '';
+    return '<div class="task-row">' +
+      '<div class="task-patient" onclick="goDetail(\'' + escapeHtml(t.patient_no) + '\')">' +
+        escapeHtml(t.patient_name || '(未命名)') +
+        '<span class="sub">门诊号 ' + escapeHtml(t.patient_no) + '</span></div>' +
+      '<div class="task-plan-name">' + escapeHtml(t.plan_name) +
+        (t.note ? '<span class="sub">' + escapeHtml(t.note) + '</span>' : '') + '</div>' +
+      '<div class="task-due">' + escapeHtml(t.next_due) + overdueTag + '</div>' +
+      '<div class="task-last-done">上次随访: ' + (t.last_done ? escapeHtml(t.last_done) : '--') + '</div>' +
+      '<div class="task-actions"><button onclick="openTaskCompleteModal(' + t.plan_id + ')">✓ 完成随访</button></div>' +
+    '</div>';
+  }).join('');
+}
+
+function openTaskCompleteModal(planId) {
+  const t = tasksState.tasks.find(x => x.plan_id === planId);
+  if (!t) return;
+  tcCurrentTask = t;
+  document.getElementById('tcTitle').textContent = '完成随访 · ' + (t.patient_name || t.patient_no);
+  document.getElementById('tcDetailBox').innerHTML =
+    '患者: ' + escapeHtml(t.patient_name || '--') + ' (门诊号 ' + escapeHtml(t.patient_no) + ')<br>' +
+    '计划: ' + escapeHtml(t.plan_name) + ' · 到期 ' + escapeHtml(t.next_due) +
+    (t.overdue_days > 0 ? ' <span class="overdue-tag">逾期 ' + t.overdue_days + ' 天</span>' : '') + '<br>' +
+    '周期: ' + (t.frequency_days ? ('每 ' + t.frequency_days + ' 天') : '一次性 (完成后自动停用)');
+  document.getElementById('tcMethod').value = 'call';
+  document.getElementById('tcOperator').value = localStorage.getItem(LS_OPERATOR_KEY) || '';
+  document.getElementById('tcResultText').value = '';
+  document.getElementById('tcMsg').textContent = '';
+  document.getElementById('taskCompleteModal').classList.add('open');
+}
+document.getElementById('tcClose').addEventListener('click', () => document.getElementById('taskCompleteModal').classList.remove('open'));
+document.getElementById('tcCancel').addEventListener('click', () => document.getElementById('taskCompleteModal').classList.remove('open'));
+
+document.getElementById('tcSubmit').addEventListener('click', async () => {
+  const msg = document.getElementById('tcMsg');
+  const btn = document.getElementById('tcSubmit');
+  if (!tcCurrentTask) return;
+  const operator = document.getElementById('tcOperator').value.trim();
+  localStorage.setItem(LS_OPERATOR_KEY, operator);
+  const method = document.getElementById('tcMethod').value;
+  const resultText = document.getElementById('tcResultText').value.trim();
+  msg.textContent = '提交中…'; msg.className = 'form-msg';
+  btn.disabled = true;
+  try {
+    const res = await platformFetch(API_BASE + '/api/platform/task/complete', {
+      method: 'POST', headers: platformHeaders(true),
+      body: JSON.stringify({
+        plan_id: tcCurrentTask.plan_id, method,
+        result_text: resultText || null, operator: operator || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '已完成' + (data.next_due ? (', 下次到期 ' + data.next_due) : ' (一次性计划已停用)');
+    msg.className = 'form-msg ok';
+    await fetchTasks();
+    fetchTasksBadge();
+    setTimeout(() => document.getElementById('taskCompleteModal').classList.remove('open'), 700);
+  } catch (e) {
+    msg.textContent = '操作失败: ' + e.message; msg.className = 'form-msg err';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('tkBackBtn').addEventListener('click', () => { location.hash = ''; });
+document.getElementById('tkRefreshBtn').addEventListener('click', fetchTasks);
+
+/* ================= 路由 ================= */
+function parseRoute() {
+  let m = location.hash.match(/^#\/patient\/([^/?]+)$/);
+  if (m) return { view: 'detail', patientNo: decodeURIComponent(m[1]) };
+  m = location.hash.match(/^#\/alarms(?:\?(.*))?$/);
+  if (m) {
+    const qs = new URLSearchParams(m[1] || '');
+    return { view: 'alarms', patientNo: qs.get('patientNo') || null };
+  }
+  if (location.hash.match(/^#\/tasks$/)) return { view: 'tasks' };
+  return { view: 'list' };
+}
+
+function route() {
+  const r = parseRoute();
+  document.getElementById('viewList').style.display = 'none';
+  document.getElementById('viewDetail').style.display = 'none';
+  document.getElementById('viewAlarms').style.display = 'none';
+  document.getElementById('viewTasks').style.display = 'none';
+
+  if (r.view === 'detail') {
+    document.getElementById('viewDetail').style.display = '';
+    if (detailState.patientNo !== r.patientNo) {
+      detailState.patientNo = r.patientNo;
+      detailState.days = 14;
+      document.querySelectorAll('#dayToggle button').forEach(b => b.classList.toggle('active', b.dataset.days === '14'));
+    }
+    fetchDetail();
+  } else if (r.view === 'alarms') {
+    document.getElementById('viewAlarms').style.display = '';
+    alarmsState.patientNo = r.patientNo;
+    document.getElementById('amSub').textContent = r.patientNo ? ('患者 ' + r.patientNo + ' 的报警') : '全部患者';
+    fetchAlarms();
+  } else if (r.view === 'tasks') {
+    document.getElementById('viewTasks').style.display = '';
+    fetchTasks();
+  } else {
+    document.getElementById('viewList').style.display = '';
+    fetchPatients();
+  }
+}
+
+window.addEventListener('hashchange', route);
+document.getElementById('refreshBtn').addEventListener('click', fetchPatients);
+document.getElementById('resetBtn').addEventListener('click', () => {
+  listState.search = ''; document.getElementById('searchInput').value = ''; renderPatients();
+});
+document.getElementById('searchInput').addEventListener('input', e => { listState.search = e.target.value; renderPatients(); });
+[document.getElementById('patientFormModal'), document.getElementById('bindModal'), document.getElementById('alarmModal'),
+ document.getElementById('taskCompleteModal'), document.getElementById('planFormModal')].forEach(mask => {
+  mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
+});
+
+route();
+</script>
+</body>
+</html>
