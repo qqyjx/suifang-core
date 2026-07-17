@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能随访系统 · 随访平台入口</title>
+<style>
+  :root {
+    --primary: #1565a8;
+    --primary-dark: #0d4a7d;
+    --accent: #18a999;
+    --bg: #f4f7fa;
+    --card: #ffffff;
+    --text: #2b3440;
+    --muted: #6b7886;
+    --border: #dde5ec;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.7; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+  header { background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 60%, var(--accent) 100%);
+    color: #fff; padding: 40px 20px 34px; }
+  header h1 { font-size: 26px; font-weight: 700; letter-spacing: 1px; }
+  header .sub { margin-top: 10px; font-size: 14px; opacity: .92; }
+  header .sub2 { margin-top: 4px; font-size: 13px; opacity: .8; }
+
+  main { padding: 32px 20px 50px; }
+  section { margin-bottom: 40px; }
+  h2 { font-size: 19px; color: var(--primary-dark); padding-left: 12px;
+    border-left: 5px solid var(--accent); margin-bottom: 16px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .cards.small { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+
+  a.card { display: block; background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 22px; text-decoration: none; color: var(--text);
+    box-shadow: 0 1px 4px rgba(20,40,60,.05); transition: box-shadow .15s, transform .15s; }
+  a.card:hover { box-shadow: 0 6px 18px rgba(21,101,168,.18); transform: translateY(-1px); }
+
+  .card .icon { font-size: 26px; margin-bottom: 8px; }
+  .card .title { font-size: 16px; font-weight: 700; color: var(--primary-dark); margin-bottom: 6px; }
+  .card .desc { font-size: 13px; color: var(--muted); }
+
+  .card.primary { border-color: var(--primary); background: linear-gradient(180deg, #fff 0%, var(--bg) 100%); }
+  .card.demo { border-color: var(--accent); }
+
+  .cards.small .card .icon { font-size: 22px; }
+  .cards.small .card .title { font-size: 14.5px; }
+  .cards.small .card .desc { font-size: 12.5px; }
+
+  footer { border-top: 1px solid var(--border); padding: 22px 20px 40px; text-align: center;
+    font-size: 12.5px; color: var(--muted); }
+  footer a { color: var(--primary); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>智能随访系统</h1>
+    <div class="sub">以患者为中心的随访平台 · 三链路(iwown 4G / S101·R04 / 诊脉仪)设备数据采集底座</div>
+    <div class="sub2">数据采集底座生产版本 5.06-v10 · 随访平台 1.0/1.1(M0-M5)已上线生产</div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section>
+    <h2>随访平台</h2>
+    <div class="cards">
+      <a class="card primary" href="prototype/platform.html">
+        <div class="icon">🩹</div>
+        <div class="title">随访平台(生产入口)</div>
+        <div class="desc">真实数据工作台:建档 / 绑定 / 体征趋势 / 报警工作台 / 佩戴依从性 / 随访任务</div>
+      </a>
+      <a class="card demo" href="prototype/platform-demo.html">
+        <div class="icon">🎭</div>
+        <div class="title">交互演示版</div>
+        <div class="desc">内嵌演示数据,全交互,刷新即重置;演示 / 培训用,不碰生产</div>
+      </a>
+    </div>
+  </section>
+
+  <section>
+    <h2>文档</h2>
+    <div class="cards small">
+      <a class="card" href="docs/">
+        <div class="icon">📚</div>
+        <div class="title">文档中心</div>
+        <div class="desc">全部使用与设计文档</div>
+      </a>
+      <a class="card" href="docs/随访平台使用说明.html">
+        <div class="icon">🏥</div>
+        <div class="title">平台使用说明(医护)</div>
+        <div class="desc">建档 / 绑定 / 报警处理操作指南</div>
+      </a>
+      <a class="card" href="docs/随访平台1.0设计方案.html">
+        <div class="icon">📐</div>
+        <div class="title">平台设计方案</div>
+        <div class="desc">架构 / 功能模块 / 数据模型 / API</div>
+      </a>
+    </div>
+  </section>
+
+  <section>
+    <h2>设备看板(单设备视图)</h2>
+    <div class="cards small">
+      <a class="card" href="prototype/data-dashboard.html">
+        <div class="icon">⌚</div>
+        <div class="title">S101</div>
+        <div class="desc">腕戴式手表 · BLE 采集看板</div>
+      </a>
+      <a class="card" href="prototype/pulse-dashboard.html">
+        <div class="icon">🩺</div>
+        <div class="title">诊脉仪</div>
+        <div class="desc">导出解析 · 脉象数据看板</div>
+      </a>
+      <a class="card" href="prototype/iwown-dashboard.html">
+        <div class="icon">📶</div>
+        <div class="title">iwown 4G</div>
+        <div class="desc">4G 直传手表 · 采集看板</div>
+      </a>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  平台 1.0+1.1(M0-M5)已上线生产 · 数据采集底座 5.06-v10 · 3 款二类医疗器械设备链路 ·
+  <a href="https://github.com/qqyjx/suifang">GitHub 仓库</a>
+</footer>
+
+</body>
+</html>
