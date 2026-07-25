@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>智能随访 · 随访平台 展示版</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { -webkit-text-size-adjust: 100%; }
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+  "Microsoft YaHei", sans-serif; color: #1f2937; background: #f5f7fa;
+  padding: 20px 16px 64px; min-height: 100vh; font-size: 15px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased; }
+.container { max-width: 1200px; margin: 0 auto; }
+
+/* Header */
+.header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%); color: #fff;
+  border-radius: 16px; padding: 24px 28px; margin-bottom: 16px;
+  box-shadow: 0 4px 16px rgba(8,145,178,0.25);
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.header h1 { font-size: 22px; font-weight: 600; letter-spacing: 1px; margin-bottom: 4px; }
+.header .sub { font-size: 13px; opacity: 0.9; }
+.header .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.header .btn { background: rgba(255,255,255,0.2); color: #fff; padding: 8px 16px;
+  border-radius: 20px; font-size: 13px; cursor: pointer; border: 1px solid rgba(255,255,255,0.3);
+  transition: background 0.2s; }
+.header .btn:hover { background: rgba(255,255,255,0.32); }
+.header .btn.primary { background: #fff; color: #0891b2; border-color: #fff; font-weight: 600; }
+.header .btn.primary:hover { background: #ecfeff; }
+
+/* Status bar */
+.status-bar { background: #fff; border-radius: 12px; padding: 14px 20px; margin-bottom: 16px;
+  display: flex; flex-wrap: wrap; gap: 18px; align-items: center; font-size: 13px; color: #6b7280;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.status-bar .item { display: flex; align-items: center; gap: 6px; }
+.status-bar .label { color: #9ca3af; }
+.status-bar .value { color: #1f2937; font-weight: 500; }
+.status-bar a.link { color: #0891b2; cursor: pointer; text-decoration: none; }
+.status-bar a.link:hover { text-decoration: underline; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: #2faa55; } .dot-err { background: #d04848; } .dot-warn { background: #f59e0b; }
+
+.banner { border-radius: 10px; padding: 13px 18px; margin-bottom: 16px; font-size: 13px; }
+.banner-warn { background: #fffbeb; border-left: 4px solid #f59e0b; color: #92400e; }
+.banner code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px; }
+
+.section-title { font-size: 15px; font-weight: 600; color: #1f2937; margin: 20px 0 12px;
+  padding-left: 12px; border-left: 4px solid #0891b2; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.section-title .meta { font-size: 12px; color: #9ca3af; font-weight: 400; }
+.section-title .meta a.link { color: #0891b2; text-decoration: none; }
+.section-title .meta a.link:hover { text-decoration: underline; }
+
+/* Toolbar */
+.toolbar { display: grid; grid-template-columns: 1.5fr auto; gap: 10px; margin-bottom: 16px; }
+.search-wrap { position: relative; }
+.search-wrap .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #9ca3af; pointer-events: none; font-size: 14px; }
+.search-wrap input { width: 100%; height: 38px; padding: 0 12px 0 34px; border: 1px solid #e5e7eb;
+  border-radius: 8px; font-size: 14px; background: #fff; font-family: inherit; outline: none; transition: border-color .15s, box-shadow .15s; }
+.search-wrap input:focus { border-color: #0891b2; box-shadow: 0 0 0 3px rgba(8,145,178,0.12); }
+.toolbar button { height: 38px; padding: 0 14px; border: 1px solid #e5e7eb;
+  border-radius: 8px; background: #fff; font-size: 14px; cursor: pointer; font-family: inherit; color: #374151; }
+.toolbar button:hover { background: #f9fafb; }
+
+/* Patient cards */
+.patients { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 760px) { .patients { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1140px) { .patients { grid-template-columns: 1fr 1fr 1fr; } }
+
+.patient-card { background: #fff; border-radius: 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  overflow: hidden; transition: box-shadow .15s, transform .15s; }
+.patient-card:hover { box-shadow: 0 4px 18px rgba(8,145,178,.18); }
+.patient-header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%);
+  color: #fff; padding: 14px 18px; cursor: pointer; position: relative; }
+.patient-name { font-size: 17px; font-weight: 600; }
+.patient-no { font-size: 12px; opacity: .92; margin-top: 2px; letter-spacing: .5px; }
+.patient-tag { display: inline-block; background: rgba(255,255,255,0.22);
+  padding: 2px 9px; border-radius: 10px; font-size: 11px; margin-top: 6px; letter-spacing: 0.5px; }
+.patient-body { padding: 14px 18px; cursor: pointer; }
+.badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.bind-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.bind-badge.on.iwown { background: #ecfeff; color: #0e7490; }
+.bind-badge.on.s101 { background: #eef4ff; color: #2c6ef2; }
+.bind-badge.on.zmy { background: #fef3c7; color: #b45309; }
+.bind-badge.off { background: #f3f4f6; color: #9ca3af; }
+.metric-row { display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 0; font-size: 12.5px; border-bottom: 1px solid #f0f2f5; }
+.metric-row:last-child { border-bottom: none; }
+.metric-row .key { color: #6b7280; }
+.metric-row .val { color: #1f2937; font-weight: 500; }
+.metric-row .val.muted { color: #9ca3af; font-weight: 400; }
+.card-actions { display: flex; gap: 8px; padding: 10px 18px 14px; border-top: 1px solid #f3f4f6; }
+.card-actions button { flex: 1; height: 32px; border-radius: 8px; border: 1px solid #e5e7eb;
+  background: #fff; color: #374151; font-size: 12.5px; cursor: pointer; font-family: inherit; }
+.card-actions button:hover { background: #f0fdfd; border-color: #0891b2; color: #0891b2; }
+.empty, .loading, .error { background: #fff; border-radius: 12px; padding: 56px 20px; text-align: center;
+  color: #9ca3af; font-size: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); grid-column: 1 / -1; }
+.empty .icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
+.error { color: #d04848; }
+
+/* Detail view */
+.back-btn { display: inline-flex; align-items: center; gap: 6px; background: #fff; color: #374151;
+  border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer;
+  margin-bottom: 14px; font-family: inherit; }
+.back-btn:hover { border-color: #0891b2; color: #0891b2; }
+
+.detail-header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%); color: #fff;
+  border-radius: 16px; padding: 22px 26px; margin-bottom: 16px; display: flex; justify-content: space-between;
+  align-items: flex-start; flex-wrap: wrap; gap: 14px; box-shadow: 0 4px 16px rgba(8,145,178,0.25); }
+.detail-header h2 { font-size: 21px; font-weight: 600; }
+.detail-header .sub { font-size: 13px; opacity: .92; margin-top: 6px; }
+.day-toggle { display: flex; gap: 4px; background: rgba(255,255,255,.18); border-radius: 10px; padding: 4px; }
+.day-toggle button { background: transparent; border: none; color: #fff; opacity: .8; padding: 6px 14px;
+  border-radius: 7px; font-size: 13px; cursor: pointer; font-family: inherit; }
+.day-toggle button.active { background: #fff; color: #0891b2; opacity: 1; font-weight: 600; }
+
+.status-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.status-card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  flex: 1; min-width: 240px; border-left: 3px solid #0891b2; }
+.status-card.zmy { border-left-color: #b45309; }
+.status-card h4 { font-size: 13px; color: #6b7280; margin-bottom: 8px; font-weight: 600; }
+.status-card .row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+.status-card .row .k { color: #9ca3af; } .status-card .row .v { color: #1f2937; font-weight: 500; }
+.empty-inline { color: #9ca3af; font-size: 13px; padding: 8px 0; }
+
+.charts-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 900px) { .charts-grid { grid-template-columns: 1fr 1fr; } }
+.chart-card { background: #fff; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+.chart-card .chart-title { font-size: 13.5px; font-weight: 600; color: #1f2937; margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: space-between; }
+.legend { display: flex; gap: 12px; font-size: 11.5px; color: #6b7280; margin-bottom: 8px; flex-wrap: wrap; }
+.legend .dot-lg { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+canvas.trend { width: 100%; height: 150px; display: block; }
+
+/* Modal */
+.modal-mask { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none;
+  align-items: flex-start; justify-content: center; z-index: 100; padding: 24px 12px; overflow-y: auto; }
+.modal-mask.open { display: flex; }
+.modal { background: #fff; border-radius: 16px; max-width: 480px; width: 100%; margin: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,.25); overflow: hidden; }
+.modal-header { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 100%); color: #fff;
+  padding: 16px 22px; display: flex; justify-content: space-between; align-items: center; }
+.modal-header h3 { font-size: 16px; font-weight: 600; }
+.modal-close { background: rgba(255,255,255,.2); color: #fff; border: 0; width: 28px; height: 28px;
+  border-radius: 50%; cursor: pointer; font-size: 16px; line-height: 1; }
+.modal-close:hover { background: rgba(255,255,255,.32); }
+.modal-body { padding: 20px 22px; }
+.form-row { margin-bottom: 12px; }
+.form-row label { display: block; font-size: 12.5px; color: #6b7280; margin-bottom: 4px; }
+.form-row input, .form-row select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #e5e7eb;
+  border-radius: 8px; font-size: 13.5px; font-family: inherit; outline: none; }
+.form-row input:focus, .form-row select:focus { border-color: #0891b2; }
+.form-hint { font-size: 11.5px; color: #9ca3af; margin-top: 8px; }
+.form-actions { display: flex; gap: 10px; margin-top: 16px; }
+.form-actions button { flex: 1; height: 38px; border-radius: 8px; border: 1px solid #e5e7eb; font-size: 13.5px;
+  cursor: pointer; font-family: inherit; background: #fff; color: #374151; }
+.form-actions button.primary { background: #0891b2; color: #fff; border-color: #0891b2; }
+.form-actions button.primary:hover { background: #0e7490; }
+.form-actions button:hover { background: #f9fafb; }
+.form-msg { font-size: 12.5px; margin-top: 10px; }
+.form-msg.err { color: #d04848; } .form-msg.ok { color: #2faa55; }
+
+.footer-note { margin-top: 24px; font-size: 12px; color: #9ca3af; text-align: center; line-height: 1.7; }
+.footer-note a { color: #6b7280; text-decoration: underline; }
+</style>
+</head>
+<body>
+<div style="background:#f0fdfd; border-bottom:2px solid #0891b2; color:#0e7490; font-size:13px;
+  padding:10px 16px; display:flex; align-items:center; justify-content:center; gap:14px; flex-wrap:wrap; text-align:center;">
+  <span><b>随访平台 · 展示版</b> · 演示数据内嵌于本页面, 可直接交互试用, 不连接任何服务器 · 刷新即重置</span>
+  <button type="button" onclick="location.reload()" style="background:#fff; border:1px solid #0891b2; color:#0e7490;
+    border-radius:8px; padding:4px 12px; font-size:12.5px; cursor:pointer; font-family:inherit;">重置演示数据</button>
+</div>
+<div class="container">
+
+  <!-- ============ 列表视图 ============ -->
+  <div id="viewList">
+    <div class="header">
+      <div>
+        <h1>随访平台 1.0 · 患者中心</h1>
+        <div class="sub">以患者为中心 · 建档与设备绑定 · 跨链路(iwown 4G / S101·R04 / 诊脉仪)体征数据视图</div>
+      </div>
+      <div class="actions">
+        <div class="btn" id="refreshBtn">⟳ 刷新</div>
+        <div class="btn primary" id="addPatientBtn">＋ 建档</div>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <div class="item"><span class="dot" id="dot"></span><span class="label">服务</span><span class="value" id="svcState">检测中…</span></div>
+      <div class="item"><span class="label">患者数</span><span class="value" id="patientCount">--</span></div>
+      <div class="item"><span class="label">最后刷新</span><span class="value" id="lastRefresh">--</span></div>
+    </div>
+
+    <div id="offlineBanner" class="banner banner-warn" style="display:none;">
+      ⚠ 演示数据未能载入 (<code id="offlineApiShow"></code>)。请用现代浏览器重新打开本页面。
+    </div>
+
+    <div class="section-title">患者列表 <span class="meta" id="listMeta"></span></div>
+
+    <div class="toolbar">
+      <div class="search-wrap">
+        <span class="icon">🔍</span>
+        <input type="text" id="searchInput" placeholder="搜索姓名 / 门诊号 / 分组" autocomplete="off">
+      </div>
+      <button type="button" id="resetBtn">重置</button>
+    </div>
+
+    <div id="patientsWrap" class="patients">
+      <div class="loading">正在加载患者列表…</div>
+    </div>
+
+    <div class="footer-note">
+      展示版 · 演示数据内嵌于本页面, 不连接任何服务器 · 刷新即恢复初始状态
+      <code id="apiFooterShow" style="display:none;">--</code>
+    </div>
+  </div>
+
+  <!-- ============ 详情视图 ============ -->
+  <div id="viewDetail" style="display:none;">
+    <button class="back-btn" id="backBtn">‹ 返回患者列表</button>
+
+    <div class="detail-header">
+      <div>
+        <h2 id="dName">--</h2>
+        <div class="sub" id="dSub">--</div>
+      </div>
+      <div class="day-toggle" id="dayToggle">
+        <button data-days="7">7 天</button>
+        <button data-days="14" class="active">14 天</button>
+        <button data-days="30">30 天</button>
+      </div>
+    </div>
+
+    <div id="detailLoading" class="loading">载入中…</div>
+    <div id="detailError" class="error" style="display:none;"></div>
+
+    <div id="detailContent" style="display:none;">
+      <div class="status-row">
+        <div class="status-card" id="iwownStatusCard">
+          <h4>📶 iwown 设备状态</h4>
+          <div class="empty-inline">--</div>
+        </div>
+        <div class="status-card zmy" id="zmyStatusCard">
+          <h4>🩺 诊脉仪最新一次</h4>
+          <div class="empty-inline">--</div>
+        </div>
+      </div>
+
+      <div class="section-title">体征趋势</div>
+      <div class="charts-grid">
+        <div class="chart-card">
+          <div class="chart-title">心率 (bpm)</div>
+          <div class="legend" id="legend-hr"></div>
+          <canvas class="trend" id="chart-hr" width="480" height="150"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">血氧 (%)</div>
+          <div class="legend" id="legend-spo2"></div>
+          <canvas class="trend" id="chart-spo2" width="480" height="150"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">血压 (mmHg)</div>
+          <div class="legend" id="legend-bp"></div>
+          <canvas class="trend" id="chart-bp" width="480" height="150"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">体温 (℃)</div>
+          <div class="legend" id="legend-temp"></div>
+          <canvas class="trend" id="chart-temp" width="480" height="150"></canvas>
+        </div>
+        <div class="chart-card" style="grid-column: 1 / -1;">
+          <div class="chart-title">步数 (步/日)</div>
+          <div class="legend" id="legend-step"></div>
+          <canvas class="trend" id="chart-step" width="960" height="150"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 建档/改档 modal -->
+<div class="modal-mask" id="patientFormModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="pfTitle">建档</h3>
+      <button class="modal-close" id="pfClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>门诊号 (patient_no, 主键) *</label>
+        <input type="text" id="pfPatientNo" placeholder="例: DEV0003">
+      </div>
+      <div class="form-row"><label>姓名</label><input type="text" id="pfName"></div>
+      <div class="form-row">
+        <label>性别</label>
+        <select id="pfGender"><option value="">未填</option><option value="F">女</option><option value="M">男</option></select>
+      </div>
+      <div class="form-row"><label>年龄</label><input type="number" id="pfAge" min="0" max="150"></div>
+      <div class="form-row"><label>分组/队列</label><input type="text" id="pfGroup"></div>
+      <div class="form-row"><label>备注</label><input type="text" id="pfNote"></div>
+      <div class="form-msg" id="pfMsg"></div>
+      <div class="form-actions">
+        <button id="pfCancel">取消</button>
+        <button class="primary" id="pfSave">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 绑定/解绑 modal -->
+<div class="modal-mask" id="bindModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="bmTitle">绑定链路</h3>
+      <button class="modal-close" id="bmClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>链路</label>
+        <select id="bmChain">
+          <option value="iwown">iwown 4G 手表 (key = device_id)</option>
+          <option value="zhenmaiyi">诊脉仪 (key = case_id)</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label id="bmKeyLabel">device_id</label>
+        <input type="text" id="bmKey" placeholder="例: DEVWATCH00000001">
+      </div>
+      <div class="form-hint">留空 key 并勾选"解绑"可解除当前绑定。</div>
+      <div class="form-row" style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+        <input type="checkbox" id="bmUnbind" style="width:auto; height:auto;">
+        <label style="margin:0;">解绑 (清空该链路绑定)</label>
+      </div>
+      <div class="form-msg" id="bmMsg"></div>
+      <div class="form-actions">
+        <button id="bmCancel">取消</button>
+        <button class="primary" id="bmSave">提交</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<script>
+
+/* ================= 展示版内嵌数据 shim =================
+   用捕获自联调服务器的真实响应作为固定数据, 覆盖 window.fetch, 使页面在没有任何后端、
+   不发起任何网络请求的情况下可交互运行。本展示版只包含"患者中心 + 体征视图"两个模块,
+   对应 5 个接口:
+     GET  /api/status
+     GET  /api/platform/patients
+     GET  /api/platform/patient/vitals
+     POST /api/platform/patient        (建档 / 改档)
+     POST /api/platform/bind           (设备链路绑定 / 解绑)
+   所有写操作只改内存态, 刷新页面即恢复初始快照。 */
+(function () {
+  'use strict';
+
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function nowStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
+      pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+
+  /* ---- 患者基础档案 ---- */
+  var PATIENTS = [
+    { patient_no: 'DEV0001', name: '测试患者A', gender: 'F', age: 68, group_tag: '演示队列',
+      note: 'iwown 4G 手表已绑定, 有连续日趋势', zhenmaiyi_case_id: null,
+      created_at: '2026-07-15 01:53:06', updated_at: '2026-07-15 01:53:06',
+      bindings: { iwown: 'DEVWATCH00000001', s101: false, zhenmaiyi: null },
+      last_upload: { iwown: '2026-07-16 04:00:00', s101: null } },
+    { patient_no: 'DEV0002', name: '测试患者B', gender: 'M', age: 55, group_tag: '演示队列',
+      note: '仅 S101/R04 链路数据, 未绑定 iwown', zhenmaiyi_case_id: null,
+      created_at: '2026-07-15 01:53:06', updated_at: '2026-07-15 01:53:06',
+      bindings: { iwown: null, s101: true, zhenmaiyi: null },
+      last_upload: { iwown: null, s101: '2026-07-15T20:25:00.000Z' } },
+    { patient_no: 'DEV0003', name: '测试患者C', gender: 'F', age: 72, group_tag: '演示队列',
+      note: '新建档患者, 尚未绑定任何设备', zhenmaiyi_case_id: null,
+      created_at: '2026-07-15 01:53:06', updated_at: '2026-07-15 01:53:06',
+      bindings: { iwown: null, s101: false, zhenmaiyi: null },
+      last_upload: { iwown: null, s101: null } },
+  ];
+
+  /* ---- iwown 4G 手表链路日趋势 (DEV0001): 07-12/13/14/16 为联调期间真机采集的实测值,
+     07-03~07-11 为按实测趋势外推的演示补全值; 07-15 实测缺失(当天设备未产生体征上传),
+     此处如实保留该缺口, 体征趋势图上会呈现为断点。 ---- */
+  var IWOWN_DAILY_DEV0001 = [
+    { date: '2026-07-03', hr_avg: 68.7, hr_min: 58, hr_max: 82, spo2_avg: 95.4, spo2_min: 93, spo2_max: 97, sbp: 116.9, dbp: 73.2, temperature: 36.45, step: 7061 },
+    { date: '2026-07-04', hr_avg: 66.7, hr_min: 56, hr_max: 77, spo2_avg: 95.1, spo2_min: 92, spo2_max: 97, sbp: 117.4, dbp: 73.4, temperature: 36.49, step: 8780 },
+    { date: '2026-07-05', hr_avg: 64.2, hr_min: 52, hr_max: 74, spo2_avg: 95.5, spo2_min: 93, spo2_max: 97, sbp: 118.4, dbp: 72.9, temperature: 36.42, step: 8735 },
+    { date: '2026-07-06', hr_avg: 63.4, hr_min: 52, hr_max: 72, spo2_avg: 95.2, spo2_min: 93, spo2_max: 97, sbp: 116.1, dbp: 72.8, temperature: 36.34, step: 8764 },
+    { date: '2026-07-07', hr_avg: 62.7, hr_min: 51, hr_max: 76, spo2_avg: 94.8, spo2_min: 91, spo2_max: 97, sbp: 113.9, dbp: 73.3, temperature: 36.39, step: 7928 },
+    { date: '2026-07-08', hr_avg: 63.4, hr_min: 52, hr_max: 75, spo2_avg: 94.6, spo2_min: 91, spo2_max: 96, sbp: 113.3, dbp: 72.4, temperature: 36.34, step: 8493 },
+    { date: '2026-07-09', hr_avg: 62.1, hr_min: 53, hr_max: 72, spo2_avg: 94.6, spo2_min: 91, spo2_max: 96, sbp: 112.1, dbp: 73.7, temperature: 36.38, step: 8683 },
+    { date: '2026-07-10', hr_avg: 60.0, hr_min: 48, hr_max: 70, spo2_avg: 94.5, spo2_min: 91, spo2_max: 96, sbp: 110.9, dbp: 72.8, temperature: 36.47, step: 8316 },
+    { date: '2026-07-11', hr_avg: 60.0, hr_min: 50, hr_max: 73, spo2_avg: 94.5, spo2_min: 92, spo2_max: 96, sbp: 110.0, dbp: 73.0, temperature: 36.42, step: 7283 },
+    { date: '2026-07-12', hr_avg: 75.0, hr_min: 58, hr_max: 88, spo2_avg: 96.3, spo2_min: 93, spo2_max: 98, sbp: 116.7, dbp: 77.7, temperature: 36.3, step: 7073 },
+    { date: '2026-07-13', hr_avg: 73.8, hr_min: 58, hr_max: 99, spo2_avg: 97.1, spo2_min: 92, spo2_max: 100, sbp: 122.0, dbp: 75.6, temperature: 36.59, step: 7717 },
+    { date: '2026-07-14', hr_avg: 76.5, hr_min: 55, hr_max: 102, spo2_avg: 96.4, spo2_min: 92, spo2_max: 100, sbp: 121.8, dbp: 75.1, temperature: 36.48, step: 7779 },
+    { date: '2026-07-16', hr_avg: 74.0, hr_min: 58, hr_max: 98, spo2_avg: 97.6, spo2_min: 94, spo2_max: 100, sbp: 117.8, dbp: 79.4, temperature: 36.54, step: 8480 },
+  ];
+  /* ---- S101/R04 链路日趋势 (DEV0002): 07-13/14/15 为实测值, 07-02~07-12 为按实测趋势外推的
+     演示补全值。 ---- */
+  var S101_DAILY_DEV0002 = [
+    { date: '2026-07-02', hr_avg: 73.0, hr_min: 71, hr_max: 75, spo2_avg: 97.1, spo2_min: 96, spo2_max: 98, sbp: 121.0, dbp: 76.6, temperature: 36.55, step: 8238 },
+    { date: '2026-07-03', hr_avg: 75.0, hr_min: 73, hr_max: 77, spo2_avg: 97.0, spo2_min: 96, spo2_max: 98, sbp: 119.9, dbp: 78.1, temperature: 36.55, step: 7831 },
+    { date: '2026-07-04', hr_avg: 73.0, hr_min: 71, hr_max: 75, spo2_avg: 97.4, spo2_min: 96, spo2_max: 98, sbp: 118.5, dbp: 77.1, temperature: 36.59, step: 7941 },
+    { date: '2026-07-05', hr_avg: 71.0, hr_min: 69, hr_max: 73, spo2_avg: 97.3, spo2_min: 96, spo2_max: 98, sbp: 118.9, dbp: 77.0, temperature: 36.54, step: 8007 },
+    { date: '2026-07-06', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 97.5, spo2_min: 96, spo2_max: 98, sbp: 117.4, dbp: 78.2, temperature: 36.59, step: 8294 },
+    { date: '2026-07-07', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 97.1, spo2_min: 96, spo2_max: 98, sbp: 117.1, dbp: 78.1, temperature: 36.68, step: 8690 },
+    { date: '2026-07-08', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 97.6, spo2_min: 96, spo2_max: 98, sbp: 118.1, dbp: 78.1, temperature: 36.6, step: 8830 },
+    { date: '2026-07-09', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 97.9, spo2_min: 96, spo2_max: 98, sbp: 118.1, dbp: 77.2, temperature: 36.57, step: 8495 },
+    { date: '2026-07-10', hr_avg: 71.0, hr_min: 69, hr_max: 73, spo2_avg: 98.4, spo2_min: 97, spo2_max: 99, sbp: 119.8, dbp: 78.5, temperature: 36.59, step: 8495 },
+    { date: '2026-07-11', hr_avg: 69.0, hr_min: 67, hr_max: 71, spo2_avg: 98.0, spo2_min: 97, spo2_max: 99, sbp: 119.3, dbp: 80.0, temperature: 36.65, step: 8240 },
+    { date: '2026-07-12', hr_avg: 67.0, hr_min: 65, hr_max: 69, spo2_avg: 97.7, spo2_min: 96, spo2_max: 98, sbp: 119.6, dbp: 78.7, temperature: 36.7, step: 8575 },
+    { date: '2026-07-13', hr_avg: 73.5, hr_min: 72, hr_max: 75, spo2_avg: 97.5, spo2_min: 97, spo2_max: 98, sbp: 120.0, dbp: 76.5, temperature: 36.5, step: 8700 },
+    { date: '2026-07-14', hr_avg: 72.0, hr_min: 70, hr_max: 74, spo2_avg: 96.5, spo2_min: 96, spo2_max: 97, sbp: 119.5, dbp: 76.5, temperature: 36.5, step: 8100 },
+    { date: '2026-07-15', hr_avg: 75.0, hr_min: 73, hr_max: 77, spo2_avg: 98.0, spo2_min: 97, spo2_max: 99, sbp: 123.5, dbp: 77.0, temperature: 36.6, step: 9200 },
+  ];
+
+  var VITALS_EXTRA = {
+    DEV0001: {
+      iwown: { daily: IWOWN_DAILY_DEV0001, device: { device_id: 'DEVWATCH00000001', battery: 80, rssi: -68, last_seen: '2026-07-15 07:03:11' } },
+      s101: { count: 0, devices: [], earliest: null, latest: null, daily: [] },
+      zhenmaiyi: null,
+    },
+    DEV0002: {
+      iwown: { daily: [], device: null },
+      s101: { count: 240, devices: [9001], earliest: '2026-07-13T08:15:00.000Z', latest: '2026-07-15T20:25:00.000Z', daily: S101_DAILY_DEV0002 },
+      zhenmaiyi: null,
+    },
+    DEV0003: {
+      iwown: { daily: [], device: null },
+      s101: { count: 0, devices: [], earliest: null, latest: null, daily: [] },
+      zhenmaiyi: null,
+    },
+  };
+
+  var STATUS_FIXTURE = { status: 'running', mysql: 'connected', total_devices: 8, error: null };
+
+  /* ---- 内存态存储 (刷新页面即用上面的初始快照重建) ---- */
+  var store = {
+    patients: clone(PATIENTS),
+    vitals: clone(VITALS_EXTRA),
+  };
+
+  function findPatient(no) {
+    for (var i = 0; i < store.patients.length; i++) if (store.patients[i].patient_no === no) return store.patients[i];
+    return null;
+  }
+
+  function jsonResponse(status, data) {
+    return {
+      ok: status >= 200 && status < 300,
+      status: status,
+      json: function () { return Promise.resolve(data); },
+      text: function () { return Promise.resolve(JSON.stringify(data)); },
+    };
+  }
+
+  function parseUrl(u) {
+    try { return new URL(u, location.href); } catch (e) { return null; }
+  }
+
+  function getPatientsPayload() {
+    return { ok: true, patients: clone(store.patients) };
+  }
+
+  function lastNDays(daily, days) {
+    return days && daily.length > days ? daily.slice(daily.length - days) : daily;
+  }
+
+  function getVitalsPayload(patientNo, days) {
+    var p = findPatient(patientNo);
+    if (!p) return { ok: false, error: '未找到患者 ' + patientNo };
+    var v = store.vitals[patientNo] || { iwown: { daily: [], device: null }, s101: { count: 0, devices: [], earliest: null, latest: null, daily: [] }, zhenmaiyi: null };
+    return {
+      ok: true,
+      patient: {
+        patient_no: p.patient_no, name: p.name, gender: p.gender, age: p.age, group_tag: p.group_tag,
+        zhenmaiyi_case_id: p.zhenmaiyi_case_id, note: p.note, created_at: p.created_at, updated_at: p.updated_at,
+      },
+      iwown: { daily: lastNDays(v.iwown.daily, days), device: v.iwown.device },
+      s101: { count: v.s101.count, devices: v.s101.devices, earliest: v.s101.earliest, latest: v.s101.latest, daily: lastNDays(v.s101.daily, days) },
+      zhenmaiyi: v.zhenmaiyi,
+    };
+  }
+
+  function upsertPatientPayload(body) {
+    var no = body.patient_no;
+    if (!no) return { ok: false, error: '门诊号必填' };
+    var existing = findPatient(no);
+    if (existing) {
+      existing.name = body.name || existing.name;
+      existing.gender = body.gender || existing.gender;
+      existing.age = body.age != null ? body.age : existing.age;
+      existing.group_tag = body.group_tag || existing.group_tag;
+      existing.note = body.note || existing.note;
+      existing.updated_at = nowStr();
+      return { ok: true, action: 'updated' };
+    }
+    var np = {
+      patient_no: no, name: body.name || '', gender: body.gender || null, age: body.age != null ? body.age : null,
+      group_tag: body.group_tag || '', note: body.note || '', zhenmaiyi_case_id: null,
+      created_at: nowStr(), updated_at: nowStr(),
+      bindings: { iwown: null, s101: false, zhenmaiyi: null },
+      last_upload: { iwown: null, s101: null },
+    };
+    store.patients.push(np);
+    store.vitals[no] = { iwown: { daily: [], device: null }, s101: { count: 0, devices: [], earliest: null, latest: null, daily: [] }, zhenmaiyi: null };
+    return { ok: true, action: 'created' };
+  }
+
+  function bindPayload(body) {
+    var p = findPatient(body.patient_no);
+    if (!p) return { ok: false, error: '未找到患者 ' + body.patient_no };
+    var chain = body.chain, unbind = !!body.unbind, key = body.key || null;
+    if (chain === 'iwown') {
+      p.bindings.iwown = unbind ? null : key;
+      if (!unbind && key) p.last_upload.iwown = nowStr();
+    } else if (chain === 'zhenmaiyi') {
+      p.bindings.zhenmaiyi = unbind ? null : key;
+      p.zhenmaiyi_case_id = unbind ? null : key;
+    } else {
+      return { ok: false, error: '未知链路 ' + chain };
+    }
+    p.updated_at = nowStr();
+    return { ok: true };
+  }
+
+  window.fetch = function (url, options) {
+    var u = parseUrl(url);
+    var path = u ? u.pathname : String(url);
+    var search = u ? u.searchParams : new URLSearchParams();
+    var method = (options && options.method) || 'GET';
+    var bodyObj = {};
+    try { bodyObj = options && options.body ? JSON.parse(options.body) : {}; } catch (e) { bodyObj = {}; }
+
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        if (method === 'GET' && /\/api\/status$/.test(path)) {
+          return resolve(jsonResponse(200, clone(STATUS_FIXTURE)));
+        }
+        if (method === 'GET' && /\/api\/platform\/patients$/.test(path)) {
+          return resolve(jsonResponse(200, getPatientsPayload()));
+        }
+        if (method === 'GET' && /\/api\/platform\/patient\/vitals$/.test(path)) {
+          var vdays = parseInt(search.get('days') || '14', 10);
+          return resolve(jsonResponse(200, getVitalsPayload(search.get('patientNo'), vdays)));
+        }
+        if (method === 'POST' && /\/api\/platform\/patient$/.test(path)) {
+          return resolve(jsonResponse(200, upsertPatientPayload(bodyObj)));
+        }
+        if (method === 'POST' && /\/api\/platform\/bind$/.test(path)) {
+          return resolve(jsonResponse(200, bindPayload(bodyObj)));
+        }
+        resolve(jsonResponse(404, { ok: false, error: '展示版: 接口 ' + path + ' 不在本演示范围内' }));
+      }, 90);
+    });
+  };
+})();
+
+</script>
+
+<script>
+/* ================= 配置 ================= */
+const DEFAULT_API_BASE = 'https://demo.local/api';
+const LS_API_KEY = 'suifang_platform_api_base';
+
+function resolveApiBase() {
+  const params = new URLSearchParams(location.search);
+  const apiParam = params.get('api');
+  if (apiParam) {
+    localStorage.setItem(LS_API_KEY, apiParam);
+    return apiParam;
+  }
+  return localStorage.getItem(LS_API_KEY) || DEFAULT_API_BASE;
+}
+
+let API_BASE = resolveApiBase();
+document.getElementById('apiFooterShow').textContent = API_BASE;
+document.getElementById('offlineApiShow').textContent = API_BASE;
+
+function platformHeaders(json) {
+  const h = {};
+  if (json) h['Content-Type'] = 'application/json';
+  return h;
+}
+
+
+
+/* ================= 工具函数 ================= */
+function fmt(v, unit) {
+  if (v === null || v === undefined || v === '') return '<span class="val muted">--</span>';
+  return '<span class="val">' + escapeHtml(String(v)) + (unit || '') + '</span>';
+}
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function genderLabel(g) { return g === 'F' ? '女' : (g === 'M' ? '男' : '--'); }
+
+/* 时间戳统一显示成 "YYYY-MM-DD HH:MM:SS" (北京时间)。
+   两条链路的原始时间格式本来就不一样: iwown 直接给 MySQL datetime 字符串(已是北京时间),
+   S101/R04 给的是 ISO-8601 UTC (末尾带 Z)。这里只对带 Z 的做 +08:00 换算后统一排版,
+   不按浏览器所在时区渲染 —— 保证同一份数据在任何机器上打开显示的都是同一个时刻。 */
+function fmtTime(v) {
+  if (v === null || v === undefined || v === '') return v;
+  const s = String(v);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/);
+  if (!m) return s;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) + 8 * 3600 * 1000);
+  const p2 = n => String(n).padStart(2, '0');
+  return d.getUTCFullYear() + '-' + p2(d.getUTCMonth() + 1) + '-' + p2(d.getUTCDate()) + ' ' +
+    p2(d.getUTCHours()) + ':' + p2(d.getUTCMinutes()) + ':' + p2(d.getUTCSeconds());
+}
+
+/* ================= 列表视图状态 ================= */
+const listState = { patients: [], search: '' };
+
+async function fetchStatus() {
+  try {
+    const res = await fetch(API_BASE + '/api/status', { cache: 'no-store' });
+    if (!res.ok) throw new Error('status ' + res.status);
+    const st = await res.json();
+    document.getElementById('svcState').textContent = st.status || 'running';
+    document.getElementById('dot').className = 'dot ' + (st.mysql === 'connected' ? 'dot-ok' : 'dot-warn');
+    return true;
+  } catch (e) {
+    document.getElementById('svcState').textContent = '未连接';
+    document.getElementById('dot').className = 'dot dot-err';
+    return false;
+  }
+}
+
+async function fetchPatients() {
+  const wrap = document.getElementById('patientsWrap');
+  try {
+    const [svcOk, res] = await Promise.all([
+      fetchStatus(),
+      fetch(API_BASE + '/api/platform/patients', { cache: 'no-store' }),
+    ]);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '未知错误');
+    listState.patients = data.patients || [];
+    document.getElementById('offlineBanner').style.display = 'none';
+    document.getElementById('patientCount').textContent = listState.patients.length;
+    document.getElementById('lastRefresh').textContent = new Date().toLocaleTimeString('zh-CN');
+    renderPatients();
+  } catch (e) {
+    document.getElementById('offlineBanner').style.display = '';
+    wrap.innerHTML = '<div class="error">加载患者列表失败: ' + escapeHtml(e.message) + '</div>';
+    document.getElementById('patientCount').textContent = '--';
+  }
+}
+
+function bindBadge(chain, on, label) {
+  return '<span class="bind-badge ' + (on ? 'on ' + chain : 'off') + '">' +
+    (on ? '✓' : '✕') + ' ' + label + '</span>';
+}
+function renderPatients() {
+  const wrap = document.getElementById('patientsWrap');
+  const q = listState.search.trim().toLowerCase();
+  let list = listState.patients;
+  if (q) {
+    list = list.filter(p =>
+      String(p.name || '').toLowerCase().includes(q) ||
+      String(p.patient_no || '').toLowerCase().includes(q) ||
+      String(p.group_tag || '').toLowerCase().includes(q));
+  }
+  document.getElementById('listMeta').textContent = '共 ' + listState.patients.length + ' 人' +
+    (q ? (' · 筛选出 ' + list.length + ' 人') : '');
+
+  if (!list.length) {
+    wrap.innerHTML = '<div class="empty"><div class="icon">🧑‍⚕️</div>' +
+      (listState.patients.length ? '未找到匹配的患者' : '暂无患者') +
+      '<br><span style="font-size:12px;">' +
+      (listState.patients.length ? '试试调整搜索关键字' : '点击右上角"＋ 建档"添加第一个测试患者') +
+      '</span></div>';
+    return;
+  }
+
+  wrap.innerHTML = list.map(p => {
+    const iw = p.bindings.iwown;
+    const s101 = p.bindings.s101;
+    const zmy = p.bindings.zhenmaiyi;
+    return '<div class="patient-card">' +
+      '<div class="patient-header" onclick="goDetail(\'' + escapeHtml(p.patient_no) + '\')">' +
+        '<div class="patient-name">' + escapeHtml(p.name || '(未命名)') + '</div>' +
+        '<div class="patient-no">门诊号 ' + escapeHtml(p.patient_no) + ' · ' + genderLabel(p.gender) +
+          (p.age ? (' · ' + p.age + ' 岁') : '') + '</div>' +
+        (p.group_tag ? '<div class="patient-tag">' + escapeHtml(p.group_tag) + '</div>' : '') +
+      '</div>' +
+      '<div class="patient-body" onclick="goDetail(\'' + escapeHtml(p.patient_no) + '\')">' +
+        '<div class="badge-row">' +
+          bindBadge('iwown', !!iw, iw ? ('iwown ' + iw) : 'iwown') +
+          bindBadge('s101', !!s101, 'S101/R04') +
+          bindBadge('zmy', !!zmy, '诊脉仪') +
+        '</div>' +
+        '<div class="metric-row"><span class="key">iwown 最近上传</span>' + fmt(fmtTime(p.last_upload.iwown)) + '</div>' +
+        '<div class="metric-row"><span class="key">S101 最近上传</span>' + fmt(fmtTime(p.last_upload.s101)) + '</div>' +
+        (p.note ? '<div class="metric-row"><span class="key">备注</span>' + fmt(p.note) + '</div>' : '') +
+      '</div>' +
+      '<div class="card-actions">' +
+        '<button onclick="event.stopPropagation(); openBindModal(\'' + escapeHtml(p.patient_no) + '\')">绑定/解绑</button>' +
+        '<button onclick="event.stopPropagation(); openPatientForm(\'' + escapeHtml(p.patient_no) + '\')">改档</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function goDetail(patientNo) {
+  location.hash = '#/patient/' + encodeURIComponent(patientNo);
+}
+
+/* ================= 建档/改档 modal ================= */
+function openPatientForm(patientNo) {
+  document.getElementById('pfMsg').textContent = '';
+  const existing = patientNo ? listState.patients.find(p => p.patient_no === patientNo) : null;
+  document.getElementById('pfTitle').textContent = existing ? ('改档 · ' + existing.patient_no) : '建档';
+  document.getElementById('pfPatientNo').value = existing ? existing.patient_no : '';
+  document.getElementById('pfPatientNo').disabled = !!existing;
+  document.getElementById('pfName').value = existing ? (existing.name || '') : '';
+  document.getElementById('pfGender').value = existing ? (existing.gender || '') : '';
+  document.getElementById('pfAge').value = existing ? (existing.age || '') : '';
+  document.getElementById('pfGroup').value = existing ? (existing.group_tag || '') : '';
+  document.getElementById('pfNote').value = existing ? (existing.note || '') : '';
+  document.getElementById('patientFormModal').classList.add('open');
+}
+document.getElementById('addPatientBtn').addEventListener('click', () => openPatientForm(null));
+document.getElementById('pfClose').addEventListener('click', () => document.getElementById('patientFormModal').classList.remove('open'));
+document.getElementById('pfCancel').addEventListener('click', () => document.getElementById('patientFormModal').classList.remove('open'));
+
+document.getElementById('pfSave').addEventListener('click', async () => {
+  const msg = document.getElementById('pfMsg');
+  const patient_no = document.getElementById('pfPatientNo').value.trim();
+  if (!patient_no) { msg.textContent = '门诊号必填'; msg.className = 'form-msg err'; return; }
+  const body = {
+    patient_no,
+    name: document.getElementById('pfName').value.trim(),
+    gender: document.getElementById('pfGender').value || null,
+    age: document.getElementById('pfAge').value ? parseInt(document.getElementById('pfAge').value, 10) : null,
+    group_tag: document.getElementById('pfGroup').value.trim(),
+    note: document.getElementById('pfNote').value.trim(),
+  };
+  msg.textContent = '保存中…'; msg.className = 'form-msg';
+  try {
+    const res = await fetch(API_BASE + '/api/platform/patient', {
+      method: 'POST', headers: platformHeaders(true), body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '已保存 (' + data.action + ')'; msg.className = 'form-msg ok';
+    await fetchPatients();
+    setTimeout(() => document.getElementById('patientFormModal').classList.remove('open'), 500);
+  } catch (e) {
+    msg.textContent = '保存失败: ' + e.message; msg.className = 'form-msg err';
+  }
+});
+
+/* ================= 绑定/解绑 modal ================= */
+let bindTargetPatient = null;
+function openBindModal(patientNo) {
+  bindTargetPatient = patientNo;
+  document.getElementById('bmTitle').textContent = '绑定/解绑 · ' + patientNo;
+  document.getElementById('bmKey').value = '';
+  document.getElementById('bmUnbind').checked = false;
+  document.getElementById('bmMsg').textContent = '';
+  document.getElementById('bindModal').classList.add('open');
+}
+document.getElementById('bmChain').addEventListener('change', e => {
+  document.getElementById('bmKeyLabel').textContent = e.target.value === 'iwown' ? 'device_id' : 'case_id (诊脉仪病例ID)';
+});
+document.getElementById('bmClose').addEventListener('click', () => document.getElementById('bindModal').classList.remove('open'));
+document.getElementById('bmCancel').addEventListener('click', () => document.getElementById('bindModal').classList.remove('open'));
+
+document.getElementById('bmSave').addEventListener('click', async () => {
+  const msg = document.getElementById('bmMsg');
+  const chain = document.getElementById('bmChain').value;
+  const unbind = document.getElementById('bmUnbind').checked;
+  const key = document.getElementById('bmKey').value.trim();
+  if (!unbind && !key) { msg.textContent = 'key 必填 (或勾选解绑)'; msg.className = 'form-msg err'; return; }
+  msg.textContent = '提交中…'; msg.className = 'form-msg';
+  try {
+    const res = await fetch(API_BASE + '/api/platform/bind', {
+      method: 'POST', headers: platformHeaders(true),
+      body: JSON.stringify({ patient_no: bindTargetPatient, chain, key: key || null, unbind }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    msg.textContent = '操作成功'; msg.className = 'form-msg ok';
+    await fetchPatients();
+    setTimeout(() => document.getElementById('bindModal').classList.remove('open'), 500);
+  } catch (e) {
+    msg.textContent = '操作失败: ' + e.message; msg.className = 'form-msg err';
+  }
+});
+
+/* ================= 详情视图 ================= */
+const detailState = { patientNo: null, days: 14, data: null };
+
+async function fetchDetail() {
+  document.getElementById('detailLoading').style.display = '';
+  document.getElementById('detailError').style.display = 'none';
+  document.getElementById('detailContent').style.display = 'none';
+  try {
+    const url = API_BASE + '/api/platform/patient/vitals?patientNo=' +
+      encodeURIComponent(detailState.patientNo) + '&days=' + detailState.days;
+    const res = await fetch(url, { cache: 'no-store' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    detailState.data = data;
+    renderDetail();
+  } catch (e) {
+    document.getElementById('detailLoading').style.display = 'none';
+    document.getElementById('detailError').style.display = '';
+    document.getElementById('detailError').textContent = '加载患者详情失败: ' + e.message;
+  }
+}
+
+function renderDetail() {
+  const data = detailState.data;
+  const p = data.patient;
+  document.getElementById('dName').textContent = (p.name || '(未命名)') + ' · ' + p.patient_no;
+  document.getElementById('dSub').textContent =
+    genderLabel(p.gender) + (p.age ? (' · ' + p.age + ' 岁') : '') +
+    (p.group_tag ? (' · ' + p.group_tag) : '') + (p.note ? (' · ' + p.note) : '');
+
+  // iwown 设备状态条
+  const iwCard = document.getElementById('iwownStatusCard');
+  const dev = data.iwown && data.iwown.device;
+  if (dev) {
+    iwCard.innerHTML = '<h4>📶 iwown 设备状态</h4>' +
+      '<div class="row"><span class="k">设备 ID</span><span class="v">' + escapeHtml(dev.device_id) + '</span></div>' +
+      '<div class="row"><span class="k">电量</span><span class="v">' + (dev.battery != null ? dev.battery + '%' : '--') + '</span></div>' +
+      '<div class="row"><span class="k">信号 RSSI</span><span class="v">' + (dev.rssi != null ? dev.rssi + ' dBm' : '--') + '</span></div>' +
+      '<div class="row"><span class="k">最近在线</span><span class="v">' + (dev.last_seen || '--') + '</span></div>';
+  } else {
+    iwCard.innerHTML = '<h4>📶 iwown 设备状态</h4><div class="empty-inline">未绑定 iwown 设备 · 可在患者列表点"绑定/解绑"</div>';
+  }
+
+  // 诊脉仪卡
+  const zmyCard = document.getElementById('zmyStatusCard');
+  const z = data.zhenmaiyi;
+  if (z) {
+    zmyCard.innerHTML = '<h4>🩺 诊脉仪最新一次</h4>' +
+      '<div class="row"><span class="k">检测时间</span><span class="v">' + (z.detect_time || '--') + '</span></div>' +
+      '<div class="row"><span class="k">体质结论</span><span class="v">' + escapeHtml(z.conclusion || '--') + '</span></div>' +
+      '<div class="row"><span class="k">主脉象</span><span class="v">' + escapeHtml(z.pulse_label || '--') + '</span></div>';
+  } else {
+    zmyCard.innerHTML = '<h4>🩺 诊脉仪最新一次</h4><div class="empty-inline">' +
+      (p.zhenmaiyi_case_id ? '未查到 case_id=' + escapeHtml(p.zhenmaiyi_case_id) + ' 的记录' : '未绑定诊脉仪 case_id') + '</div>';
+  }
+
+  document.getElementById('detailLoading').style.display = 'none';
+  document.getElementById('detailContent').style.display = '';
+
+  drawAllCharts(data);
+}
+function toSeries(daily, field) {
+  return (daily || []).map(d => ({ date: d.date, value: d[field] === undefined ? null : d[field] }));
+}
+
+function legendHtml(items) {
+  return items.map(it => '<span><span class="dot-lg" style="background:' + it.color + '"></span>' + it.label + '</span>').join('');
+}
+
+function drawAllCharts(data) {
+  const iwDaily = (data.iwown && data.iwown.daily) || [];
+  const s101Daily = (data.s101 && data.s101.daily) || [];
+  const COL_IW = '#0891b2', COL_IW2 = '#67e8f9', COL_S101 = '#2c6ef2', COL_S101_2 = '#93c5fd';
+
+  ['hr', 'spo2', 'temp', 'step'].forEach(name => {
+    const field = name === 'temp' ? 'temperature' : (name === 'hr' ? 'hr_avg' : (name === 'spo2' ? 'spo2_avg' : 'step'));
+    const series = [
+      { label: 'iwown', color: COL_IW, data: toSeries(iwDaily, field) },
+      { label: 'S101/R04', color: COL_S101, data: toSeries(s101Daily, field) },
+    ];
+    document.getElementById('legend-' + name).innerHTML = legendHtml(series.map(s => ({ label: s.label, color: s.color })));
+    drawTrend('chart-' + name, series, { minZero: name === 'step' });
+  });
+
+  // 血压: 4 条线 (两链路 × 收缩/舒张)
+  const bpSeries = [
+    { label: 'iwown 收缩压', color: COL_IW, data: toSeries(iwDaily, 'sbp') },
+    { label: 'iwown 舒张压', color: COL_IW2, data: toSeries(iwDaily, 'dbp') },
+    { label: 'S101 收缩压', color: COL_S101, data: toSeries(s101Daily, 'sbp') },
+    { label: 'S101 舒张压', color: COL_S101_2, data: toSeries(s101Daily, 'dbp') },
+  ];
+  document.getElementById('legend-bp').innerHTML = legendHtml(bpSeries.map(s => ({ label: s.label, color: s.color })));
+  drawTrend('chart-bp', bpSeries, {});
+}
+
+/* 通用趋势折线图 (canvas 手绘, 技法沿用 prototype/pulse-dashboard.html drawPulseWaveform 的
+   "取值范围归一化 + fillText 标注"思路, 这里扩展为多序列 + 日期轴 + 网格). */
+function drawTrend(canvasId, seriesList, opts) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const padL = 40, padR = 12, padT = 10, padB = 22;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#fafbfc';
+  ctx.fillRect(0, 0, W, H);
+
+  const dateSet = new Set();
+  seriesList.forEach(s => s.data.forEach(pt => { if (pt.value !== null && pt.value !== undefined) dateSet.add(pt.date); }));
+  const dates = Array.from(dateSet).sort();
+
+  if (!dates.length) {
+    ctx.fillStyle = '#9ca3af';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('暂无数据', W / 2, H / 2);
+    return;
+  }
+
+  let vals = [];
+  seriesList.forEach(s => s.data.forEach(pt => { if (pt.value !== null && pt.value !== undefined) vals.push(pt.value); }));
+  let vMin = Math.min.apply(null, vals), vMax = Math.max.apply(null, vals);
+  if (vMin === vMax) { vMin -= 1; vMax += 1; }
+  const pad = (vMax - vMin) * 0.18 || 1;
+  vMin -= pad; vMax += pad;
+  if (opts && opts.minZero) vMin = Math.min(vMin, 0);
+
+  const xStep = dates.length > 1 ? (W - padL - padR) / (dates.length - 1) : 0;
+  const xOf = i => padL + i * xStep;
+  const yOf = v => H - padB - ((v - vMin) / (vMax - vMin)) * (H - padT - padB);
+
+  ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1; ctx.font = '10px sans-serif'; ctx.fillStyle = '#9ca3af';
+  for (let i = 0; i <= 3; i++) {
+    const v = vMin + (vMax - vMin) * i / 3;
+    const y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.fillText(v.toFixed(1), 2, y + 3);
+  }
+  ctx.textAlign = 'center';
+  const xTicks = dates.length <= 6 ? dates.map((d, i) => i) : [0, Math.floor((dates.length - 1) / 2), dates.length - 1];
+  xTicks.forEach(i => ctx.fillText(dates[i].slice(5), xOf(i), H - 6));
+
+  seriesList.forEach(s => {
+    if (!s.data.some(pt => pt.value !== null && pt.value !== undefined)) return;
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.beginPath();
+    let started = false;
+    dates.forEach((d, i) => {
+      const pt = s.data.find(p => p.date === d);
+      if (!pt || pt.value === null || pt.value === undefined) { started = false; return; }
+      const x = xOf(i), y = yOf(pt.value);
+      if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+    });
+    ctx.stroke();
+    ctx.fillStyle = s.color;
+    dates.forEach((d, i) => {
+      const pt = s.data.find(p => p.date === d);
+      if (!pt || pt.value === null || pt.value === undefined) return;
+      ctx.beginPath(); ctx.arc(xOf(i), yOf(pt.value), 2.6, 0, Math.PI * 2); ctx.fill();
+    });
+  });
+}
+
+document.getElementById('dayToggle').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-days]');
+  if (!btn) return;
+  document.querySelectorAll('#dayToggle button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  detailState.days = parseInt(btn.dataset.days, 10);
+  fetchDetail();
+});
+document.getElementById('backBtn').addEventListener('click', () => { location.hash = ''; });
+/* ================= 路由 ================= */
+function parseRoute() {
+  let m = location.hash.match(/^#\/patient\/([^/?]+)$/);
+  if (m) return { view: 'detail', patientNo: decodeURIComponent(m[1]) };
+  return { view: 'list' };
+}
+
+function route() {
+  const r = parseRoute();
+  document.getElementById('viewList').style.display = 'none';
+  document.getElementById('viewDetail').style.display = 'none';
+
+  if (r.view === 'detail') {
+    document.getElementById('viewDetail').style.display = '';
+    if (detailState.patientNo !== r.patientNo) {
+      detailState.patientNo = r.patientNo;
+      detailState.days = 14;
+      document.querySelectorAll('#dayToggle button').forEach(b => b.classList.toggle('active', b.dataset.days === '14'));
+    }
+    fetchDetail();
+  } else {
+    document.getElementById('viewList').style.display = '';
+    fetchPatients();
+  }
+}
+
+window.addEventListener('hashchange', route);
+document.getElementById('refreshBtn').addEventListener('click', fetchPatients);
+document.getElementById('resetBtn').addEventListener('click', () => {
+  listState.search = ''; document.getElementById('searchInput').value = ''; renderPatients();
+});
+document.getElementById('searchInput').addEventListener('input', e => { listState.search = e.target.value; renderPatients(); });
+[document.getElementById('patientFormModal'), document.getElementById('bindModal')].forEach(mask => {
+  mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
+});
+
+route();
+</script>
+</body>
+</html>
