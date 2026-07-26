@@ -24,7 +24,9 @@ LOG_TAG="[sync-public-site]"
 # ---------------------------------------------------------------------------
 # Whitelist manifest -- the ONLY paths ever written into the public repo.
 # ---------------------------------------------------------------------------
-PROTOTYPE_FILES=(platform.html platform-demo.html data-dashboard.html pulse-dashboard.html iwown-dashboard.html patient-demo.html index.html)
+# platform-preview.html = 对外汇报用的裁剪展示版 (患者中心 + 体征视图两模块)。
+# 刻意不登记进根门户 index.html 的入口列表: 需要它的人拿直链, 浏览站点不会撞见。
+PROTOTYPE_FILES=(platform.html platform-demo.html platform-preview.html data-dashboard.html pulse-dashboard.html iwown-dashboard.html patient-demo.html index.html)
 DOCS_FILES=("随访平台使用说明.html" "随访平台1.0设计方案.html" "智能穿戴设备调研与数据采集对接.html" "FAQ-常见问题清单.html" "医院交付使用指南.html" index.html)
 
 # ---------------------------------------------------------------------------
