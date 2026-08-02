@@ -19,7 +19,7 @@
     随访计划编排 真实   M5 platform_plan
     随访执行中心 真实   M2 报警闭环 + M7 体征阈值/趋势预警 + M5 今日任务
     患者管理     真实   M1 建档/绑定/体征 + M4 佩戴依从性 + M8 待建档发现
-    数据质控     未建设  方案 §4.3 四个功能点, 尚无实现
+    数据质控     部分   M13 自动质控+历次对比+质疑闭环已通; 留痕回退与 OCR 采集未建设
     统计分析     部分   M6 队列导出已通; 高级检索与可视化统计未建设
     系统管理     真实   API 配置 / 服务自检 (多角色权限体系未建设)
 -->
@@ -54,7 +54,24 @@ button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:g
 .panel{padding:20px}.panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:17px;gap:10px;flex-wrap:wrap}.panel-head h3{margin:0;font-size:16px}.panel-head small{color:var(--muted)}
 .link{border:0;background:none;color:var(--green);padding:0}
 .alerts{display:flex;flex-direction:column;gap:10px}
-.tag{border-radius:12px;padding:2px 8px;font-size:11px;white-space:nowrap}.tag.red{color:#d74c55;background:#fff0f1}.tag.orange{color:#d97b22;background:#fff4e8}.tag.blue{color:#4b6ed3;background:#eef2ff}.tag.grey{color:#6b7883;background:#eff2f4}
+.tag{border-radius:12px;padding:2px 8px;font-size:11px;white-space:nowrap}.tag.red{color:#d74c55;background:#fff0f1}.tag.orange{color:#d97b22;background:#fff4e8}.tag.blue{color:#4b6ed3;background:#eef2ff}.tag.grey{color:#6b7883;background:#eff2f4}.tag.green{color:#18866f;background:#eaf7f4}.tag.amber{color:#d97b22;background:#fff4e8}
+/* M13 数据质控 */
+.note-strip{background:#f4f8f7;border-left:3px solid var(--green);border-radius:0 8px 8px 0;padding:12px 15px;font-size:13px;color:#4a5760;line-height:1.75;margin-bottom:17px}
+.head-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--line);border-radius:7px;background:#fff;color:inherit}
+.qc-item{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+.qc-item.block{border-left:3px solid #d74c55}.qc-item.warn{border-left:3px solid #d97b22}
+.qc-item .qc-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.qc-item .qc-detail{font-size:13px;color:#4a5760;line-height:1.7}
+.qc-item .qc-meta{font-size:11px;color:#9ca3af;margin-top:6px;display:flex;gap:10px;flex-wrap:wrap}
+.qc-basis{font-size:11px;color:#82909c;background:#f8fafa;border-radius:6px;padding:6px 9px;margin-top:7px;font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
+.qc-log{list-style:none;padding:0;margin:8px 0 0;border-left:2px solid var(--line);padding-left:12px}
+.qc-log li{font-size:12px;color:#6b7883;padding:3px 0;line-height:1.6}
+.qc-log b{color:#3c4a52}
+/* 历次对比: 变了的格子标红, 这是方案 §4.3(1) 明写的"差异数据自动标红" */
+.cmp-tbl td.chg{background:#fff0f1;color:#d74c55;font-weight:600}
+.cmp-tbl td.same-all{color:#b9c2c8}
+.cmp-tbl th.rd{white-space:nowrap;font-size:11px}
 .bottom-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:17px;margin-top:17px}
 .table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;min-width:620px}th{text-align:left;color:#82909c;font-size:12px;font-weight:500;padding:10px;border-bottom:1px solid var(--line)}td{padding:12px 10px;border-bottom:1px solid #f0f2f3}tr:last-child td{border:0}tbody tr{transition:.15s}tbody tr:hover{background:#f8fbfa}
 .status{padding:3px 9px;border-radius:11px;font-size:11px;color:#18866f;background:#eaf7f4}
@@ -130,7 +147,7 @@ button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:g
     <a class="nav-item" data-page="execute">▶ <span>随访执行中心</span><i class="badge" id="navAlarmBadge" style="display:none">0</i></a>
     <div class="nav-title">业务管理</div>
     <a class="nav-item" data-page="patients">♙ <span>患者管理</span><i class="badge" id="navCandBadge" style="display:none">0</i></a>
-    <a class="nav-item" data-page="quality">✓ <span>数据质控</span><i class="wip">未建设</i></a>
+    <a class="nav-item" data-page="quality">✓ <span>数据质控</span></a>
     <a class="nav-item" data-page="analytics">⌁ <span>统计分析</span></a>
     <a class="nav-item" data-page="settings">⚙ <span>系统管理</span></a>
     <div class="userbox">
@@ -356,22 +373,66 @@ button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:g
         <input type="file" id="scalePdfFile" accept=".pdf,.txt,.md" style="display:none">
       </section>
 
-      <!-- ===================== 数据质控 (未建设) ===================== -->
+      <!-- ===================== 数据质控 (M13: 自动质控 + 质疑单已建; 留痕/OCR 未建) ===================== -->
       <section class="module-page" id="quality">
-        <div class="module-hero"><div><h2>数据质控中心</h2><p>方案 §4.3：自动质控 · 多级人工质控 · 数据留痕 · OCR 辅助采集</p></div></div>
-        <div class="wip-box">
-          <span class="ico">🚧</span>
-          <h3>本模块尚无任何实现</h3>
-          <div class="wip-list">
-            · 自动质控：必填/数值范围/格式校验，历次随访数据自动对比标红<br>
-            · 多级人工质控：单位质控员 + 数据库级质控员，质疑—核查—修正闭环<br>
-            · 数据留痕：修改日志、历史版本对比与回退<br>
-            · OCR 辅助采集：病历/检验单拍照识别并自动填充 CRF
+        <div class="module-hero">
+          <div><h2>数据质控中心</h2><p>方案 §4.3：自动质控 · 历次对比 · 质疑闭环 —— 与体征预警分开，这里管的是「数据对不对」</p></div>
+          <div class="hero-actions">
+            <button class="white-btn" id="qcRunBtn">▷ 跑一遍自动质控</button>
+            <button class="white-btn" id="qcCompareBtn">⇄ 历次对比</button>
           </div>
-          <div style="margin-top:16px;color:#9ca3af;font-size:13px">
-            现有的 <b>platform_followup_log</b> 只记录随访动作（ack/call/visit/note/close），
-            不记录字段的改前改后值，也没有版本回退——离方案要求的"数据留痕"还有距离。
+        </div>
+
+        <!-- 这条不是装饰。质控发现和体征预警长得像, 使用者最容易把两者混为一谈:
+             一旦把录入笔误(体温 366℃)当预警推给医生, 医生几次之后就不看预警了。 -->
+        <div class="note-strip">
+          <b>质控 ≠ 预警。</b>
+          体温 39℃ 是<b>临床异常</b>，走随访执行中心的体征预警，收件人是医生；
+          体温 366℃ 是<b>录入错误</b>，走这里的质控发现，收件人是数据管理员。
+          两者分表、分状态、分收件人，互不串门。
+        </div>
+
+        <div class="stats" id="qcStats"><div class="loading">加载中…</div></div>
+
+        <div class="bottom-grid">
+          <div class="card panel">
+            <div class="panel-head">
+              <h3>质控发现</h3>
+              <div class="head-tools">
+                <select id="qcSev" class="mini"><option value="">全部严重度</option><option value="block">强校验（阻断）</option><option value="warn">弱校验（提示）</option></select>
+                <select id="qcStatus" class="mini"><option value="">待处理</option><option value="queried">已质疑</option><option value="resolved">已解决</option><option value="all">全部</option></select>
+                <button class="link" id="qcReload">刷新</button>
+              </div>
+            </div>
+            <div id="qcFindings"><div class="loading">加载中…</div></div>
           </div>
+          <div class="card panel">
+            <div class="panel-head">
+              <h3>质疑单</h3>
+              <div class="head-tools">
+                <select id="qcQStatus" class="mini"><option value="">全部状态</option><option value="open">待回复</option><option value="answered">已回复</option><option value="reopened">已重开</option><option value="closed">已关闭</option></select>
+                <button class="link" id="qcQReload">刷新</button>
+              </div>
+            </div>
+            <div id="qcQueries"><div class="loading">加载中…</div></div>
+          </div>
+        </div>
+
+        <div class="card panel" style="margin-top:16px">
+          <div class="panel-head"><h3>方案 §4.3 逐条对照</h3></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>要求</th><th>状态</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>必填 / 数值范围 / 格式校验</td><td><span class="tag green">已建</span></td><td>身份证走 MOD 11-2 校验位，不只是正则——相邻两位打颠倒能抓出来</td></tr>
+              <tr><td>强校验阻断 / 弱校验提示两档</td><td><span class="tag green">已建</span></td><td>规则表 QC_RULES 统一定档，不由各判定点自己拍</td></tr>
+              <tr><td>历次随访数据自动对比、差异标红</td><td><span class="tag green">已建</span></td><td>逐题矩阵 + 变化标记；含「逐题完全一致」检测</td></tr>
+              <tr><td>对比结果导出</td><td><span class="tag amber">部分</span></td><td>接口已返回完整对比矩阵，导出成文件的按钮还没做</td></tr>
+              <tr><td>质疑—核查—修正闭环，全程留痕</td><td><span class="tag green">已建</span></td><td>raise/answer/close/reopen 四步，每步追一行只增不改的日志</td></tr>
+              <tr><td>单位级 / 数据库级两级质控员 + 第三方稽查员</td><td><span class="tag amber">部分</span></td><td><b>角色只记录、不鉴权</b>——平台还没有账号体系，任何人都能写任意角色。要满足 GCP 权责分离必须先做鉴权</td></tr>
+              <tr><td>修改留痕：改前改后值、历史版本、回退</td><td><span class="tag amber">部分</span></td><td>量表填报已是「新增一条 + 旧版标 superseded」，历史版查得到；但还没有回退操作，其他数据类型也没接</td></tr>
+              <tr><td>OCR 辅助采集（病历/检验单拍照填 CRF）</td><td><span class="tag grey">未建设</span></td><td>量表侧的文档解析已通（随访资料准备），但那是读结构化文本；拍照件要 OCR，当前依赖的 pdf-inspector 不带 OCR</td></tr>
+            </tbody>
+          </table></div>
         </div>
       </section>
 
@@ -567,6 +628,7 @@ const S = {
   ctab: 'pending', candSel: new Set(),
   scales: [], responses: [], scaleCache: {}, fillCode: null, fillRevision: null,
   parseFile: null, draft: null,
+  qcFindings: [], qcQueries: [],
 };
 
 /* ================================================================ 导航 */
@@ -581,6 +643,7 @@ function goto(page) {
   if (page === 'analytics') loadAnalytics();
   if (page === 'settings') fillSettings();
   if (page === 'assets') { loadScales(); loadResponses(); }
+  if (page === 'quality') loadQuality();
 }
 document.addEventListener('click', e => {
   const nav = e.target.closest('[data-page]');
@@ -1574,6 +1637,250 @@ async function reviseResponse(id) {
    静默的错值比明显的漏识别危险得多。 */
 const CONF_TAG = { high: '<span class="tag blue">高</span>', medium: '<span class="tag orange">中</span>',
                    low: '<span class="tag red">需人工确认</span>' };
+
+/* ================================================================ M13 数据质控 (方案 §4.3)
+
+   界面上刻意把"质控发现"和"质疑单"并排放, 因为它们是两件事:
+   发现是机器判的(可能判错), 质疑是人提的(要有人回)。中间那一步 —— 质控员看着
+   一条发现决定"这确实有问题, 发质疑" 还是 "看过了, 没问题" —— 才是人工质控的实质。
+   做成一条流水线自动把发现变成质疑, 等于让机器替人背结论, 稽查时说不清是谁判的。   */
+const QC_SEV = { block: ['tag red', '强校验·阻断'], warn: ['tag orange', '弱校验·提示'] };
+const QC_FSTATUS = { open: '待处理', queried: '已质疑', resolved: '已解决', dismissed: '已忽略' };
+const QC_QSTATUS = { open: ['tag red', '待回复'], answered: ['tag blue', '已回复'],
+                     reopened: ['tag orange', '已重开'], closed: ['tag grey', '已关闭'] };
+const QC_ACTION = { raise: '提出质疑', answer: '录入员回复', close: '关闭', reopen: '重新打开' };
+
+async function loadQcFindings() {
+  const wrap = document.getElementById('qcFindings');
+  const st = document.getElementById('qcStatus').value;
+  const sv = document.getElementById('qcSev').value;
+  try {
+    const qs = [];
+    if (st) qs.push('status=' + st);
+    if (sv) qs.push('severity=' + sv);
+    const d = await getJSON('/api/platform/qc/findings?limit=200' + (qs.length ? '&' + qs.join('&') : ''));
+    S.qcFindings = d.findings || [];
+    wrap.innerHTML = S.qcFindings.length ? S.qcFindings.map(f => {
+      const sev = QC_SEV[f.severity] || ['tag grey', f.severity];
+      return '<div class="qc-item ' + esc(f.severity) + '">'+
+        '<div class="qc-head"><span class="' + sev[0] + '">' + esc(sev[1]) + '</span>'+
+          '<span class="tag grey">' + esc(f.rule_label || f.rule_code) + '</span>'+
+          '<b>' + esc(f.patient_name || f.patient_no || '(无患者)') + '</b>'+
+          (f.patient_no ? '<span style="color:#9ca3af;font-size:12px">' + esc(f.patient_no) + '</span>' : '')+
+          '<span style="margin-left:auto;font-size:12px;color:#82909c">' + esc(QC_FSTATUS[f.status] || f.status) + '</span></div>'+
+        '<div class="qc-detail">' + esc(f.detail || '') + '</div>'+
+        (f.basis && Object.keys(f.basis).length ? '<div class="qc-basis">判定依据 ' + esc(JSON.stringify(f.basis)) + '</div>' : '')+
+        '<div class="qc-meta"><span>' + esc(f.created_at || '') + '</span>'+
+          '<span>目标 ' + esc(f.target_kind) + ' #' + esc(String(f.target_id)) + (f.item_id ? ' · 题 ' + esc(f.item_id) : '') + '</span>'+
+          (f.query_count ? '<span>已关联 ' + f.query_count + ' 张质疑单</span>' : '')+
+          '<button class="link" style="margin-left:auto" onclick="qcRaise(' + f.id + ')">发起质疑</button></div>'+
+      '</div>';
+    }).join('')
+      : emptyBox('✓', '没有待处理的质控发现', '点右上角「跑一遍自动质控」扫描现有填报。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+
+async function loadQcQueries() {
+  const wrap = document.getElementById('qcQueries');
+  const st = document.getElementById('qcQStatus').value;
+  try {
+    const d = await getJSON('/api/platform/qc/queries?limit=200&withLog=1' + (st ? '&status=' + st : ''));
+    S.qcQueries = d.queries || [];
+    wrap.innerHTML = S.qcQueries.length ? S.qcQueries.map(q => {
+      const s = QC_QSTATUS[q.status] || ['tag grey', q.status];
+      // 状态机决定按哪几个按钮, 和后端 QC_QUERY_TRANSITIONS 一致
+      const acts = [];
+      if (q.status === 'open' || q.status === 'reopened') acts.push(['answer', '回复核查结论']);
+      if (q.status !== 'closed') acts.push(['close', '关闭']);
+      if (q.status === 'answered' || q.status === 'closed') acts.push(['reopen', '重新打开']);
+      return '<div class="qc-item ' + (q.status === 'closed' ? '' : 'warn') + '">'+
+        '<div class="qc-head"><span class="' + s[0] + '">' + esc(s[1]) + '</span>'+
+          '<b>' + esc(q.patient_name || q.patient_no || '(无患者)') + '</b>'+
+          '<span style="margin-left:auto;font-size:11px;color:#9ca3af">#' + q.id + '</span></div>'+
+        '<div class="qc-detail"><b>疑点：</b>' + esc(q.question) + '</div>'+
+        (q.answer ? '<div class="qc-detail" style="margin-top:5px"><b>回复：</b>' + esc(q.answer) + '</div>' : '')+
+        '<ul class="qc-log">' + (q.log || []).map(l =>
+          '<li><b>' + esc(QC_ACTION[l.action] || l.action) + '</b> · ' + esc(l.operator || '未署名')+
+          ' <span style="color:#9ca3af">' + esc(l.operator_role_label || '未标角色') + '</span> · ' + esc(l.at)+
+          (l.remark ? '<br><span style="color:#82909c">' + esc(l.remark) + '</span>' : '') + '</li>').join('') + '</ul>'+
+        '<div class="qc-meta">' + acts.map(a =>
+          '<button class="link" onclick="qcTransition(' + q.id + ',\'' + a[0] + '\')">' + a[1] + '</button>').join('') + '</div>'+
+      '</div>';
+    }).join('')
+      : emptyBox('◇', '还没有质疑单', '在左侧质控发现上点「发起质疑」。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+
+function qcStats() {
+  const f = S.qcFindings || [], q = S.qcQueries || [];
+  const box = document.getElementById('qcStats');
+  const cell = (label, n, icon, bg, hint) =>
+    '<div class="card stat"><div class="stat-head"><span>' + label + '</span>'+
+    '<span class="stat-icon" style="background:' + bg + '">' + icon + '</span></div>'+
+    '<strong>' + n + '</strong><span class="trend' + (n ? '' : ' ') + '">' + hint + '</span></div>';
+  box.innerHTML =
+    cell('强校验问题', f.filter(x => x.severity === 'block').length, '⊘', '#fff0f1', '数据不合规，需修正') +
+    cell('弱校验提示', f.filter(x => x.severity === 'warn').length, '⚠', '#fff4e8', '需人工确认') +
+    cell('待回复质疑', q.filter(x => x.status === 'open' || x.status === 'reopened').length, '◇', '#eef2ff', '等录入员核查') +
+    cell('已闭环质疑', q.filter(x => x.status === 'closed').length, '✓', '#eaf7f4', '全程留痕可查');
+}
+
+async function loadQuality() {
+  await Promise.all([loadQcFindings(), loadQcQueries()]);
+  qcStats();
+}
+
+document.getElementById('qcRunBtn').onclick = async () => {
+  const btn = document.getElementById('qcRunBtn');
+  btn.disabled = true; btn.textContent = '扫描中…';
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/qc/run',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    const rules = Object.entries(d.by_rule || {}).map(([k, v]) => k + '×' + v).join('、') || '无';
+    toast('扫了 ' + d.scanned_responses + ' 份填报，发现 ' + d.findings + ' 处（新增 ' + d.new +
+          '，已知 ' + d.already_known + '）：' + rules, 7000);
+    await loadQuality();
+  } catch (e) { toast('质控失败：' + e.message, 5000); }
+  finally { btn.disabled = false; btn.textContent = '▷ 跑一遍自动质控'; }
+};
+
+['qcStatus', 'qcSev'].forEach(id => document.getElementById(id).onchange = () => { loadQcFindings().then(qcStats); });
+document.getElementById('qcQStatus').onchange = () => { loadQcQueries().then(qcStats); };
+document.getElementById('qcReload').onclick = () => loadQcFindings().then(qcStats);
+document.getElementById('qcQReload').onclick = () => loadQcQueries().then(qcStats);
+
+function qcRaise(findingId) {
+  const f = (S.qcFindings || []).find(x => x.id === findingId);
+  if (!f) return;
+  openModal('发起质疑', '被质疑的数据会打上标记，录入员核查后回复',
+    '<div class="detail-card"><div class="detail-row"><span>患者</span><b>'+
+      esc(f.patient_name || f.patient_no || '--') + '</b></div>'+
+      '<div class="detail-row"><span>自动判定</span><b>' + esc(f.rule_label || f.rule_code) + '</b></div>'+
+      '<div class="detail-row"><span>说明</span><b style="font-weight:400;text-align:right;max-width:60%">' + esc(f.detail || '') + '</b></div></div>'+
+    '<div class="field"><label>疑点描述<span class="sub">写清楚要核查什么，录入员照着这句去查</span></label>'+
+      '<textarea id="qrQ" style="height:80px">' + esc(f.detail || '') + '</textarea></div>'+
+    '<div class="form-row"><div class="field"><label>提出人</label><input id="qrBy" value="' +
+      esc(localStorage.getItem(LS_OP) || '') + '"></div>'+
+      '<div class="field"><label>以何身份</label><select id="qrRole">'+
+        '<option value="site_qc">单位质控员</option><option value="db_qc">数据库级质控员</option>'+
+        '<option value="auditor">第三方稽查员</option></select></div></div>'+
+    '<div class="err" style="margin-top:4px">角色目前<b>只记录、不鉴权</b>——平台还没有账号体系，'+
+      '任何人都能选任意身份。这份留痕对内可查责，对外还不能当 GCP 合规证据。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="qrGo">提交质疑</button>');
+  document.getElementById('qrGo').onclick = async () => {
+    const q = document.getElementById('qrQ').value.trim();
+    if (!q) { toast('请填写疑点描述'); return; }
+    const btn = document.getElementById('qrGo'); btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/qc/query', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ finding_id: f.id, patient_no: f.patient_no, target_kind: f.target_kind,
+          target_id: f.target_id, item_id: f.item_id, question: q,
+          raised_by: document.getElementById('qrBy').value.trim() || null,
+          raiser_role: document.getElementById('qrRole').value }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); toast('质疑单 #' + d.query_id + ' 已建立'); await loadQuality();
+    } catch (e) { btn.disabled = false; btn.textContent = '提交质疑'; toast('提交失败：' + e.message, 5000); }
+  };
+}
+
+function qcTransition(queryId, action) {
+  const TITLE = { answer: ['回复核查结论', '写下核查了什么、结论是什么——这段话就是稽查看的内容'],
+                  close: ['关闭质疑单', '确认问题已处理或判定为无需处理'],
+                  reopen: ['重新打开', '推翻上一轮结论，重新进入核查'] };
+  const t = TITLE[action] || [action, ''];
+  openModal(t[0], t[1],
+    '<div class="field"><label>' + (action === 'answer' ? '核查结论（必填）' : '备注') +
+      '</label><textarea id="qtR" style="height:80px"></textarea></div>'+
+    '<div class="form-row"><div class="field"><label>操作人</label><input id="qtBy" value="' +
+      esc(localStorage.getItem(LS_OP) || '') + '"></div>'+
+      '<div class="field"><label>以何身份</label><select id="qtRole">'+
+        '<option value="entry">录入员</option><option value="site_qc">单位质控员</option>'+
+        '<option value="db_qc">数据库级质控员</option><option value="auditor">第三方稽查员</option></select></div></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="qtGo">确认</button>');
+  if (action === 'answer') document.getElementById('qtRole').value = 'entry';
+  document.getElementById('qtGo').onclick = async () => {
+    const btn = document.getElementById('qtGo'); btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/qc/query/transition', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query_id: queryId, action: action,
+          remark: document.getElementById('qtR').value.trim(),
+          operator: document.getElementById('qtBy').value.trim() || null,
+          operator_role: document.getElementById('qtRole').value }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); toast('已从「' + (QC_QSTATUS[d.from] || [, d.from])[1] + '」推进到「' +
+        (QC_QSTATUS[d.to] || [, d.to])[1] + '」'); await loadQuality();
+    } catch (e) { btn.disabled = false; btn.textContent = '确认'; toast(e.message, 5000); }
+  };
+}
+
+/* 历次对比 —— 方案 §4.3(1) "历次随访数据自动对比, 差异数据自动标红" */
+document.getElementById('qcCompareBtn').onclick = async () => {
+  if (!S.scales.length) await loadScales().catch(() => {});
+  if (!S.responses.length) await loadResponses().catch(() => {});
+  // 只列出**确实有填报记录**的患者+量表组合。给一个全量下拉让人自己撞空, 是把找不到
+  // 数据的成本转嫁给使用者 —— 有几组能比就列几组。
+  const combos = {};
+  (S.responses || []).forEach(r => {
+    const k = r.patient_no + '|' + r.scale_code;
+    combos[k] = combos[k] || { patient_no: r.patient_no, name: r.patient_name,
+                               code: r.scale_code, scale: r.scale_name || r.scale_code, n: 0 };
+    combos[k].n++;
+  });
+  const list = Object.values(combos).sort((a, b) => b.n - a.n);
+  if (!list.length) {
+    openModal('历次对比', '', '<div class="err">还没有任何填报记录，无从比较。先到「随访资料准备 → 量表库」填一份。</div>',
+      '<button class="secondary" onclick="closeModal()">知道了</button>');
+    return;
+  }
+  openModal('历次对比', '选一个患者 + 量表组合，逐题看历次变化',
+    '<div class="field"><label>患者 · 量表<span class="sub">括号里是已有的填报次数；只有 1 次的没得比</span></label>'+
+      '<select id="cmpSel">' + list.map((c, i) =>
+        '<option value="' + i + '">' + esc(c.name || c.patient_no) + ' · ' + esc(c.scale) +
+        '（' + c.n + ' 次）</option>').join('') + '</select></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="cmpGo">查看对比</button>');
+  document.getElementById('cmpGo').onclick = async () => {
+    const c = list[Number(document.getElementById('cmpSel').value)];
+    const btn = document.getElementById('cmpGo'); btn.disabled = true; btn.textContent = '加载中…';
+    try {
+      const d = await getJSON('/api/platform/qc/compare?patientNo=' + encodeURIComponent(c.patient_no) +
+        '&code=' + encodeURIComponent(c.code));
+      closeModal(); renderCompare(d, c);
+    } catch (e) { btn.disabled = false; btn.textContent = '查看对比'; toast('加载失败：' + e.message, 5000); }
+  };
+};
+
+function renderCompare(d, c) {
+  if (!d.rounds.length) {
+    openDrawer('历次对比', '', '<div class="err">' + esc(d.note || '无记录') + '</div>', '');
+    return;
+  }
+  const head = '<tr><th>题目</th>' + d.rounds.map((r, i) =>
+    '<th class="rd">第 ' + (i + 1) + ' 次<br><span style="font-weight:400;color:#9ca3af">' + esc(r.at) + '</span></th>').join('') + '</tr>';
+  const body = d.items.map(m =>
+    '<tr><td style="min-width:150px">' + esc(m.text || m.item_id) + '</td>' +
+    m.values.map((v, i) =>
+      '<td class="' + (m.changed[i] ? 'chg' : (m.all_same ? 'same-all' : '')) + '">' +
+      esc(m.labels[i] == null ? '--' : String(m.labels[i])) + '</td>').join('') + '</tr>').join('');
+  const totals = '<tr style="background:#f8fbfa"><td><b>总分</b></td>' + d.rounds.map(r =>
+    '<td><b>' + (r.total == null ? '--' : r.total) + '</b>' +
+    (r.delta == null ? '' : ' <span style="font-size:11px;color:' + (r.delta > 0 ? '#d74c55' : '#1b9a78') + '">' +
+      (r.delta > 0 ? '+' : '') + r.delta + '</span>') + '</td>').join('') + '</tr>';
+  const chg = '<tr><td style="color:#82909c">本次相对上次有变化的题数</td>' + d.rounds.map((r, i) =>
+    '<td style="color:#82909c">' + (i === 0 ? '—' : r.changed_items + ' / ' + d.total_items) + '</td>').join('') + '</tr>';
+  openDrawer('历次对比 · ' + (c.name || c.patient_no), c.scale + '（' + c.code + '）· 共 ' + d.rounds.length + ' 次填报',
+    '<div class="note-strip">红色格子 = 该题与上一次不同；灰色 = 该题历次从未变过。'+
+      '一份量表整体<b>全灰</b>值得留意——可能是没有真的重新评估，而是沿用了上次结果。</div>'+
+    '<div class="table-wrap"><table class="cmp-tbl">'+
+      '<thead>' + head + '</thead><tbody>' + totals + chg + body + '</tbody></table></div>', '');
+}
 
 /* ---- M12: AI 生成量表 (方案 §2.2(2)) ----
    产出走的是和文档解析同一个审核界面 —— 都是草稿, 都要人逐条确认后才入库。

@@ -88,7 +88,9 @@ from urllib.parse import urlparse, parse_qs
 import pymysql
 
 # ============ 配置 ============
-PORT = 3000
+# 生产不设 PORT 环境变量, 行为与硬编码 3000 时完全一致。可覆盖是为了能在本机
+# 另起一个实例跑端到端测试 —— 否则测试要么占用 3000, 要么只能打生产。
+PORT = int(os.environ.get('PORT') or 3000)
 DB_CONFIG = {
     # 随访平台 1.0: DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME 环境变量覆盖硬编码默认值
     # (与下面 WX_APPID 同款写法), 生产环境不设这些变量时行为不变.
@@ -3082,6 +3084,709 @@ def query_scale_responses(patient_no=None, code=None, include_superseded=False, 
         conn.close()
 
 
+# ============ 随访平台 1.1 M13 (全流程数据质控, 方案 §4.3) ============
+#
+# 这一块和 M7 的体征预警长得像, 但**必须分开**, 混起来两边都废:
+#
+#   M7 预警  = "这个数说明患者需要关注"  -> 收件人是临床, 动作是打电话/叫回院
+#   M13 质控 = "这个数大概率是错的"      -> 收件人是数据管理, 动作是找录入员核对
+#
+# 把录入笔误(体温 366.0)当预警推给医生, 医生几次之后就不看预警了; 把真的高热当质控
+# 发现丢进数据待办, 就没人给患者打电话。所以两者分表、分状态机、分收件人, 只在
+# "同一条记录同时命中两边" 时各出各的。
+#
+# 生理上不可能的值。注意这**不是**临床异常线(那是 VITAL_THRESHOLDS):
+#   体温 39.0 是临床危急但物理上完全可能 -> 走 M7 预警, 不是质控发现
+#   体温 366.0 只能是漏了小数点          -> 走质控发现, 不该惊动医生
+QC_IMPOSSIBLE = {
+    'hr':    {'label': '心率',       'unit': 'bpm',  'lo': 20,   'hi': 250},
+    'spo2':  {'label': '血氧饱和度', 'unit': '%',    'lo': 50,   'hi': 100},
+    'sbp':   {'label': '收缩压',     'unit': 'mmHg', 'lo': 50,   'hi': 300},
+    'dbp':   {'label': '舒张压',     'unit': 'mmHg', 'lo': 20,   'hi': 200},
+    'temp':  {'label': '体温',       'unit': '℃',   'lo': 30.0, 'hi': 45.0},
+    'sleep': {'label': '睡眠时长',   'unit': '分钟', 'lo': 0,    'hi': 1440},
+}
+
+# 历次对比的判定参数 (方案 §4.3(1) "历次随访数据自动对比, 差异数据自动标红")
+QC_DELTA_RATIO = 0.5      # 总分相对上次变化超过这个比例即提示
+QC_DELTA_MIN = 5.0        # 且绝对变化不少于这么多分 —— 只用比例的话 2 分变 4 分也会报
+QC_DUP_MINUTES = 30       # 同患者同量表这么多分钟内重复提交, 视为可疑
+
+QC_RULES = {
+    'required_missing':     ('block', '必填项未作答'),
+    'out_of_range':         ('block', '数值超出题目允许范围'),
+    'format_invalid':       ('block', '格式不合法'),
+    'impossible_value':     ('block', '生理上不可能的数值, 疑为录入错误'),
+    'cross_field_conflict': ('block', '字段间互相矛盾'),
+    'delta_jump':           ('warn',  '与上次填报差异过大'),
+    'identical_to_previous': ('warn', '与上次填报逐题完全一致'),
+    'duplicate_submission': ('warn',  '短时间内重复提交'),
+}
+
+QC_ROLES = ('site_qc', 'db_qc', 'auditor', 'entry')
+QC_ROLE_LABELS = {'site_qc': '单位质控员', 'db_qc': '数据库级质控员',
+                  'auditor': '第三方稽查员', 'entry': '录入员'}
+
+
+def _qc_check_id_card(s):
+    """身份证号校验。走 ISO 7064 MOD 11-2 校验位, 不只是正则。
+
+    只用正则(18 位数字 + 末位 X)拦不住最常见的错误 —— 相邻两位打颠倒。
+    校验位算得出来才说明这串数字是**发放过的**格式, 这正是录入核对要的东西。
+    """
+    s = (s or '').strip().upper()
+    if len(s) != 18 or not s[:17].isdigit() or s[17] not in '0123456789X':
+        return '身份证号应为 18 位(末位可为 X)'
+    w = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+    chk = '10X98765432'[sum(int(s[i]) * w[i] for i in range(17)) % 11]
+    if chk != s[17]:
+        return '身份证号校验位不符(应为 {}), 常见于相邻数字打颠倒'.format(chk)
+    m = int(s[10:12])
+    d = int(s[12:14])
+    if not (1 <= m <= 12 and 1 <= d <= 31):
+        return '身份证号中的出生日期不合法'
+    return None
+
+
+def _qc_check_phone(s):
+    """手机号校验(中国大陆 11 位)。"""
+    s = re.sub(r'[\s\-]', '', (s or '').strip())
+    if not re.match(r'^1[3-9]\d{9}$', s):
+        return '手机号应为 1 开头的 11 位数字'
+    return None
+
+
+QC_FORMAT_CHECKS = {'id_card': _qc_check_id_card, 'phone': _qc_check_phone}
+
+
+def _qc_finding(rule, patient_no, target_kind, target_id, detail, basis=None, item_id=None):
+    """造一条质控发现。severity 由 QC_RULES 统一决定, 调用点不各自拍脑袋定档。"""
+    sev, rule_label = QC_RULES.get(rule, ('warn', rule))
+    return {'rule_code': rule, 'rule_label': rule_label, 'severity': sev,
+            'patient_no': patient_no, 'target_kind': target_kind, 'target_id': target_id,
+            'item_id': item_id, 'detail': detail, 'basis': basis or {}}
+
+
+def qc_check_scale_answers(definition, answers, patient_no=None, target_id=None):
+    """自动质控 · 单份填报的**表内**规则 (方案 §4.3(1) 必填/范围/格式)。
+
+    和 score_scale 的校验有重叠但用途不同: score_scale 是"能不能算分",
+    这里是"这份数据能不能进库存档"。前者拦不住的东西这里要拦 —— 典型是
+    定义里挂了 format 的题(身份证/手机号), 评分根本不关心它们的内容。
+    """
+    out = []
+    items = (definition or {}).get('items') or []
+    for it in items:
+        iid = it.get('id')
+        v = answers.get(iid)
+        blank = v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, list) and not v)
+        if it.get('required') and blank:
+            out.append(_qc_finding('required_missing', patient_no, 'scale_response', target_id,
+                                   '第 {} 题「{}」为必填但未作答'.format(iid, str(it.get('text'))[:30]),
+                                   {'item_id': iid}, iid))
+            continue
+        if blank:
+            continue
+        if it.get('type') in ('number', 'scale') and isinstance(v, (int, float)):
+            lo, hi = it.get('min'), it.get('max')
+            if (lo is not None and v < lo) or (hi is not None and v > hi):
+                out.append(_qc_finding('out_of_range', patient_no, 'scale_response', target_id,
+                                       '第 {} 题填了 {}, 允许范围 {}~{}'.format(
+                                           iid, _fmt_num(v), _fmt_num(lo), _fmt_num(hi)),
+                                       {'item_id': iid, 'value': v, 'min': lo, 'max': hi}, iid))
+        fmt = it.get('format')
+        if fmt in QC_FORMAT_CHECKS and isinstance(v, str):
+            msg = QC_FORMAT_CHECKS[fmt](v)
+            if msg:
+                out.append(_qc_finding('format_invalid', patient_no, 'scale_response', target_id,
+                                       '第 {} 题: {}'.format(iid, msg),
+                                       {'item_id': iid, 'format': fmt}, iid))
+    return out
+
+
+def qc_compare_with_previous(definition, answers, total, prev, patient_no=None, target_id=None):
+    """自动质控 · 历次对比 (方案 §4.3(1) "历次随访数据自动对比, 差异数据自动标红")。
+
+    prev = 上一份现行填报的 dict(含 answers/total_score/created_at), 没有则返回空。
+
+    两条规则里, **逐题完全一致** 才是这块的重点。分数跳变临床上常有真实原因
+    (换药、急性发作), 报出来多半是虚惊; 而两次随访隔了几周、几十道题一字不差,
+    现实中基本只有一个解释 —— 这次没真做, 是照着上次抄的/复制的。
+    这种数据不会触发任何其他校验(它每一项都合法), 只有和历史比才看得出来,
+    也正是临床研究稽查最在意的一类问题。
+    """
+    out = []
+    if not prev:
+        return out
+    p_ans = prev.get('answers') or {}
+    p_total = prev.get('total_score')
+    when = prev.get('created_at') or ''
+
+    ids = [it.get('id') for it in ((definition or {}).get('items') or [])]
+    # 只比两次都答了的题 —— 一边空一边有值不算"一致", 也不算"不一致", 没有可比性
+    comparable = [i for i in ids if answers.get(i) is not None and p_ans.get(i) is not None]
+    diffs = [i for i in comparable if answers.get(i) != p_ans.get(i)]
+    # 答案本身有几种取值。全选同一个档(比如筛查量表上一路"没有")复现是常事,
+    # 拿它报"疑似照抄"会天天误报; 而一组**有起伏**的答案隔几周一字不差地重现,
+    # 现实中基本只有照抄一个解释。所以这道闸门卡的是"花样", 不是"题数"。
+    variety = len(set(json.dumps(answers.get(i), ensure_ascii=False, sort_keys=True)
+                      for i in comparable))
+    if len(comparable) >= 4 and variety >= 2 and not diffs:
+        out.append(_qc_finding('identical_to_previous', patient_no, 'scale_response', target_id,
+                               '本次 {} 道题的答案与 {} 那次逐题完全一致(且答案有 {} 种取值, 非一路同档) '
+                               '—— 请确认本次是实际重新评估, 而非沿用上次结果'.format(
+                                   len(comparable), when, variety),
+                               {'prev_id': prev.get('id'), 'prev_at': when,
+                                'compared_items': len(comparable), 'diff_items': 0,
+                                'answer_variety': variety}))
+
+    if isinstance(total, (int, float)) and isinstance(p_total, (int, float)):
+        delta = total - p_total
+        base = abs(p_total) or 1.0
+        if abs(delta) >= QC_DELTA_MIN and abs(delta) / base >= QC_DELTA_RATIO:
+            out.append(_qc_finding('delta_jump', patient_no, 'scale_response', target_id,
+                                   '总分由 {} 变为 {} ({}{}), 较上次({})变化 {:.0%}, 请核对是否录入有误'.format(
+                                       _fmt_num(p_total), _fmt_num(total),
+                                       '+' if delta > 0 else '', _fmt_num(delta), when,
+                                       abs(delta) / base),
+                                   {'prev_id': prev.get('id'), 'prev_at': when,
+                                    'prev_total': p_total, 'total': total, 'delta': delta,
+                                    'diff_items': diffs[:20]}))
+    return out
+
+
+def qc_check_vital(metric, value, patient_no=None, target_id=None):
+    """自动质控 · 体征数值 (生理不可能值)。返回 findings 列表。"""
+    cfg = QC_IMPOSSIBLE.get(metric)
+    if not cfg or not isinstance(value, (int, float)):
+        return []
+    if cfg['lo'] <= value <= cfg['hi']:
+        return []
+    return [_qc_finding('impossible_value', patient_no, 'vital', target_id,
+                        '{} = {}{}, 超出生理可能范围 {}~{}{} —— 按录入/传输错误处理, 不当临床异常'.format(
+                            cfg['label'], _fmt_num(value), cfg['unit'],
+                            _fmt_num(cfg['lo']), _fmt_num(cfg['hi']), cfg['unit']),
+                        {'metric': metric, 'value': value, 'lo': cfg['lo'], 'hi': cfg['hi']})]
+
+
+def qc_check_bp_pair(sbp, dbp, patient_no=None, target_id=None):
+    """自动质控 · 血压跨字段逻辑: 收缩压必须高于舒张压。
+
+    单看 sbp=80 / dbp=120 两个数都在各自可能范围内, 只有放在一起才看得出是
+    高低压填反了 —— 这类"字段间矛盾"是 EDC 逻辑核查的经典项, 单字段规则抓不到。
+    """
+    if not isinstance(sbp, (int, float)) or not isinstance(dbp, (int, float)):
+        return []
+    if sbp > dbp:
+        return []
+    return [_qc_finding('cross_field_conflict', patient_no, 'vital', target_id,
+                        '收缩压 {} 不高于舒张压 {}, 疑为高低压填反'.format(_fmt_num(sbp), _fmt_num(dbp)),
+                        {'sbp': sbp, 'dbp': dbp})]
+
+
+def ensure_platform_qc_tables():
+    """M13: 质控发现表 + 质疑单表 + 质疑流转日志表 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_qc_finding (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                patient_no VARCHAR(64) DEFAULT NULL,
+                target_kind VARCHAR(24) NOT NULL COMMENT 'scale_response/vital/patient',
+                target_id BIGINT DEFAULT NULL,
+                item_id VARCHAR(64) DEFAULT NULL COMMENT '定位到具体题目, 前端据此标红',
+                rule_code VARCHAR(32) NOT NULL,
+                severity ENUM('block','warn') NOT NULL COMMENT '强校验阻断/弱校验提示, 方案 §2(2)',
+                detail VARCHAR(500) DEFAULT NULL,
+                basis JSON DEFAULT NULL COMMENT '判定依据: 本次值/上次值/阈值, 供人复核',
+                status ENUM('open','queried','resolved','dismissed') DEFAULT 'open',
+                dedup_key VARCHAR(191) DEFAULT NULL COMMENT '规则+目标+题目, 重跑不重复堆积',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_qc_dedup (dedup_key),
+                INDEX idx_patient (patient_no),
+                INDEX idx_status (status),
+                INDEX idx_target (target_kind, target_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M13 自动质控发现'
+        """)
+        # 质疑单与"发现"分开: 发现是机器判的, 质疑是人提的。人可以对没有任何自动发现的
+        # 数据提质疑(finding_id 为空), 也可以看着一条发现认为没问题而直接 dismiss 不提质疑。
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_qc_query (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                finding_id BIGINT DEFAULT NULL COMMENT '由哪条自动发现引发; 人工直接发起则为空',
+                patient_no VARCHAR(64) DEFAULT NULL,
+                target_kind VARCHAR(24) NOT NULL,
+                target_id BIGINT DEFAULT NULL,
+                item_id VARCHAR(64) DEFAULT NULL,
+                question VARCHAR(1000) NOT NULL,
+                raised_by VARCHAR(64) DEFAULT NULL,
+                raiser_role ENUM('site_qc','db_qc','auditor') DEFAULT 'site_qc',
+                status ENUM('open','answered','closed','reopened') DEFAULT 'open',
+                answer VARCHAR(1000) DEFAULT NULL,
+                answered_by VARCHAR(64) DEFAULT NULL,
+                answered_at DATETIME DEFAULT NULL,
+                closed_by VARCHAR(64) DEFAULT NULL,
+                closed_at DATETIME DEFAULT NULL,
+                close_note VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_patient (patient_no),
+                INDEX idx_status (status),
+                INDEX idx_finding (finding_id),
+                INDEX idx_target (target_kind, target_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M13 质疑单 (GCP query)'
+        """)
+        # 只增不改的流转日志。质疑单本身的 status 是"当前状态"的快照, 方便查询;
+        # 谁在什么时候把它从哪一步推到哪一步, 只认这张表 —— 稽查看的是这张。
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_qc_query_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                query_id BIGINT NOT NULL,
+                action ENUM('raise','answer','close','reopen') NOT NULL,
+                from_status VARCHAR(16) DEFAULT NULL,
+                to_status VARCHAR(16) DEFAULT NULL,
+                operator VARCHAR(64) DEFAULT NULL,
+                operator_role VARCHAR(16) DEFAULT NULL,
+                remark VARCHAR(1000) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_query (query_id, id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M13 质疑流转留痕 (只增不改)'
+        """)
+        print('[启动] platform_qc_finding / platform_qc_query / platform_qc_query_log 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_qc_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def _qc_persist(cur, findings):
+    """把发现写库, 按 dedup_key 幂等。返回 (新增数, 命中已存在数)。
+
+    dedup_key = 规则 + 目标 + 题目。重跑质控不该把同一个问题堆成十几条 ——
+    数据管理员看到的待办列表要能反映"还剩多少个问题", 不是"跑了多少次"。
+    已存在的只刷新 detail/basis(阈值可能被临床方调过), 不动 status ——
+    人已经处理成 resolved 的, 不因为重跑又变回 open。
+    """
+    new_n = hit_n = 0
+    for f in findings:
+        key = '{}|{}|{}|{}'.format(f['rule_code'], f['target_kind'],
+                                   f.get('target_id') or '-', f.get('item_id') or '-')
+        cur.execute("""
+            INSERT INTO platform_qc_finding
+              (patient_no, target_kind, target_id, item_id, rule_code, severity, detail, basis, dedup_key)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE detail=VALUES(detail), basis=VALUES(basis)
+        """, (f.get('patient_no'), f['target_kind'], f.get('target_id'), f.get('item_id'),
+              f['rule_code'], f['severity'], f.get('detail'),
+              json.dumps(f.get('basis') or {}, ensure_ascii=False), key))
+        # rowcount: 1 = 新插, 2 = 命中重复走了 UPDATE
+        if cur.rowcount == 1:
+            new_n += 1
+        else:
+            hit_n += 1
+    return new_n, hit_n
+
+
+def platform_qc_run(patient_no=None, scale_code=None, limit=500):
+    """跑一遍自动质控 (方案 §4.3(1))。当前覆盖量表填报, 逐份做表内校验 + 历次对比。
+
+    只扫现行版(status='submitted'), 被修订掉的历史版不再挑毛病 —— 那些问题正是
+    修订要解决的, 重复报出来只会让待办永远清不空。
+    """
+    ensure_platform_qc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ["r.status='submitted'"], []
+        if patient_no:
+            where.append('r.patient_no=%s'); params.append(patient_no)
+        if scale_code:
+            where.append('r.scale_code=%s'); params.append(scale_code)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT r.id, r.patient_no, r.scale_code, r.scale_version, r.answers,
+                   r.total_score, r.created_at, s.definition
+            FROM platform_scale_response r
+            LEFT JOIN platform_scale s ON s.code=r.scale_code AND s.version=r.scale_version
+            WHERE {}
+            ORDER BY r.patient_no, r.scale_code, r.created_at
+            LIMIT %s
+        """.format(' AND '.join(where)), params)
+        rows = cur.fetchall()
+
+        findings = []
+        prev_by_key = {}     # (patient_no, scale_code) -> 上一份, 用于历次对比
+        last_at = {}         # 同上, 用于重复提交判定
+        scanned = 0
+        for rid, pno, code, ver, ans, total, created, defn in rows:
+            if isinstance(ans, str):
+                try:
+                    ans = json.loads(ans)
+                except ValueError:
+                    ans = {}
+            if isinstance(defn, str):
+                try:
+                    defn = json.loads(defn)
+                except ValueError:
+                    defn = None
+            if not defn:
+                # 量表定义找不到 = 填报引用了已删除的版本, 这本身就是个数据问题
+                findings.append(_qc_finding('cross_field_conflict', pno, 'scale_response', rid,
+                                            '填报引用的量表 {} v{} 在库中不存在, 无法校验也无法重算分'.format(code, ver),
+                                            {'scale_code': code, 'scale_version': ver}))
+                continue
+            scanned += 1
+            total_f = float(total) if total is not None else None
+            findings += qc_check_scale_answers(defn, ans, pno, rid)
+
+            key = (pno, code)
+            findings += qc_compare_with_previous(defn, ans, total_f, prev_by_key.get(key), pno, rid)
+            if key in last_at and created and last_at[key]:
+                gap = (created - last_at[key]).total_seconds() / 60.0
+                if 0 <= gap <= QC_DUP_MINUTES:
+                    findings.append(_qc_finding('duplicate_submission', pno, 'scale_response', rid,
+                                                '距上一份 {} 填报仅 {:.0f} 分钟, 请确认是否重复提交'.format(code, gap),
+                                                {'gap_minutes': round(gap, 1)}))
+            prev_by_key[key] = {'id': rid, 'answers': ans, 'total_score': total_f,
+                                'created_at': created.strftime('%Y-%m-%d %H:%M') if created else ''}
+            last_at[key] = created
+
+        new_n, hit_n = _qc_persist(cur, findings)
+        cur.close()
+        by_rule = {}
+        for f in findings:
+            by_rule[f['rule_code']] = by_rule.get(f['rule_code'], 0) + 1
+        return {'ok': True, 'scanned_responses': scanned, 'findings': len(findings),
+                'new': new_n, 'already_known': hit_n, 'by_rule': by_rule,
+                'blocking': sum(1 for f in findings if f['severity'] == 'block')}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_qc_findings(status=None, patient_no=None, severity=None, limit=100):
+    """质控发现列表。默认只给未处理的 —— 已处理的要显式要。"""
+    ensure_platform_qc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if status:
+            where.append('f.status=%s'); params.append(status)
+        else:
+            where.append("f.status IN ('open','queried')")
+        if patient_no:
+            where.append('f.patient_no=%s'); params.append(patient_no)
+        if severity:
+            where.append('f.severity=%s'); params.append(severity)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT f.id, f.patient_no, p.name, f.target_kind, f.target_id, f.item_id,
+                   f.rule_code, f.severity, f.detail, f.basis, f.status, f.created_at,
+                   (SELECT COUNT(*) FROM platform_qc_query q WHERE q.finding_id=f.id) AS query_count
+            FROM platform_qc_finding f
+            LEFT JOIN platform_patient p ON p.patient_no=f.patient_no
+            WHERE {}
+            ORDER BY FIELD(f.severity,'block','warn'), f.created_at DESC
+            LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'patient_no', 'patient_name', 'target_kind', 'target_id', 'item_id',
+                'rule_code', 'severity', 'detail', 'basis', 'status', 'created_at', 'query_count']
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            r['rule_label'] = QC_RULES.get(r['rule_code'], ('', r['rule_code']))[1]
+            if r.get('created_at') is not None and hasattr(r['created_at'], 'strftime'):
+                r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+            if isinstance(r.get('basis'), str):
+                try:
+                    r['basis'] = json.loads(r['basis'])
+                except ValueError:
+                    pass
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'findings': out,
+                'rules': {k: {'severity': v[0], 'label': v[1]} for k, v in QC_RULES.items()}}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+# 质疑单状态机。写成表而不是散在 if 里, 是因为验收时要拿它对 GCP 流程,
+# 一张表比翻代码好核。closed 之后仍允许 reopen —— 稽查员复核时推翻质控员的结论,
+# 是这套流程存在的意义之一, 不能把它做成终态。
+QC_QUERY_TRANSITIONS = {
+    'answer': {'from': ('open', 'reopened'), 'to': 'answered'},
+    'close':  {'from': ('open', 'answered', 'reopened'), 'to': 'closed'},
+    'reopen': {'from': ('answered', 'closed'), 'to': 'reopened'},
+}
+
+
+def platform_qc_query_raise(body):
+    """提质疑 (方案 §4.3(2))。{target_kind, target_id, question, patient_no?, finding_id?,
+    item_id?, raised_by?, raiser_role?}
+
+    注意: raiser_role 现在只是**记录**谁以什么身份提的, 没有鉴权 —— 平台还没有账号
+    体系(方案 §4.1 权限模块未建), 任何人调这个接口都能写任意 role。要满足 GCP 的
+    权责分离, 必须等鉴权做完再把这个字段接到登录身份上。在那之前, 这里产出的留痕
+    对内可用(知道是谁做的), 对外不能当合规证据。
+    """
+    kind = str(body.get('target_kind') or '').strip()
+    question = str(body.get('question') or '').strip()
+    if kind not in ('scale_response', 'vital', 'patient'):
+        return None, "target_kind 必须是 scale_response/vital/patient"
+    if not question:
+        return None, 'question 必填 —— 质疑必须说清楚疑点是什么, 否则录入员无从核查'
+    role = body.get('raiser_role') or 'site_qc'
+    if role not in ('site_qc', 'db_qc', 'auditor'):
+        return None, 'raiser_role 必须是 site_qc/db_qc/auditor'
+    finding_id = body.get('finding_id')
+
+    ensure_platform_qc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        patient_no = body.get('patient_no')
+        if finding_id is not None:
+            cur.execute('SELECT patient_no, item_id FROM platform_qc_finding WHERE id=%s', (finding_id,))
+            row = cur.fetchone()
+            if not row:
+                cur.close()
+                return None, '质控发现不存在: {}'.format(finding_id)
+            patient_no = patient_no or row[0]
+        cur.execute("""
+            INSERT INTO platform_qc_query
+              (finding_id, patient_no, target_kind, target_id, item_id, question, raised_by, raiser_role, status)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'open')
+        """, (finding_id, patient_no, kind, body.get('target_id'), body.get('item_id'),
+              question[:1000], body.get('raised_by') or None, role))
+        qid = cur.lastrowid
+        cur.execute("""
+            INSERT INTO platform_qc_query_log (query_id, action, from_status, to_status, operator, operator_role, remark)
+            VALUES (%s,'raise',NULL,'open',%s,%s,%s)
+        """, (qid, body.get('raised_by') or None, role, question[:1000]))
+        if finding_id is not None:
+            cur.execute("UPDATE platform_qc_finding SET status='queried' WHERE id=%s AND status='open'",
+                        (finding_id,))
+        cur.close()
+        return {'ok': True, 'query_id': qid, 'status': 'open'}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def platform_qc_query_transition(body):
+    """推进质疑单 {query_id, action: answer|close|reopen, operator?, operator_role?, remark?}。
+
+    每一步都往 log 表追一行, 质疑单自己只保留当前状态。非法流转直接拒绝并
+    把允许的前置状态告诉调用方 —— 让人知道为什么不行, 比只说"失败"有用。
+    """
+    try:
+        qid = int(body.get('query_id'))
+    except (TypeError, ValueError):
+        return None, 'query_id 必填且为整数'
+    action = str(body.get('action') or '').strip()
+    tr = QC_QUERY_TRANSITIONS.get(action)
+    if not tr:
+        return None, 'action 必须是 {}'.format('/'.join(QC_QUERY_TRANSITIONS))
+    remark = str(body.get('remark') or '').strip()
+    if action == 'answer' and not remark:
+        return None, 'answer 必须带 remark —— 回复内容就是核查结论, 空回复等于没查'
+
+    ensure_platform_qc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, finding_id FROM platform_qc_query WHERE id=%s', (qid,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '质疑单不存在: {}'.format(qid)
+        cur_status, finding_id = row
+        if cur_status not in tr['from']:
+            cur.close()
+            return None, '当前状态 {} 不能执行 {} (允许的前置状态: {})'.format(
+                cur_status, action, '/'.join(tr['from']))
+        new_status = tr['to']
+        op = body.get('operator') or None
+        role = body.get('operator_role') or None
+
+        if action == 'answer':
+            cur.execute("""UPDATE platform_qc_query SET status=%s, answer=%s, answered_by=%s,
+                           answered_at=NOW() WHERE id=%s""", (new_status, remark[:1000], op, qid))
+        elif action == 'close':
+            cur.execute("""UPDATE platform_qc_query SET status=%s, closed_by=%s, closed_at=NOW(),
+                           close_note=%s WHERE id=%s""", (new_status, op, remark[:500] or None, qid))
+            if finding_id is not None:
+                cur.execute("UPDATE platform_qc_finding SET status='resolved' WHERE id=%s", (finding_id,))
+        else:   # reopen: 清掉上一轮的回复, 但 log 里那一行永远在
+            cur.execute("""UPDATE platform_qc_query SET status=%s, closed_by=NULL, closed_at=NULL,
+                           close_note=NULL WHERE id=%s""", (new_status, qid))
+            if finding_id is not None:
+                cur.execute("UPDATE platform_qc_finding SET status='queried' WHERE id=%s", (finding_id,))
+
+        cur.execute("""
+            INSERT INTO platform_qc_query_log (query_id, action, from_status, to_status, operator, operator_role, remark)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+        """, (qid, action, cur_status, new_status, op, role, remark[:1000] or None))
+        cur.close()
+        return {'ok': True, 'query_id': qid, 'from': cur_status, 'to': new_status}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_qc_queries(status=None, patient_no=None, with_log=False, query_id=None, limit=100):
+    """质疑单列表 / 单张详情(带完整流转留痕)。"""
+    ensure_platform_qc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if query_id:
+            where.append('q.id=%s'); params.append(int(query_id))
+        if status:
+            where.append('q.status=%s'); params.append(status)
+        if patient_no:
+            where.append('q.patient_no=%s'); params.append(patient_no)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT q.id, q.finding_id, q.patient_no, p.name, q.target_kind, q.target_id, q.item_id,
+                   q.question, q.raised_by, q.raiser_role, q.status, q.answer, q.answered_by,
+                   q.answered_at, q.closed_by, q.closed_at, q.close_note, q.created_at,
+                   f.rule_code, f.severity, f.detail
+            FROM platform_qc_query q
+            LEFT JOIN platform_patient p ON p.patient_no=q.patient_no
+            LEFT JOIN platform_qc_finding f ON f.id=q.finding_id
+            WHERE {}
+            ORDER BY FIELD(q.status,'open','reopened','answered','closed'), q.created_at DESC
+            LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'finding_id', 'patient_no', 'patient_name', 'target_kind', 'target_id',
+                'item_id', 'question', 'raised_by', 'raiser_role', 'status', 'answer',
+                'answered_by', 'answered_at', 'closed_by', 'closed_at', 'close_note',
+                'created_at', 'rule_code', 'severity', 'finding_detail']
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            for k in ('answered_at', 'closed_at', 'created_at'):
+                if r.get(k) is not None and hasattr(r[k], 'strftime'):
+                    r[k] = r[k].strftime('%Y-%m-%d %H:%M:%S')
+            r['raiser_role_label'] = QC_ROLE_LABELS.get(r.get('raiser_role'), r.get('raiser_role'))
+            out.append(r)
+        if (with_log or query_id) and out:
+            ids = [r['id'] for r in out]
+            cur.execute("""
+                SELECT query_id, action, from_status, to_status, operator, operator_role, remark, created_at
+                FROM platform_qc_query_log WHERE query_id IN ({}) ORDER BY query_id, id
+            """.format(','.join(['%s'] * len(ids))), ids)
+            logs = {}
+            for qid, act, fr, to, op, role, remark, at in cur.fetchall():
+                logs.setdefault(qid, []).append({
+                    'action': act, 'from': fr, 'to': to, 'operator': op,
+                    'operator_role': role, 'operator_role_label': QC_ROLE_LABELS.get(role, role),
+                    'remark': remark,
+                    'at': at.strftime('%Y-%m-%d %H:%M:%S') if hasattr(at, 'strftime') else at})
+            for r in out:
+                r['log'] = logs.get(r['id'], [])
+        cur.close()
+        return {'ok': True, 'count': len(out), 'queries': out}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def platform_qc_compare(patient_no, scale_code):
+    """历次对比明细 (方案 §4.3(1) "差异数据自动标红, 支持对比结果导出")。
+
+    返回逐题的历次答案矩阵 + 每次相对上一次的变化标记, 前端据此标红, 也是导出的数据源。
+    """
+    if not patient_no or not scale_code:
+        return None, 'patient_no 和 scale_code 必填'
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT r.id, r.answers, r.total_score, r.level_label, r.created_at, r.operator, s.definition
+            FROM platform_scale_response r
+            LEFT JOIN platform_scale s ON s.code=r.scale_code AND s.version=r.scale_version
+            WHERE r.patient_no=%s AND r.scale_code=%s AND r.status='submitted'
+            ORDER BY r.created_at, r.id
+        """, (patient_no, scale_code))
+        rows = cur.fetchall()
+        cur.close()
+        if not rows:
+            return {'ok': True, 'patient_no': patient_no, 'scale_code': scale_code,
+                    'rounds': [], 'items': [], 'note': '该患者暂无此量表的填报记录'}, None
+
+        defn = rows[-1][6]
+        if isinstance(defn, str):
+            try:
+                defn = json.loads(defn)
+            except ValueError:
+                defn = {}
+        items = (defn or {}).get('items') or []
+
+        rounds, answers_seq = [], []
+        for rid, ans, total, level, created, op, _ in rows:
+            if isinstance(ans, str):
+                try:
+                    ans = json.loads(ans)
+                except ValueError:
+                    ans = {}
+            answers_seq.append(ans)
+            rounds.append({'id': rid, 'total': float(total) if total is not None else None,
+                           'level': level, 'operator': op,
+                           'at': created.strftime('%Y-%m-%d %H:%M') if created else ''})
+        for i, r in enumerate(rounds):
+            if i == 0 or r['total'] is None or rounds[i - 1]['total'] is None:
+                r['delta'] = None
+            else:
+                r['delta'] = round(r['total'] - rounds[i - 1]['total'], 2)
+
+        matrix = []
+        for it in items:
+            iid = it.get('id')
+            vals = [a.get(iid) for a in answers_seq]
+            labels = {}
+            for o in (it.get('options') or []):
+                labels[o.get('value')] = o.get('label')
+            matrix.append({
+                'item_id': iid, 'text': it.get('text'),
+                'values': vals,
+                'labels': [labels.get(v, v) for v in vals],
+                # changed[i] = 第 i 次相对第 i-1 次是否变了; 首次恒 False, 前端据此标红
+                'changed': [False] + [vals[i] != vals[i - 1] for i in range(1, len(vals))],
+                'all_same': len(set(json.dumps(v, ensure_ascii=False, sort_keys=True)
+                                    for v in vals)) == 1 and len(vals) > 1,
+            })
+        changed_counts = [sum(1 for m in matrix if m['changed'][i]) for i in range(len(rounds))]
+        for i, r in enumerate(rounds):
+            r['changed_items'] = changed_counts[i]
+        return {'ok': True, 'patient_no': patient_no, 'scale_code': scale_code,
+                'scale_name': (defn or {}).get('name') or scale_code,
+                'rounds': rounds, 'items': matrix,
+                'total_items': len(matrix)}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -4179,6 +4884,45 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/qc/findings':
+            try:
+                limit = min(int((query.get('limit') or ['100'])[0]), 500)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'limit 必须是整数'}); return
+            status = (query.get('status') or [None])[0]
+            if status and status not in ('open', 'queried', 'resolved', 'dismissed', 'all'):
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 open/queried/resolved/dismissed/all'}); return
+            severity = (query.get('severity') or [None])[0]
+            if severity and severity not in ('block', 'warn'):
+                self._send_json(400, {'ok': False, 'error': 'severity 必须是 block 或 warn'}); return
+            result, err = query_qc_findings(
+                status=None if status in (None, 'all') else status,
+                patient_no=(query.get('patientNo') or [None])[0],
+                severity=severity, limit=limit)
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/qc/queries':
+            try:
+                limit = min(int((query.get('limit') or ['100'])[0]), 500)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'limit 必须是整数'}); return
+            status = (query.get('status') or [None])[0]
+            if status and status not in ('open', 'answered', 'closed', 'reopened'):
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 open/answered/closed/reopened'}); return
+            result, err = query_qc_queries(
+                status=status, patient_no=(query.get('patientNo') or [None])[0],
+                with_log=(query.get('withLog') or ['0'])[0] in ('1', 'true'),
+                query_id=(query.get('id') or [None])[0], limit=limit)
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/qc/compare':
+            result, err = platform_qc_compare(
+                (query.get('patientNo') or [None])[0], (query.get('code') or [None])[0])
+            self._send_json((400 if err and '必填' in err else 500) if err else 200,
+                            {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/discover':
             try:
                 min_records = int((query.get('minRecords') or ['0'])[0] or 0)
@@ -4405,6 +5149,12 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'POST /api/platform/qc/run': '随访平台 M13: 跑自动质控 ({patient_no?, scale_code?})',
+                    'GET  /api/platform/qc/findings': '随访平台 M13: 质控发现 (?status=&severity=block|warn&patientNo=)',
+                    'GET  /api/platform/qc/compare': '随访平台 M13: 历次对比明细 (?patientNo=&code=), 逐题标出变化',
+                    'POST /api/platform/qc/query': '随访平台 M13: 提质疑 ({target_kind, target_id, question, finding_id?})',
+                    'GET  /api/platform/qc/queries': '随访平台 M13: 质疑单 (?status=&withLog=1&id=)',
+                    'POST /api/platform/qc/query/transition': '随访平台 M13: 推进质疑单 ({query_id, action: answer|close|reopen, remark})',
                     'GET  /api/platform/discover': '随访平台 M8/M9: 未建档门诊号 + 纳排筛选 (?minRecords=&minVitals=&since=&requireVitals=1&include=pending|excluded|all; 只读, 无需 token)',
                     'GET  /api/platform/patients': '随访平台 M1/M4/M5: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数 + wear_rate_7d + task_due_count',
                     'POST /api/platform/patient': '随访平台 M1: UPSERT platform_patient (建档/改档)',
@@ -4570,6 +5320,21 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
 
+            elif pathname == '/api/platform/qc/run':
+                result, err = platform_qc_run(
+                    patient_no=body.get('patient_no') or body.get('patientNo'),
+                    scale_code=body.get('scale_code') or body.get('code'),
+                    limit=min(int(body.get('limit') or 500), 2000))
+                self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/qc/query':
+                result, err = platform_qc_query_raise(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/qc/query/transition':
+                result, err = platform_qc_query_transition(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
             elif pathname == '/api/platform/scale/generate':
                 # 只生成不落库, 产出交人工审核 —— 与 /scale/parse 同样不走写接口门禁
                 spec = body if isinstance(body, dict) else {}
@@ -4734,6 +5499,8 @@ if __name__ == '__main__':
         ensure_platform_screening_table()
         # M10: 量表定义 + 填报记录 (idempotent)
         ensure_platform_scale_tables()
+        # M13: 质控发现 + 质疑单 + 流转留痕 (idempotent)
+        ensure_platform_qc_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -4785,6 +5552,12 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] POST /api/platform/qc/run                  随访平台 M13: 跑自动质控')
+    print('[端点] GET  /api/platform/qc/findings             随访平台 M13: 质控发现列表')
+    print('[端点] GET  /api/platform/qc/compare              随访平台 M13: 历次对比明细')
+    print('[端点] POST /api/platform/qc/query                随访平台 M13: 提质疑')
+    print('[端点] GET  /api/platform/qc/queries              随访平台 M13: 质疑单列表')
+    print('[端点] POST /api/platform/qc/query/transition     随访平台 M13: 推进质疑单')
     print('[端点] POST /api/platform/patients/batch        随访平台 M9: 批量建档')
     print('[端点] POST /api/platform/screening             随访平台 M9: 筛查排除/撤销')
     print('[端点] POST /api/platform/patient                随访平台 M1: UPSERT 患者建档')
