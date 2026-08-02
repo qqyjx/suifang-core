@@ -228,7 +228,31 @@ button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:g
           <div class="card panel" style="margin-bottom:14px">
             <div class="panel-head"><div><h3>这些门诊号已经在传数据，但平台里还没有档案</h3>
               <small>患者在小程序里自己输门诊号就能上传 —— 数据先到、档案后建。建档后才会出现在患者列表、才能配随访计划、才能归属报警。</small></div></div>
+            <div class="form-row" style="grid-template-columns:repeat(4,1fr)">
+              <div class="field" style="margin:0"><label>体征测量次数不少于<span class="sub">数的是心率/血氧/血压/体温/睡眠，不含步数</span></label><input id="fMin" type="number" min="0" value="0"></div>
+              <div class="field" style="margin:0"><label>最近上传不早于</label><input id="fSince" type="date"></div>
+              <div class="field" style="margin:0"><label>数据要求</label>
+                <select id="fVitals"><option value="0">不限</option><option value="1">必须有真实体征</option></select></div>
+              <div class="field" style="margin:0"><label>&nbsp;</label><button class="primary" id="fApply" style="width:100%">应用纳排条件</button></div>
+            </div>
+            <div style="color:var(--muted);font-size:12px;margin-top:2px" id="fHint">
+              「真实体征」= 心率／血氧／血压／体温／睡眠，与 M7 预警的判定范围同口径。只有步数和空日综合的门诊号建了档也判不出任何预警。
+            </div>
           </div>
+          <div class="tabs">
+            <button class="tab active" data-ctab="pending">未筛查 <span id="tabPendN">0</span></button>
+            <button class="tab" data-ctab="excluded">筛查不通过 <span id="tabExclN">0</span></button>
+          </div>
+          <div class="panel-head" style="margin-bottom:10px" id="batchBar">
+            <div><label style="font-size:13px;color:#657580"><input type="checkbox" id="candAll"> 全选本页</label>
+              <span class="sub" id="candSel">已选 0 个</span></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="secondary" id="csvBtn">⬆ CSV 批量导入</button>
+              <button class="secondary" id="excludeBtn" disabled>标记筛查不通过</button>
+              <button class="primary" id="batchBtn" disabled>批量建档</button>
+            </div>
+          </div>
+          <input type="file" id="csvFile" accept=".csv,.txt" style="display:none">
           <div class="rows" id="candWrap"><div class="loading">加载中…</div></div>
         </div>
       </section>
@@ -516,6 +540,7 @@ function alarmBasis(a) {
 const S = {
   patients: [], candidates: [], alarms: [], tasks: [], plans: [],
   alarmStatus: 'open', page: 'dashboard', ptab: 'known', etab: 'alarms',
+  ctab: 'pending', candSel: new Set(),
 };
 
 /* ================================================================ 导航 */
@@ -613,16 +638,34 @@ function renderPatients() {
   }).join('');
 }
 
+/* 纳排条件 —— 设计方案 §4.1(2) 的最小可用形态。筛选放在服务端做(discover 本来就要整扫
+   wearable_device_data), 而不是前端拿全量再过滤: 方案要求的是"在全量数据范围内完成条件
+   组合检索", 数据一多前端过滤就不成立了。 */
+function candFilters() {
+  const q = ['include=' + S.ctab];
+  const min = document.getElementById('fMin').value;
+  if (min && Number(min) > 0) q.push('minVitals=' + encodeURIComponent(min));
+  const since = document.getElementById('fSince').value;
+  if (since) q.push('since=' + encodeURIComponent(since));
+  if (document.getElementById('fVitals').value === '1') q.push('requireVitals=1');
+  return '?' + q.join('&');
+}
 async function loadCandidates() {
   const wrap = document.getElementById('candWrap');
   try {
-    const d = await getJSON('/api/platform/discover');
+    const d = await getJSON('/api/platform/discover' + candFilters());
     S.candidates = d.candidates || [];
-    document.getElementById('tabCandN').textContent = S.candidates.length;
-    document.getElementById('kpiCand').textContent = S.candidates.length;
+    S.candSel = new Set();
+    document.getElementById('tabCandN').textContent = d.total_found - d.excluded_count;
+    document.getElementById('tabPendN').textContent = d.total_found - d.excluded_count;
+    document.getElementById('tabExclN').textContent = d.excluded_count;
+    document.getElementById('kpiCand').textContent = d.total_found - d.excluded_count;
     const badge = document.getElementById('navCandBadge');
-    badge.textContent = S.candidates.length;
-    badge.style.display = S.candidates.length ? '' : 'none';
+    const n = d.total_found - d.excluded_count;
+    badge.textContent = n; badge.style.display = n ? '' : 'none';
+    document.getElementById('fHint').textContent = S.candidates.length === d.total_found
+      ? '「真实体征」= 心率／血氧／血压／体温／睡眠，与 M7 预警的判定范围同口径。'
+      : '当前条件筛出 ' + S.candidates.length + ' 个，全部候选共 ' + d.total_found + ' 个。';
     renderCandidates();
     renderDashRecent();
   } catch (e) { wrap.innerHTML = errBox(e); document.getElementById('kpiCand').textContent = '--'; }
@@ -633,18 +676,195 @@ function typesText(t) {
 }
 function renderCandidates() {
   const wrap = document.getElementById('candWrap');
+  const excl = S.ctab === 'excluded';
+  document.getElementById('batchBar').style.display = excl ? 'none' : '';
   if (!S.candidates.length) {
-    wrap.innerHTML = emptyBox('✅', '没有待建档的门诊号', '设备数据里出现过的门诊号都已经建过档了。');
+    wrap.innerHTML = excl
+      ? emptyBox('✅', '没有被标记为筛查不通过的门诊号')
+      : emptyBox('✅', '当前条件下没有待建档的门诊号', '放宽纳排条件，或者这些号确实都建过档了。');
     return;
   }
-  wrap.innerHTML = S.candidates.map(c =>
-    '<div class="row-card row-cand">'+
-      '<div><span class="strong mono">'+esc(c.patient_no)+'</span><span class="sub">门诊号</span></div>'+
-      '<div>'+c.s101_count+' 条<span class="sub">S101 记录</span></div>'+
+  wrap.innerHTML = S.candidates.map(c => {
+    const vit = c.has_vitals
+      ? '<span class="tag blue">有体征 '+c.vital_count+'</span>'
+      : '<span class="tag grey">仅步数/日综合</span>';
+    const act = excl
+      ? '<button class="secondary" onclick="markScreening(\''+esc(c.patient_no)+'\',\'restore\')">撤销排除</button>'
+      : '<button class="primary" onclick="quickEnroll(\''+esc(c.patient_no)+'\')">建档</button>';
+    return '<div class="row-card row-cand">'+
+      '<div>'+(excl ? '' : '<input type="checkbox" class="candCk" value="'+esc(c.patient_no)+'"> ')+
+        '<span class="strong mono">'+esc(c.patient_no)+'</span>'+
+        '<span class="sub">'+(excl && c.exclusion ? '排除原因：'+esc(c.exclusion.reason || '未填')+
+          '（'+esc(c.exclusion.operator || '匿名')+'）' : '门诊号')+'</span></div>'+
+      '<div>'+c.s101_count+' 条 '+vit+'<span class="sub">S101 记录</span></div>'+
       '<div>'+esc(typesText(c.s101_types))+'<span class="sub">数据类型</span></div>'+
       '<div>'+esc(fmtTime(c.s101_latest))+'<span class="sub">最近上传</span></div>'+
-      '<div><button class="primary" onclick="quickEnroll(\''+esc(c.patient_no)+'\')">建档</button></div>'+
-    '</div>').join('');
+      '<div>'+act+'</div>'+
+    '</div>';
+  }).join('');
+  wrap.querySelectorAll('.candCk').forEach(ck => ck.onchange = () => {
+    ck.checked ? S.candSel.add(ck.value) : S.candSel.delete(ck.value);
+    syncBatchBar();
+  });
+  syncBatchBar();
+}
+function syncBatchBar() {
+  const n = S.candSel.size;
+  document.getElementById('candSel').textContent = '已选 ' + n + ' 个';
+  document.getElementById('batchBtn').disabled = !n;
+  document.getElementById('excludeBtn').disabled = !n;
+  document.getElementById('batchBtn').textContent = n ? '批量建档（' + n + '）' : '批量建档';
+}
+document.getElementById('candAll').onchange = e => {
+  S.candSel = new Set();
+  document.querySelectorAll('.candCk').forEach(ck => {
+    ck.checked = e.target.checked;
+    if (ck.checked) S.candSel.add(ck.value);
+  });
+  syncBatchBar();
+};
+document.getElementById('fApply').onclick = () => loadCandidates();
+document.querySelectorAll('[data-ctab]').forEach(b => b.onclick = () => {
+  S.ctab = b.dataset.ctab;
+  document.querySelectorAll('[data-ctab]').forEach(x => x.classList.toggle('active', x === b));
+  loadCandidates();
+});
+
+/* 批量建档: 服务端逐条 UPSERT, 单条失败不影响其余条 —— 批量导入最常见的场景就是
+   表里混了一两行脏数据, 不该让整批回滚。这里把失败明细完整回显, 不吞。 */
+async function batchEnroll(list, groupTag) {
+  const res = await apiFetch(API_BASE + '/api/platform/patients/batch', {
+    method: 'POST', headers: headers(true),
+    body: JSON.stringify({ patients: list.map(x => Object.assign({ group_tag: groupTag || null }, x)) }),
+  });
+  const d = await res.json();
+  if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+  return d;
+}
+document.getElementById('batchBtn').onclick = () => {
+  const list = [...S.candSel];
+  openModal('批量建档', list.length + ' 个门诊号',
+    '<div class="field"><label>统一分组 / 队列<span class="sub">选填，会写进每条档案的 group_tag</span></label>'+
+    '<input id="bgGroup" placeholder="如 高血压全周期管理队列"></div>'+
+    '<div class="detail-card"><h4>将建档的门诊号</h4><div class="mono" style="max-height:180px;overflow:auto;line-height:1.9">'+
+    list.map(esc).join('、')+'</div></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="bgGo">确认建档</button>');
+  document.getElementById('bgGo').onclick = async () => {
+    const btn = document.getElementById('bgGo'); btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const d = await batchEnroll(list.map(no => ({ patient_no: no })), document.getElementById('bgGroup').value.trim());
+      closeModal();
+      toast('建档完成：成功 ' + d.succeeded + ' 条' + (d.failed ? '，失败 ' + d.failed + ' 条' : ''), 5000);
+      if (d.failed) showBatchFailures(d);
+      await Promise.all([loadPatients(), loadCandidates()]);
+    } catch (e) { btn.disabled = false; btn.textContent = '确认建档'; toast('建档失败：' + e.message, 4000); }
+  };
+};
+function showBatchFailures(d) {
+  const bad = d.results.filter(x => !x.ok);
+  openDrawer('批量建档结果', '成功 ' + d.succeeded + ' 条 / 失败 ' + bad.length + ' 条',
+    '<div class="detail-card"><h4>失败明细</h4>'+
+    bad.map(x => '<div class="detail-row"><span class="mono">'+esc(x.patient_no || '(空)')+'</span><b>'+esc(x.error)+'</b></div>').join('')+
+    '</div>', '<button class="secondary" onclick="closeDrawer()">知道了</button>');
+}
+
+document.getElementById('excludeBtn').onclick = () => {
+  const list = [...S.candSel];
+  openModal('标记筛查不通过', list.length + ' 个门诊号',
+    '<div class="field"><label>排除原因</label><input id="exReason" placeholder="如 只有步数，无体征可判"></div>'+
+    '<div style="color:var(--muted);font-size:13px">标记后这些号会从「未筛查」移到「筛查不通过」，不再反复出现在待建档列表里。随时可以撤销。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="exGo2">确认</button>');
+  document.getElementById('exGo2').onclick = async () => {
+    const btn = document.getElementById('exGo2'); btn.disabled = true; btn.textContent = '提交中…';
+    const reason = document.getElementById('exReason').value.trim();
+    try {
+      for (const no of list) await markScreening(no, 'exclude', reason, true);
+      closeModal(); toast('已标记 ' + list.length + ' 个为筛查不通过');
+      await loadCandidates();
+    } catch (e) { btn.disabled = false; btn.textContent = '确认'; toast('操作失败：' + e.message, 4000); }
+  };
+};
+async function markScreening(patientNo, action, reason, silent) {
+  const res = await apiFetch(API_BASE + '/api/platform/screening', {
+    method: 'POST', headers: headers(true),
+    body: JSON.stringify({ patient_no: patientNo, action, reason: reason || null,
+      operator: localStorage.getItem(LS_OP) || null }),
+  });
+  const d = await res.json();
+  if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+  if (!silent) { toast(action === 'exclude' ? '已标记筛查不通过' : '已撤销排除'); await loadCandidates(); }
+  return d;
+}
+
+/* CSV 批量导入 (方案 §4.1(1) "存量 Excel 数据批量导入")。
+   走 CSV 而不是 .xlsx: 解析 xlsx 要引第三方库, 而这个平台是单文件零依赖部署 ——
+   Excel 里"另存为 CSV UTF-8"是一步操作, 不值得为它牺牲零依赖。 */
+document.getElementById('csvBtn').onclick = () => document.getElementById('csvFile').click();
+document.getElementById('csvFile').onchange = async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const rows = parseCsv(text);
+    if (!rows.length) { toast('文件里没有可用的数据行'); return; }
+    openModal('CSV 批量导入', file.name + ' · 解析出 ' + rows.length + ' 行',
+      '<div class="detail-card"><h4>识别到的列</h4><div class="mono" style="font-size:12px">'+
+        esc(Object.keys(rows[0]).join(' | '))+'</div>'+
+        '<div class="sub" style="margin-top:8px">支持的列名（大小写不敏感，中英文皆可）：'+
+        'patient_no／门诊号、name／姓名、gender／性别（M·F·男·女）、age／年龄、group_tag／分组、note／备注</div></div>'+
+      '<div class="detail-card"><h4>前 5 行预览</h4>'+
+        rows.slice(0, 5).map(r => '<div class="detail-row"><span class="mono">'+esc(r.patient_no || '(缺门诊号)')+
+          '</span><b>'+esc(r.name || '')+' '+esc(r.group_tag || '')+'</b></div>').join('')+'</div>',
+      '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="csvGo">导入 '+rows.length+' 行</button>');
+    document.getElementById('csvGo').onclick = async () => {
+      const btn = document.getElementById('csvGo'); btn.disabled = true; btn.textContent = '导入中…';
+      try {
+        const d = await batchEnroll(rows);
+        closeModal();
+        toast('导入完成：成功 ' + d.succeeded + ' 条' + (d.failed ? '，失败 ' + d.failed + ' 条' : ''), 5000);
+        if (d.failed) showBatchFailures(d);
+        await Promise.all([loadPatients(), loadCandidates()]);
+      } catch (err) { btn.disabled = false; btn.textContent = '导入'; toast('导入失败：' + err.message, 4000); }
+    };
+  } catch (err) { toast('读取文件失败：' + err.message, 4000); }
+};
+/* 极简 CSV 解析: 支持引号包裹与字段内逗号/换行。够用就好 —— 复杂 CSV 方言(自定义分隔符、
+   转义反斜杠)不在这里兜, 那种情况让人先在 Excel 里另存一次更省事。 */
+function parseCsv(text) {
+  text = text.replace(/^﻿/, '');            // Excel 存 UTF-8 CSV 会带 BOM
+  const cells = [], row = [];
+  let cur = '', q = false, rows = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i+1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ',') { row.push(cur); cur = ''; }
+    else if (ch === '\n') { row.push(cur); rows.push(row.slice()); row.length = 0; cur = ''; }
+    else if (ch !== '\r') cur += ch;
+  }
+  if (cur !== '' || row.length) { row.push(cur); rows.push(row.slice()); }
+  rows = rows.filter(r => r.some(x => x.trim() !== ''));
+  if (rows.length < 2) return [];
+  const ALIAS = {
+    'patient_no':'patient_no','门诊号':'patient_no','患者编号':'patient_no','病案号':'patient_no',
+    'name':'name','姓名':'name', 'gender':'gender','性别':'gender',
+    'age':'age','年龄':'age', 'group_tag':'group_tag','分组':'group_tag','队列':'group_tag',
+    'note':'note','备注':'note',
+  };
+  const head = rows[0].map(h => ALIAS[h.trim().toLowerCase()] || ALIAS[h.trim()] || null);
+  const out = [];
+  for (const r of rows.slice(1)) {
+    const o = {};
+    head.forEach((k, i) => { if (k && (r[i] || '').trim() !== '') o[k] = r[i].trim(); });
+    if (!o.patient_no) continue;
+    if (o.gender) o.gender = /^(m|男)$/i.test(o.gender) ? 'M' : (/^(f|女)$/i.test(o.gender) ? 'F' : null);
+    if (o.age) o.age = Number(o.age);
+    out.push(o);
+  }
+  return out;
 }
 
 function quickEnroll(patientNo) {

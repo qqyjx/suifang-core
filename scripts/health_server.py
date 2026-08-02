@@ -1824,27 +1824,55 @@ def platform_vital_alarm_ingest(days=7):
 
 
 # ============ 随访平台 1.2 M8 (待建档门诊号发现) ============
-def platform_discover_patients():
+# 只有"步数"和"日综合"这两类不算生命体征 —— 日综合还经常是 dailyRecords:[] 的空跑
+# (to_chinese_record 会给它标 is_empty)。判断一个门诊号"有没有真体征"就是看它有没有
+# 落在 VITAL_THRESHOLDS 能判定的那五类里, 与 M7 判定范围保持同一个口径。
+S101_VITAL_TYPE_KEYS = set(S101_METRIC_FIELDS.keys())
+
+
+def platform_discover_patients(min_records=0, min_vitals=0, since=None,
+                               require_vitals=False, include='pending'):
     """列出在设备数据里出现过、但 platform_patient 里还没有档案的门诊号。
 
-    为什么需要这个: 患者标识是 5.06-v9 定的"写在大 JSON 每条记录的 '门诊号' 字段里",
+    纳排条件 (设计方案 §4.1(2)"智能批量入组与筛查"的最小可用形态, 复杂条件组合是后面的事):
+      min_records    总记录数下限
+      min_vitals     **体征**记录数下限 —— 通常这个才是你要的那个。总记录数被步数主导:
+                     生产实测 0010090645 有 117 条记录, 其中 96 条是步数, 真正能被 M7
+                     判定的血压只有 8 条。按总数筛会把"传了一堆步数但只测过 1 次血压"的
+                     人当成优质候选。
+      since          'YYYY-MM-DD', 最近上传时间不早于此日
+      require_vitals True = 只要有真实体征(心率/血氧/血压/体温/睡眠)的, 滤掉只有步数和
+                     空日综合的号 —— 生产实测 39 个候选里只有 6 个有真体征
+      include        pending=未筛查(默认) / excluded=已排除 / all=全部
+
+    为什么需要这个端点: 患者标识是 5.06-v9 定的"写在大 JSON 每条记录的 '门诊号' 字段里",
     小程序端患者自己输门诊号就能上传数据 —— 也就是说**数据先到, 档案后建**。
     /api/platform/patients 只读 platform_patient, 所以在有人手工建档之前, 平台上一个
-    患者都看不到, 而设备数据里其实已经躺了几十个门诊号 (2026-08-02 实测: 设备数据 40 个
-    门诊号, platform_patient 0 行)。这个端点把这段落差显式暴露出来, 让医护一键建档,
-    而不是要求他们凭空知道有哪些号。
+    患者都看不到, 而设备数据里其实已经躺了几十个门诊号 (2026-08-02 生产实测: 设备数据
+    39 个门诊号, platform_patient 0 行 —— 这就是平台一直看着是空的原因)。这个端点把
+    这段落差显式暴露出来, 让医护一键建档, 而不是要求他们凭空知道有哪些号。
 
-    对应设计方案 §4.1(2)"智能批量入组与筛查"的最小可用形态: 先解决"有哪些人可入组",
-    纳排规则匹配是后面的事。
-
-    返回 [{patient_no, s101_count, s101_latest, s101_types, iwown_devices, zhenmaiyi_cases}],
-    按最近上传时间倒序 (最近有数据的排前面, 建档优先级天然就高)。
+    返回每个候选 {patient_no, s101_count, s101_latest, s101_types, has_vitals, vital_count,
+    excluded, exclusion, iwown_devices, zhenmaiyi_cases}, 按最近上传时间倒序
+    (最近有数据的排前面, 建档优先级天然就高)。
     """
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute('SELECT patient_no FROM platform_patient')
         known = {r[0] for r in cur.fetchall()}
+        # 已排除名单: 医护看过并决定不入组的号。不记住这个决定的话, 每次打开候选列表
+        # 那几十个号又全冒出来, 筛查就永远做不完。
+        excluded = {}
+        try:
+            cur.execute('SELECT patient_no, reason, operator, created_at FROM platform_screening')
+            for p_no, reason, operator, created in cur.fetchall():
+                excluded[p_no] = {
+                    'reason': reason, 'operator': operator,
+                    'created_at': created.strftime('%Y-%m-%d %H:%M:%S') if created else None,
+                }
+        except Exception as e:
+            print('[M9] platform_screening 读取跳过:', e)
 
         found = {}
 
@@ -1889,8 +1917,119 @@ def platform_discover_patients():
             print('[M8] iwown_device 跳过:', e)
 
         cur.close()
-        rows = sorted(found.values(), key=lambda x: (x['s101_latest'] or ''), reverse=True)
-        return {'ok': True, 'count': len(rows), 'known_count': len(known), 'candidates': rows}, None
+
+        # --- 纳排过滤 ---
+        rows = []
+        for e in found.values():
+            e['has_vitals'] = any(k in S101_VITAL_TYPE_KEYS for k in e['s101_types'])
+            e['vital_count'] = sum(v for k, v in e['s101_types'].items() if k in S101_VITAL_TYPE_KEYS)
+            is_excluded = e['patient_no'] in excluded
+            e['excluded'] = is_excluded
+            e['exclusion'] = excluded.get(e['patient_no'])
+            if include == 'pending' and is_excluded:
+                continue
+            if include == 'excluded' and not is_excluded:
+                continue
+            if e['s101_count'] < min_records:
+                continue
+            if e['vital_count'] < min_vitals:
+                continue
+            if since and (e['s101_latest'] or '')[:10] < since:
+                continue
+            if require_vitals and not e['has_vitals']:
+                continue
+            rows.append(e)
+
+        rows.sort(key=lambda x: (x['s101_latest'] or ''), reverse=True)
+        return {'ok': True, 'count': len(rows), 'known_count': len(known),
+                'excluded_count': len(excluded), 'total_found': len(found),
+                'filters': {'min_records': min_records, 'min_vitals': min_vitals,
+                            'since': since, 'require_vitals': require_vitals, 'include': include},
+                'candidates': rows}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def ensure_platform_screening_table():
+    """M9: 筛查排除名单 (idempotent)。
+
+    只存"排除"这一个决定, 不存"已入组" —— 已入组就是 platform_patient 里有这一行,
+    再存一份等于两个事实来源, 早晚不一致。三态是算出来的:
+      在 platform_patient 里          -> 已入组
+      在 platform_screening 里        -> 筛查不通过
+      两边都没有但设备数据里有         -> 未筛查
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_screening (
+                patient_no VARCHAR(64) PRIMARY KEY COMMENT '门诊号',
+                reason VARCHAR(255) DEFAULT NULL COMMENT '排除原因',
+                operator VARCHAR(64) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M9 筛查排除名单'
+        """)
+        print('[启动] platform_screening 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_screening_table 失败:', e)
+    finally:
+        conn.close()
+
+
+def platform_batch_enroll(body):
+    """M9: 批量建档 {patients:[{patient_no, name?, gender?, age?, group_tag?, note?}, ...]}。
+
+    逐条复用 upsert_platform_patient, 不另写一套 UPSERT —— 字段校验(gender 枚举、age 整数)
+    只在那一处维护。单条失败不影响其余条, 逐条回报结果, 因为批量导入最常见的场景就是
+    Excel 里混了一两行脏数据, 不该让整批回滚。
+    """
+    items = body.get('patients')
+    if not isinstance(items, list) or not items:
+        return None, 'patients 必须是非空数组'
+    if len(items) > 500:
+        return None, '单次最多 500 条, 请分批'
+    results, ok_n, fail_n = [], 0, 0
+    for it in items:
+        if not isinstance(it, dict):
+            results.append({'patient_no': None, 'ok': False, 'error': '每项必须是对象'})
+            fail_n += 1
+            continue
+        r, err = upsert_platform_patient(it)
+        if err:
+            results.append({'patient_no': it.get('patient_no'), 'ok': False, 'error': err})
+            fail_n += 1
+        else:
+            results.append({'patient_no': r['patient_no'], 'ok': True, 'action': r['action']})
+            ok_n += 1
+    return {'ok': True, 'succeeded': ok_n, 'failed': fail_n, 'results': results}, None
+
+
+def platform_screening_mark(body):
+    """M9: 标记/撤销筛查排除 {patient_no, action:'exclude'|'restore', reason?, operator?}。"""
+    patient_no = str(body.get('patient_no') or '').strip()
+    if not patient_no:
+        return None, 'patient_no 必填'
+    action = body.get('action') or 'exclude'
+    if action not in ('exclude', 'restore'):
+        return None, "action 必须是 'exclude' 或 'restore'"
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if action == 'restore':
+            cur.execute('DELETE FROM platform_screening WHERE patient_no = %s', (patient_no,))
+        else:
+            cur.execute("""
+                INSERT INTO platform_screening (patient_no, reason, operator)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE reason = VALUES(reason), operator = VALUES(operator)
+            """, (patient_no, body.get('reason') or None, body.get('operator') or None))
+        cur.close()
+        return {'patient_no': patient_no, 'action': action}, None
     except Exception as e:
         traceback.print_exc()
         return None, str(e)
@@ -2976,7 +3115,28 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {'ok': False, 'error': str(e)})
 
         elif pathname == '/api/platform/discover':
-            result, err = platform_discover_patients()
+            try:
+                min_records = int((query.get('minRecords') or ['0'])[0] or 0)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'minRecords 必须是整数'})
+                return
+            since = (query.get('since') or [None])[0] or None
+            if since and not re.match(r'^\d{4}-\d{2}-\d{2}$', since):
+                self._send_json(400, {'ok': False, 'error': "since 必须是 'YYYY-MM-DD'"})
+                return
+            try:
+                min_vitals = int((query.get('minVitals') or ['0'])[0] or 0)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'minVitals 必须是整数'})
+                return
+            require_vitals = (query.get('requireVitals') or ['0'])[0] in ('1', 'true', 'yes')
+            include = (query.get('include') or ['pending'])[0]
+            if include not in ('pending', 'excluded', 'all'):
+                self._send_json(400, {'ok': False, 'error': "include 必须是 pending/excluded/all"})
+                return
+            result, err = platform_discover_patients(
+                min_records=min_records, min_vitals=min_vitals, since=since,
+                require_vitals=require_vitals, include=include)
             if err:
                 self._send_json(500, {'ok': False, 'error': err})
             else:
@@ -3171,7 +3331,9 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                     'POST /api/zhenmaiyi/upload': 'v10 patch: 浏览器解析诊脉仪 zip 后批量入库 (zhenmaiyi 表, UPSERT by case_id)',
                     'GET  /api/zhenmaiyi/list': 'v10 patch: 列全部诊脉仪记录 (不含 base64 附件)',
-                    'GET  /api/platform/discover': '随访平台 M8: 设备数据里出现过但未建档的门诊号 (供一键建档; 只读, 无需 token)',
+                    'POST /api/platform/patients/batch': '随访平台 M9: 批量建档 {patients:[{patient_no,...}]}, 单条失败不影响其余',
+                    'POST /api/platform/screening': "随访平台 M9: 筛查排除/撤销 {patient_no, action:'exclude'|'restore', reason, operator}",
+                    'GET  /api/platform/discover': '随访平台 M8/M9: 未建档门诊号 + 纳排筛选 (?minRecords=&minVitals=&since=&requireVitals=1&include=pending|excluded|all; 只读, 无需 token)',
                     'GET  /api/platform/patients': '随访平台 M1/M4/M5: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数 + wear_rate_7d + task_due_count',
                     'POST /api/platform/patient': '随访平台 M1: UPSERT platform_patient (建档/改档)',
                     'POST /api/platform/bind': "随访平台 M1: 绑定/解绑 {patient_no, chain:'iwown'|'zhenmaiyi', key, unbind}",
@@ -3308,6 +3470,24 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(200, {'ok': True, **result})
 
+            elif pathname == '/api/platform/patients/batch':
+                if not check_platform_token(self):
+                    return
+                result, err = platform_batch_enroll(body)
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, result)
+
+            elif pathname == '/api/platform/screening':
+                if not check_platform_token(self):
+                    return
+                result, err = platform_screening_mark(body)
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, result)
+
             elif pathname == '/api/platform/bind':
                 if not check_platform_token(self):
                     return
@@ -3417,6 +3597,8 @@ if __name__ == '__main__':
         ensure_followup_log_plan_index()
         # M7: 确保 platform_alarm 有 source_chain/dedup_key 两列 (idempotent, 老库需要 ALTER 补齐)
         ensure_platform_alarm_m7_columns()
+        # M9: 筛查排除名单表 (idempotent)
+        ensure_platform_screening_table()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -3460,7 +3642,9 @@ if __name__ == '__main__':
     print('[端点] GET  /api/status            服务状态')
     print('[端点] GET  /api/data              查询所有设备 (?patientNo= 过滤大 JSON 内的记录)')
     print('[端点] GET  /api/platform/patients              随访平台 M1: 患者列表 + 绑定态')
-    print('[端点] GET  /api/platform/discover              随访平台 M8: 待建档门诊号发现')
+    print('[端点] GET  /api/platform/discover              随访平台 M8/M9: 待建档门诊号 + 纳排筛选')
+    print('[端点] POST /api/platform/patients/batch        随访平台 M9: 批量建档')
+    print('[端点] POST /api/platform/screening             随访平台 M9: 筛查排除/撤销')
     print('[端点] POST /api/platform/patient                随访平台 M1: UPSERT 患者建档')
     print('[端点] POST /api/platform/bind                   随访平台 M1: 绑定/解绑 iwown|zhenmaiyi')
     print('[端点] GET  /api/platform/patient/vitals         随访平台 M1: 单患者跨链路体征日聚合')
