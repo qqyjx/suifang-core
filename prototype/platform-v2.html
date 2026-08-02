@@ -20,7 +20,7 @@
     随访执行中心 真实   M2 报警闭环 + M7 体征阈值/趋势预警 + M5 今日任务
     患者管理     真实   M1 建档/绑定/体征 + M4 佩戴依从性 + M8 待建档发现
     数据质控     部分   M13 自动质控+历次对比+质疑闭环已通; 留痕回退与 OCR 采集未建设
-    统计分析     部分   M6 队列导出已通; 高级检索与可视化统计未建设
+    统计分析     部分   M6 导出 + M16 高级检索与分布统计已通; CDISC/变量挑选/异步导出未建设
     系统管理     真实   API 配置 / 服务自检 (多角色权限体系未建设)
 -->
 <style>
@@ -319,10 +319,36 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
       <!-- ===================== 统计分析 (M6) ===================== -->
       <section class="module-page" id="analytics">
         <div class="module-hero">
-          <div><h2>统计分析与数据导出</h2><p>队列数据导出已上线；高级检索与智能可视化尚未建设</p></div>
-          <button class="white-btn" id="exportBtn">⬇ 导出数据</button>
+          <div><h2>统计分析与数据导出</h2><p>方案 §4.6：受试者高级检索 · 多维分布统计 · 队列数据导出</p></div>
+          <div class="hero-actions">
+            <button class="white-btn" id="searchBtn">⌕ 高级检索</button>
+            <button class="white-btn" id="exportBtn">⬇ 导出数据</button>
+          </div>
         </div>
         <div class="stats" id="anaStats"></div>
+
+        <div class="card panel" id="searchPanel" style="margin-bottom:16px">
+          <div class="panel-head">
+            <div><h3>受试者高级检索</h3><small>柔性增删条件，可跨患者属性／量表／体征／预警／CRF 组合</small></div>
+            <div class="head-tools">
+              <select id="sqRoot" class="mini"><option value="and">全部满足（AND）</option><option value="or">任一满足（OR）</option></select>
+              <button class="link" id="sqAdd">+ 加条件</button>
+              <button class="link" id="sqClear">清空</button>
+            </div>
+          </div>
+          <div id="sqRows"></div>
+          <div style="display:flex;gap:9px;align-items:center;margin-top:12px;flex-wrap:wrap">
+            <button class="primary" id="sqRun">检索</button>
+            <button class="secondary" id="sqStat">对结果做统计</button>
+            <button class="secondary" id="sqExport" style="display:none">导出结果 CSV</button>
+            <span id="sqHint" style="font-size:12px;color:#82909c"></span>
+          </div>
+        </div>
+        <div id="sqCharts"></div>
+        <div class="card panel" id="sqResultPanel" style="display:none;margin-bottom:16px">
+          <div class="panel-head"><h3>检索结果 <span id="sqCount" style="color:#82909c;font-weight:400"></span></h3></div>
+          <div class="table-wrap"><table id="sqTable"></table></div>
+        </div>
         <div class="card panel">
           <div class="panel-head"><div><h3>导出能力现状</h3><small>对照方案 §4.6(1)</small></div></div>
           <div class="table-wrap"><table><thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead><tbody>
@@ -330,8 +356,12 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
             <tr><td>按门诊号 / 体征天数筛选</td><td><span class="status">已上线</span></td><td>导出弹窗里可选</td></tr>
             <tr><td>CDISC 标准格式</td><td><span class="tag grey">未建设</span></td><td>方案要求的临床研究级导出规范</td></tr>
             <tr><td>横向 / 纵向 / 历史三种变量挑选</td><td><span class="tag grey">未建设</span></td><td></td></tr>
+            <tr><td>受试者高级检索（多条件柔性组合）</td><td><span class="tag green">已建</span></td><td>患者属性／量表总分与单题／体征日均值／预警数／CRF 字段／随访超窗，可 AND/OR 嵌套。字段走白名单、值全参数化——这是个让人自己拼查询的接口，打的是患者库</td></tr>
+            <tr><td>单指标与多指标组合统计</td><td><span class="tag green">已建</span></td><td>一次最多 6 个维度，统计范围跟着检索条件走</td></tr>
+            <tr><td>自动生成柱状图/饼图/折线图</td><td><span class="tag amber">部分</span></td><td>图表类型由<b>规则</b>决定（分类→饼图/柱图、时间→折线），不是模型选的。方案写的是「AI 自动生成」，我们做到的是这一层，不把它说成别的</td></tr>
             <tr><td>导出文件加密 + 短信/邮件发密码</td><td><span class="tag grey">未建设</span></td><td>方案要求的导出安全机制</td></tr>
             <tr><td>大样本异步后台导出 + 导出记录留存</td><td><span class="tag grey">未建设</span></td><td>当前是同步导出，样本量大会占住请求</td></tr>
+            <tr><td>体征指标可检索</td><td><span class="tag green">已建</span></td><td>M7 摄入时顺带把日均值落进 platform_vital_daily（派生表，删了下次重建）——体征原始数据在设备上传的大 JSON 里，不落表就进不了检索条件</td></tr>
           </tbody></table></div>
         </div>
       </section>
@@ -690,6 +720,7 @@ const S = {
   qcFindings: [], qcQueries: [], cmpData: null,
   crfs: [], crfFill: null, crfDraft: null,
   edu: [], eduDraft: null,
+  sqFields: null, sqConds: [], sqResult: null,
 };
 
 /* ================================================================ 导航 */
@@ -701,7 +732,7 @@ function goto(page) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (page === 'execute') { loadAlarms(); loadTasks(); }
   if (page === 'plans') loadPlans();
-  if (page === 'analytics') loadAnalytics();
+  if (page === 'analytics') { loadAnalytics(); loadSearchFields().then(renderSqRows).catch(() => {}); }
   if (page === 'settings') fillSettings();
   if (page === 'assets') { loadScales(); loadResponses(); loadCrfs(); loadEdu(); }
   if (page === 'quality') loadQuality();
@@ -2215,6 +2246,289 @@ document.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => {
   if (t === 'crf') loadCrfs();
   if (t === 'edu') loadEdu();
 });
+
+/* ================================================================ M16 高级检索与统计 (方案 §4.6(2))
+
+   字段列表从 /search/fields 拉, 前端不自己硬编码一份 —— 硬编码的那份迟早和后端
+   白名单漂移, 表现是"界面上有这个字段, 一查就报未知字段", 而使用者无从判断
+   是自己填错了还是系统坏了。                                                    */
+const SQ_OP_LABEL = { eq: '等于', ne: '不等于', gt: '大于', gte: '大于等于', lt: '小于',
+                      lte: '小于等于', between: '介于', in: '属于', contains: '包含',
+                      empty: '为空', filled: '不为空' };
+
+async function loadSearchFields() {
+  if (S.sqFields) return S.sqFields;
+  S.sqFields = await getJSON('/api/platform/search/fields');
+  return S.sqFields;
+}
+
+function sqFieldOptions(sel) {
+  const groups = {};
+  S.sqFields.fields.forEach(f => { (groups[f.group] = groups[f.group] || []).push(f); });
+  return Object.keys(groups).map(g =>
+    '<optgroup label="' + esc(g) + '">' + groups[g].map(f =>
+      '<option value="' + esc(f.field) + '"' + (f.field === sel ? ' selected' : '') + '>' +
+      esc(f.label) + '</option>').join('') + '</optgroup>').join('');
+}
+
+function renderSqRows() {
+  const wrap = document.getElementById('sqRows');
+  if (!S.sqConds.length) {
+    wrap.innerHTML = '<div style="color:#9ca3af;font-size:13px;padding:8px 0">'+
+      '还没有条件——不加条件就是查全部。点右上角「+ 加条件」开始。</div>';
+    return;
+  }
+  wrap.innerHTML = S.sqConds.map((c, i) => {
+    const spec = S.sqFields.fields.find(f => f.field === c.field) || {};
+    const ops = spec.ops || ['eq'];
+    if (ops.indexOf(c.operator) < 0) c.operator = ops[0];
+    let valHtml;
+    if (c.operator === 'empty' || c.operator === 'filled') valHtml = '<span style="color:#9ca3af">（无需填值）</span>';
+    else if (c.operator === 'between')
+      valHtml = '<input class="mini" data-sqv="'+i+'" placeholder="下限" value="'+esc(c.value && c.value[0] != null ? c.value[0] : '')+'" style="width:80px">'+
+                ' ~ <input class="mini" data-sqv2="'+i+'" placeholder="上限" value="'+esc(c.value && c.value[1] != null ? c.value[1] : '')+'" style="width:80px">';
+    else if (spec.options)
+      valHtml = '<select class="mini" data-sqv="'+i+'">' + spec.options.map(o =>
+        '<option value="'+esc(o.value)+'"'+(String(o.value) === String(c.value) ? ' selected' : '')+'>'+esc(o.label)+'</option>').join('') + '</select>';
+    else valHtml = '<input class="mini" data-sqv="'+i+'" value="'+esc(c.value == null ? '' : c.value)+'" style="width:130px">';
+    const needs = (spec.needs || []).map(n =>
+      '<input class="mini" data-sqp="'+i+'" data-sqpk="'+esc(n)+'" placeholder="'+
+      esc({scale_code:'量表编码 如 PHQ-9', item_id:'题目 id 如 q1',
+           crf_code:'CRF 编码', field:'字段 id'}[n] || n)+
+      '" value="'+esc((c.params || {})[n] || '')+'" style="width:130px">').join('');
+    return '<div class="qc-item" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px">'+
+      '<select class="mini" data-sqf="'+i+'" style="min-width:150px">'+sqFieldOptions(c.field)+'</select>'+
+      '<select class="mini" data-sqo="'+i+'">'+ops.map(o =>
+        '<option value="'+o+'"'+(o === c.operator ? ' selected' : '')+'>'+esc(SQ_OP_LABEL[o] || o)+'</option>').join('')+'</select>'+
+      valHtml + needs +
+      '<button class="link" style="margin-left:auto" onclick="sqDel('+i+')">删除</button></div>';
+  }).join('');
+
+  wrap.querySelectorAll('[data-sqf]').forEach(el => el.onchange = () => {
+    const i = +el.dataset.sqf;
+    S.sqConds[i].field = el.value;
+    S.sqConds[i].value = ''; S.sqConds[i].params = {};
+    const spec = S.sqFields.fields.find(f => f.field === el.value);
+    S.sqConds[i].operator = (spec.ops || ['eq'])[0];
+    renderSqRows();
+  });
+  wrap.querySelectorAll('[data-sqo]').forEach(el => el.onchange = () => {
+    S.sqConds[+el.dataset.sqo].operator = el.value; renderSqRows();
+  });
+  wrap.querySelectorAll('[data-sqv]').forEach(el => el.oninput = el.onchange = () => {
+    const i = +el.dataset.sqv, c = S.sqConds[i];
+    if (c.operator === 'between') c.value = [el.value, (c.value || [])[1]];
+    else c.value = el.value;
+  });
+  wrap.querySelectorAll('[data-sqv2]').forEach(el => el.oninput = () => {
+    const c = S.sqConds[+el.dataset.sqv2];
+    c.value = [(c.value || [])[0], el.value];
+  });
+  wrap.querySelectorAll('[data-sqp]').forEach(el => el.oninput = () => {
+    const c = S.sqConds[+el.dataset.sqp];
+    c.params = c.params || {}; c.params[el.dataset.sqpk] = el.value;
+  });
+}
+function sqDel(i) { S.sqConds.splice(i, 1); renderSqRows(); }
+
+function sqBuild() {
+  const kids = S.sqConds.filter(c => c.field).map(c => {
+    const n = { field: c.field, operator: c.operator };
+    if (c.operator === 'between') n.value = (c.value || []).map(Number);
+    else if (c.operator !== 'empty' && c.operator !== 'filled') n.value = c.value;
+    if (c.params && Object.keys(c.params).length) n.params = c.params;
+    return n;
+  });
+  if (!kids.length) return null;
+  if (kids.length === 1) return kids[0];
+  return { op: document.getElementById('sqRoot').value, children: kids };
+}
+
+document.getElementById('sqAdd').onclick = async () => {
+  await loadSearchFields();
+  const f = S.sqFields.fields[0];
+  if (S.sqConds.length >= S.sqFields.limits.max_nodes) {
+    toast('最多 ' + S.sqFields.limits.max_nodes + ' 个条件'); return;
+  }
+  S.sqConds.push({ field: f.field, operator: f.ops[0], value: '', params: {} });
+  renderSqRows();
+};
+document.getElementById('sqClear').onclick = () => {
+  S.sqConds = []; renderSqRows();
+  document.getElementById('sqResultPanel').style.display = 'none';
+  document.getElementById('sqCharts').innerHTML = '';
+  document.getElementById('sqExport').style.display = 'none';
+  document.getElementById('sqHint').textContent = '';
+};
+// 这个按钮只在统计分析页内可见, 所以不用切页, 只负责滚到检索面板并加一条条件 ——
+// 空着的面板对第一次用的人没有任何提示作用。
+document.getElementById('searchBtn').onclick = async () => {
+  document.getElementById('searchPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (!S.sqConds.length) document.getElementById('sqAdd').click();
+};
+
+document.getElementById('sqRun').onclick = async () => {
+  const btn = document.getElementById('sqRun');
+  btn.disabled = true; btn.textContent = '检索中…';
+  try {
+    const res = await fetch(API_BASE + '/api/platform/search', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conditions: sqBuild(), limit: 500 }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    S.sqResult = d;
+    document.getElementById('sqCount').textContent =
+      '共 ' + d.total + ' 人' + (d.total > d.count ? '（显示前 ' + d.count + ' 人）' : '');
+    document.getElementById('sqTable').innerHTML =
+      '<thead><tr><th>门诊号</th><th>姓名</th><th>性别</th><th>年龄</th><th>分组</th>'+
+      '<th>未处理预警</th><th>量表</th><th>CRF</th><th>建档</th></tr></thead><tbody>'+
+      (d.patients.length ? d.patients.map(p =>
+        '<tr><td>'+esc(p.patient_no)+'</td><td>'+esc(p.name || '--')+'</td>'+
+        '<td>'+({M:'男',F:'女'}[p.gender] || '--')+'</td><td>'+(p.age == null ? '--' : p.age)+'</td>'+
+        '<td>'+esc(p.group_tag || '--')+'</td>'+
+        '<td>'+(p.open_alarms ? '<span class="tag red">'+p.open_alarms+'</span>' : '0')+'</td>'+
+        '<td>'+p.scale_n+'</td><td>'+p.crf_n+'</td><td>'+esc(p.created_at || '--')+'</td></tr>').join('')
+        : '<tr><td colspan="9" style="color:#9ca3af;text-align:center;padding:22px">没有符合条件的受试者</td></tr>')+
+      '</tbody>';
+    document.getElementById('sqResultPanel').style.display = '';
+    document.getElementById('sqExport').style.display = d.patients.length ? '' : 'none';
+    document.getElementById('sqHint').textContent = '';
+  } catch (e) {
+    document.getElementById('sqHint').textContent = '检索失败：' + e.message;
+    document.getElementById('sqHint').style.color = '#d74c55';
+  } finally { btn.disabled = false; btn.textContent = '检索'; }
+};
+
+document.getElementById('sqStat').onclick = async () => {
+  await loadSearchFields();
+  const dims = S.sqFields.dims;
+  openModal('对检索结果做统计', '统计范围跟着上面的检索条件走',
+    '<div class="field"><label>统计维度<span class="sub">可多选，最多 6 个</span></label>'+
+      '<div style="display:flex;flex-direction:column;gap:7px;padding:4px 0">'+
+      dims.map((d, i) => '<label style="display:flex;gap:7px;align-items:center;font-weight:400">'+
+        '<input type="checkbox" data-sqd="'+esc(d.dim)+'"'+(i < 3 ? ' checked' : '')+'>'+
+        esc(d.label)+'<span style="color:#9ca3af;font-size:11px">'+
+        ({pie:'饼图',bar:'柱状图',line:'折线图'}[d.chart] || d.chart)+
+        (d.needs.length ? ' · 需填 ' + d.needs.join('/') : '')+'</span></label>').join('')+'</div></div>'+
+    '<div class="field"><label>量表编码<span class="sub">仅「量表分级占比」需要</span></label>'+
+      '<input id="sqScaleCode" placeholder="如 PHQ-9"></div>'+
+    '<div class="err" style="margin-top:4px">图表类型是<b>按规则</b>选的：分类字段给饼图/柱图、'+
+      '时间给折线。方案里写的是「AI 自动生成图表」，我们做到的是这一层。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="sqStatGo">出图</button>');
+  document.getElementById('sqStatGo').onclick = async () => {
+    const picked = Array.from(document.querySelectorAll('[data-sqd]:checked')).map(x => x.dataset.sqd);
+    if (!picked.length) { toast('至少选一个维度'); return; }
+    const btn = document.getElementById('sqStatGo'); btn.disabled = true; btn.textContent = '统计中…';
+    try {
+      const res = await fetch(API_BASE + '/api/platform/stats', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conditions: sqBuild(), dims: picked,
+          params: { scale_code: document.getElementById('sqScaleCode').value.trim() } }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); renderCharts(d);
+    } catch (e) { btn.disabled = false; btn.textContent = '出图'; toast('统计失败：' + e.message, 6000); }
+  };
+};
+
+/* 图表用纯 SVG 手画。不引外部图表库: 这个页面是发布到 GitHub Pages 的静态页,
+   CDN 依赖会让它在内网环境(医院里)直接白屏, 而演示往往就在内网。 */
+const CHART_COLORS = ['#1b9a78', '#4b6ed3', '#d97b22', '#d74c55', '#8b5cf6',
+                      '#0ea5e9', '#84cc16', '#f59e0b', '#ec4899', '#64748b'];
+
+function svgPie(data, size) {
+  const total = data.reduce((s, d) => s + d.value, 0) || 1;
+  const R = size / 2 - 2, C = size / 2;
+  let a0 = -Math.PI / 2, paths = '';
+  data.forEach((d, i) => {
+    const a1 = a0 + (d.value / total) * Math.PI * 2;
+    if (d.value === total) {
+      paths += '<circle cx="'+C+'" cy="'+C+'" r="'+R+'" fill="'+CHART_COLORS[i % 10]+'"/>';
+    } else {
+      const large = (a1 - a0) > Math.PI ? 1 : 0;
+      paths += '<path d="M'+C+','+C+' L'+(C + R * Math.cos(a0)).toFixed(2)+','+(C + R * Math.sin(a0)).toFixed(2)+
+        ' A'+R+','+R+' 0 '+large+',1 '+(C + R * Math.cos(a1)).toFixed(2)+','+(C + R * Math.sin(a1)).toFixed(2)+
+        ' Z" fill="'+CHART_COLORS[i % 10]+'"/>';
+    }
+    a0 = a1;
+  });
+  return '<svg viewBox="0 0 '+size+' '+size+'" width="'+size+'" height="'+size+'" role="img">'+paths+'</svg>';
+}
+function svgBar(data, w, h) {
+  const max = Math.max.apply(null, data.map(d => d.value).concat([1]));
+  const bw = Math.max(18, Math.min(56, (w - 20) / data.length - 12));
+  const gap = data.length > 1 ? (w - 20 - bw * data.length) / (data.length - 1) : 0;
+  return '<svg viewBox="0 0 '+w+' '+h+'" width="100%" height="'+h+'" preserveAspectRatio="xMidYMid meet" role="img">'+
+    data.map((d, i) => {
+      const bh = Math.round((d.value / max) * (h - 46));
+      const x = 10 + i * (bw + gap), y = h - 26 - bh;
+      return '<rect x="'+x+'" y="'+y+'" width="'+bw+'" height="'+Math.max(bh, 2)+'" rx="3" fill="'+CHART_COLORS[i % 10]+'"/>'+
+        '<text x="'+(x + bw / 2)+'" y="'+(y - 5)+'" text-anchor="middle" font-size="11" fill="#6b7883">'+d.value+'</text>'+
+        '<text x="'+(x + bw / 2)+'" y="'+(h - 9)+'" text-anchor="middle" font-size="10" fill="#82909c">'+
+        esc(String(d.label).slice(0, 6))+'</text>';
+    }).join('')+'</svg>';
+}
+function svgLine(data, w, h) {
+  if (data.length < 2) return svgBar(data, w, h);
+  const max = Math.max.apply(null, data.map(d => d.value).concat([1]));
+  const step = (w - 30) / (data.length - 1);
+  const pts = data.map((d, i) => [15 + i * step, h - 26 - (d.value / max) * (h - 46)]);
+  return '<svg viewBox="0 0 '+w+' '+h+'" width="100%" height="'+h+'" preserveAspectRatio="xMidYMid meet" role="img">'+
+    '<polyline fill="none" stroke="'+CHART_COLORS[0]+'" stroke-width="2" points="'+
+      pts.map(p => p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ')+'"/>'+
+    pts.map((p, i) => '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="3" fill="'+CHART_COLORS[0]+'"/>'+
+      '<text x="'+p[0].toFixed(1)+'" y="'+(p[1] - 8).toFixed(1)+'" text-anchor="middle" font-size="10" fill="#6b7883">'+data[i].value+'</text>'+
+      '<text x="'+p[0].toFixed(1)+'" y="'+(h - 9)+'" text-anchor="middle" font-size="10" fill="#82909c">'+
+      esc(String(data[i].label).slice(-5))+'</text>').join('')+'</svg>';
+}
+
+function renderCharts(d) {
+  const box = document.getElementById('sqCharts');
+  if (!d.charts.length) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="card panel" style="margin-bottom:16px">'+
+    '<div class="panel-head"><div><h3>分布统计</h3>'+
+    '<small>统计范围：符合当前检索条件的 <b>'+d.matched_patients+'</b> 名受试者</small></div></div>'+
+    '<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">'+
+    d.charts.map(c => {
+      const body = !c.data.length
+        ? '<div style="color:#9ca3af;padding:28px;text-align:center">这批人里没有可统计的数据</div>'
+        : c.chart === 'pie'
+          ? '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">'+svgPie(c.data, 130)+
+            '<div style="font-size:12px;line-height:1.9">'+c.data.map((x, i) =>
+              '<div><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+
+              CHART_COLORS[i % 10]+';margin-right:6px"></span>'+esc(x.label)+' '+x.value+
+              '（'+Math.round(x.value / (c.total || 1) * 100)+'%）</div>').join('')+'</div></div>'
+          : c.chart === 'line' ? svgLine(c.data, 380, 170) : svgBar(c.data, 380, 170);
+      return '<div style="border:1px solid var(--line);border-radius:10px;padding:14px">'+
+        '<div style="font-size:13px;font-weight:600;margin-bottom:10px">'+esc(c.label)+
+        '<span style="font-weight:400;color:#9ca3af;font-size:11px;margin-left:6px">'+
+        ({pie:'饼图',bar:'柱状图',line:'折线图'}[c.chart])+'</span></div>'+ body +'</div>';
+    }).join('')+'</div></div>';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+document.getElementById('sqExport').onclick = () => {
+  const d = S.sqResult;
+  if (!d || !d.patients.length) return;
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const head = ['门诊号','姓名','性别','年龄','分组','未处理预警','量表填报数','CRF填报数','建档日期'];
+  const rows = [head.map(q).join(',')].concat(d.patients.map(p =>
+    [p.patient_no, p.name, {M:'男',F:'女'}[p.gender] || '', p.age, p.group_tag,
+     p.open_alarms, p.scale_n, p.crf_n, p.created_at].map(q).join(',')));
+  if (d.total > d.count) {
+    rows.push('');
+    rows.push(q('注意：本次检索共命中 ' + d.total + ' 人，导出的是前 ' + d.count +
+                ' 人。要全部导出请收窄条件后分批检索。'));
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+  a.download = '检索结果_' + d.count + '人.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('已导出 ' + d.count + ' 人' + (d.total > d.count ? '（共命中 ' + d.total + ' 人，文件末尾有说明）' : ''), 6000);
+};
 
 /* ================================================================ M15 宣教材料库 (方案 §2.3)
 

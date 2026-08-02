@@ -1748,6 +1748,10 @@ def platform_vital_alarm_ingest(days=7):
         traceback.print_exc()
         return None, 'S101 扫描失败: {}'.format(e)
 
+    # 顺带把日聚合落进派生表 —— M7 本来就算出来了, 不存下来 §4.6(2) 的
+    # "按指标阈值检索受试者"就无从查起(原始体征在大 JSON 里, 进不了 WHERE)
+    daily_rows = _persist_vital_daily(daily)
+
     pending = []
     # --- 1) 阈值越限: 一个采样点一条 ---
     for b in breaches:
@@ -1817,6 +1821,7 @@ def platform_vital_alarm_ingest(days=7):
             'candidates': len(pending),
             'inserted': sum(counters.values()),
             'detail': counters,
+            'vital_daily_rows': daily_rows,
         }, None
     except Exception as e:
         traceback.print_exc()
@@ -4392,6 +4397,81 @@ def _bump_version(v):
     return str(v)[:m.start()] + str(int(m.group(1)) + 1) + str(v)[m.end():]
 
 
+def ensure_platform_vital_daily():
+    """M16: 体征日聚合表 (idempotent)。
+
+    这张表不是新数据源 —— M7 摄入时本来就在内存里算出了
+    {患者: {指标: {日期: 均值}}}, 只是算完就扔了。落到表里有两个用处:
+      · §4.6(2) 的"按指标阈值检索受试者"才有得查。体征原始数据在
+        wearable_device_data 的大 JSON 里, 没法直接进 WHERE 子句。
+      · 患者详情页的体征曲线不用每次全表扫。
+    因此它是**派生表**: 删了不丢数据, 下次 ingest 会重建。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_vital_daily (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                patient_no VARCHAR(64) NOT NULL,
+                metric VARCHAR(16) NOT NULL COMMENT 'hr/spo2/sbp/dbp/temp/sleep',
+                day DATE NOT NULL,
+                value DECIMAL(10,2) NOT NULL COMMENT '当日均值',
+                samples INT NOT NULL DEFAULT 0 COMMENT '当日采样点数, 少于阈值的日子判定时会被剔除',
+                device_id VARCHAR(32) DEFAULT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_vital_daily (patient_no, metric, day),
+                INDEX idx_metric_day (metric, day)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+              COMMENT='随访平台 M16 体征日聚合(派生表, 由 M7 摄入重建)'
+        """)
+        print('[启动] platform_vital_daily 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_vital_daily 失败:', e)
+    finally:
+        conn.close()
+
+
+def _persist_vital_daily(daily):
+    """把 M7 算出的日聚合写进派生表。返回写入行数。
+
+    整段包在 try 里: 这是顺带产出的派生数据, 写失败不该让报警摄入整个失败 ——
+    报警是有人要看的, 聚合表下一轮还会重建。
+    """
+    if not daily:
+        return 0
+    rows = []
+    for p_no, metrics in daily.items():
+        for metric, by_date in metrics.items():
+            for d, agg in by_date.items():
+                if not agg.get('n'):
+                    continue
+                rows.append((p_no, metric, d, round(agg['sum'] / agg['n'], 2),
+                             agg['n'], agg.get('device_id')))
+    if not rows:
+        return 0
+    try:
+        ensure_platform_vital_daily()
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            for i in range(0, len(rows), 500):
+                cur.executemany("""
+                    INSERT INTO platform_vital_daily (patient_no, metric, day, value, samples, device_id)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE value=VALUES(value), samples=VALUES(samples),
+                                            device_id=VALUES(device_id)
+                """, rows[i:i + 500])
+            cur.close()
+            return len(rows)
+        finally:
+            conn.close()
+    except Exception as e:
+        print('[M16] 体征日聚合写入失败(不影响报警摄入):', e)
+        return 0
+
+
 def ensure_platform_crf_tables():
     """M14: CRF 定义表 + 填报表 (idempotent)。"""
     conn = get_connection()
@@ -5526,6 +5606,357 @@ def query_edu_materials(status=None, category=None, topic=None, scope=None,
         conn.close()
 
 
+# ============ 随访平台 1.1 M16 (高级检索与统计, 方案 §4.6(2)) ============
+#
+# "柔性增删检索条件" = 让使用者自己拼查询。这件事只有一种安全的做法:
+#
+#   **字段来自白名单, 值一律走参数化占位符, 用户输入永远不进 SQL 文本。**
+#
+# 反过来做(把字段名或值拼进 SQL)在功能上更省事、更"灵活", 但那等于把一个
+# 患者数据库的任意读权限交给任何能调这个接口的人。这里的 SEARCH_FIELDS 是
+# 唯一允许出现在 SQL 里的字段来源, 不在表里的名字一律拒绝, 不做模糊匹配、
+# 不做"看起来像列名就放行"。
+#
+# 每个字段声明:
+#   label   给人看的名字
+#   type    num / str / enum / date  -> 决定允许哪些运算符
+#   sql     直接可用的 SQL 片段(**常量, 不含任何用户输入**), 或 None 表示要走子查询
+#   sub     需要子查询时的构造函数 (op, value, extra) -> (sql_fragment, params)
+#   needs   该字段还需要哪些附加参数(如量表编码), 缺了就报错而不是静默忽略
+SEARCH_OPS = {
+    'num':  ('eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'between'),
+    'str':  ('eq', 'ne', 'contains', 'in', 'empty', 'filled'),
+    'enum': ('eq', 'ne', 'in'),
+    'date': ('eq', 'gt', 'gte', 'lt', 'lte', 'between'),
+}
+SEARCH_OP_SQL = {'eq': '=', 'ne': '<>', 'gt': '>', 'gte': '>=', 'lt': '<', 'lte': '<='}
+SEARCH_MAX_NODES = 40      # 一次检索最多多少个条件节点
+SEARCH_MAX_DEPTH = 5       # 条件树最深几层
+
+
+def _sub_scale(kind):
+    """量表相关字段的子查询构造。kind: total / level / item"""
+    def build(op, value, extra):
+        code = str(extra.get('scale_code') or '').strip()
+        params = [code]
+        if kind == 'item':
+            item_id = str(extra.get('item_id') or '').strip()
+            # JSON_EXTRACT 的路径必须是常量, 不能拼用户输入 —— 用 JSON_UNQUOTE(JSON_EXTRACT(x, ?))
+            # 的形式让 item_id 走参数
+            val_expr = "JSON_UNQUOTE(JSON_EXTRACT(r.answers, CONCAT('$.', %s)))"
+            params.append(item_id)
+        elif kind == 'total':
+            val_expr = 'r.total_score'
+        else:
+            val_expr = 'r.level_label'
+        cmp_sql, cmp_params = _cmp_sql(val_expr if kind != 'item' else 'CAST({} AS DECIMAL(10,2))'.format(val_expr),
+                                       'num' if kind in ('total', 'item') else 'str', op, value)
+        return ("""EXISTS (SELECT 1 FROM platform_scale_response r
+                           WHERE r.patient_no = p.patient_no AND r.status='submitted'
+                             AND r.scale_code = %s AND {})""".format(cmp_sql),
+                params + cmp_params)
+    return build
+
+
+def _sub_vital(metric):
+    """体征字段: 近 N 天该指标的日均值。N 由 extra.days 给, 默认 30。"""
+    def build(op, value, extra):
+        try:
+            days = min(max(int(extra.get('days') or 30), 1), 365)
+        except (TypeError, ValueError):
+            days = 30
+        cmp_sql, cmp_params = _cmp_sql('AVG(a.value)', 'num', op, value)
+        return ("""p.patient_no IN (
+                     SELECT a.patient_no FROM platform_vital_daily a
+                     WHERE a.metric = %s AND a.day >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+                     GROUP BY a.patient_no HAVING {})""".format(cmp_sql),
+                [metric, days] + cmp_params)
+    return build
+
+
+def _sub_alarm(status_set):
+    def build(op, value, extra):
+        cmp_sql, cmp_params = _cmp_sql('COUNT(*)', 'num', op, value)
+        ph = ','.join(['%s'] * len(status_set))
+        return ("""p.patient_no IN (
+                     SELECT al.patient_no FROM platform_alarm al
+                     WHERE al.status IN ({}) GROUP BY al.patient_no HAVING {})""".format(ph, cmp_sql),
+                list(status_set) + cmp_params)
+    return build
+
+
+def _sub_crf_field():
+    def build(op, value, extra):
+        code = str(extra.get('crf_code') or '').strip()
+        field = str(extra.get('field') or '').strip()
+        cmp_sql, cmp_params = _cmp_sql(
+            "JSON_UNQUOTE(JSON_EXTRACT(cr.data, CONCAT('$.', %s)))", 'str', op, value)
+        return ("""EXISTS (SELECT 1 FROM platform_crf_response cr
+                           WHERE cr.patient_no = p.patient_no AND cr.status='submitted'
+                             AND cr.crf_code = %s AND {})""".format(cmp_sql),
+                [code, field] + cmp_params)
+    return build
+
+
+def _sub_plan_overdue():
+    def build(op, value, extra):
+        cmp_sql, cmp_params = _cmp_sql('DATEDIFF(CURDATE(), pl.next_due)', 'num', op, value)
+        return ("""EXISTS (SELECT 1 FROM platform_plan pl
+                           WHERE pl.patient_no = p.patient_no AND pl.active=1
+                             AND pl.next_due IS NOT NULL AND {})""".format(cmp_sql), cmp_params)
+    return build
+
+
+SEARCH_FIELDS = {
+    'patient.group':   {'label': '分组/队列', 'type': 'str',  'sql': 'p.group_tag', 'group': '患者属性'},
+    'patient.gender':  {'label': '性别', 'type': 'enum', 'sql': 'p.gender', 'group': '患者属性',
+                        'options': [{'label': '男', 'value': 'M'}, {'label': '女', 'value': 'F'}]},
+    'patient.age':     {'label': '年龄', 'type': 'num',  'sql': 'p.age', 'group': '患者属性'},
+    'patient.name':    {'label': '姓名', 'type': 'str',  'sql': 'p.name', 'group': '患者属性'},
+    'patient.no':      {'label': '门诊号', 'type': 'str', 'sql': 'p.patient_no', 'group': '患者属性'},
+    'patient.note':    {'label': '备注', 'type': 'str',  'sql': 'p.note', 'group': '患者属性'},
+    'patient.created': {'label': '建档日期', 'type': 'date', 'sql': 'DATE(p.created_at)', 'group': '患者属性'},
+    'scale.total':     {'label': '量表总分', 'type': 'num', 'sub': _sub_scale('total'),
+                        'needs': ['scale_code'], 'group': '量表'},
+    'scale.level':     {'label': '量表分级', 'type': 'str', 'sub': _sub_scale('level'),
+                        'needs': ['scale_code'], 'group': '量表'},
+    'scale.item':      {'label': '量表单题答案', 'type': 'num', 'sub': _sub_scale('item'),
+                        'needs': ['scale_code', 'item_id'], 'group': '量表'},
+    'vital.hr':        {'label': '心率日均值', 'type': 'num', 'sub': _sub_vital('hr'), 'group': '体征'},
+    'vital.spo2':      {'label': '血氧日均值', 'type': 'num', 'sub': _sub_vital('spo2'), 'group': '体征'},
+    'vital.sbp':       {'label': '收缩压日均值', 'type': 'num', 'sub': _sub_vital('sbp'), 'group': '体征'},
+    'vital.dbp':       {'label': '舒张压日均值', 'type': 'num', 'sub': _sub_vital('dbp'), 'group': '体征'},
+    'vital.temp':      {'label': '体温日均值', 'type': 'num', 'sub': _sub_vital('temp'), 'group': '体征'},
+    'vital.sleep':     {'label': '睡眠时长日均值', 'type': 'num', 'sub': _sub_vital('sleep'), 'group': '体征'},
+    'alarm.open':      {'label': '未处理预警数', 'type': 'num',
+                        'sub': _sub_alarm(('new', 'acked')), 'group': '预警'},
+    'alarm.total':     {'label': '累计预警数', 'type': 'num',
+                        'sub': _sub_alarm(('new', 'acked', 'followed', 'closed')), 'group': '预警'},
+    'crf.field':       {'label': 'CRF 字段值', 'type': 'str', 'sub': _sub_crf_field(),
+                        'needs': ['crf_code', 'field'], 'group': 'CRF'},
+    'plan.overdue':    {'label': '随访超窗天数', 'type': 'num', 'sub': _sub_plan_overdue(),
+                        'group': '随访计划'},
+}
+
+
+def _cmp_sql(expr, ftype, op, value):
+    """把 (表达式, 运算符, 值) 变成 SQL 片段 + 参数。expr 必须是常量片段。"""
+    if op == 'empty':
+        return "({} IS NULL OR {} = '')".format(expr, expr), []
+    if op == 'filled':
+        return "({} IS NOT NULL AND {} <> '')".format(expr, expr), []
+    if op == 'contains':
+        return '{} LIKE %s'.format(expr), ['%{}%'.format(value)]
+    if op == 'in':
+        vals = value if isinstance(value, list) else [value]
+        vals = vals[:50] or ['']
+        return '{} IN ({})'.format(expr, ','.join(['%s'] * len(vals))), list(vals)
+    if op == 'between':
+        lo, hi = (value + [None, None])[:2] if isinstance(value, list) else (value, value)
+        return '{} BETWEEN %s AND %s'.format(expr), [lo, hi]
+    return '{} {} %s'.format(expr, SEARCH_OP_SQL[op]), [value]
+
+
+def build_search_sql(node, depth=0, counter=None):
+    """条件树 -> (SQL 片段, 参数列表)。任何不合法之处直接抛 ValueError, 不做兜底放行。
+
+    counter 用来限制节点总数 —— 没有上限的话, 一个几千节点的条件树能把数据库拖死,
+    而这个接口是不鉴权的。
+    """
+    if counter is None:
+        counter = [0]
+    counter[0] += 1
+    if counter[0] > SEARCH_MAX_NODES:
+        raise ValueError('检索条件超过 {} 个, 请精简'.format(SEARCH_MAX_NODES))
+    if depth > SEARCH_MAX_DEPTH:
+        raise ValueError('检索条件嵌套超过 {} 层'.format(SEARCH_MAX_DEPTH))
+    if not isinstance(node, dict):
+        raise ValueError('条件必须是对象')
+
+    if node.get('op') in ('and', 'or'):
+        kids = node.get('children') or []
+        if not isinstance(kids, list) or not kids:
+            raise ValueError('{} 组合至少要有一个子条件'.format(node['op']))
+        parts, params = [], []
+        for k in kids:
+            sql, ps = build_search_sql(k, depth + 1, counter)
+            parts.append(sql); params += ps
+        return '(' + (' AND ' if node['op'] == 'and' else ' OR ').join(parts) + ')', params
+
+    field = node.get('field')
+    spec = SEARCH_FIELDS.get(field)
+    if spec is None:
+        # 这里不给"你是不是想找 xxx"之类的提示 —— 那等于帮人枚举字段。
+        raise ValueError('未知的检索字段: {!r}'.format(field)[:120])
+    op = node.get('operator') or node.get('op')
+    allowed = SEARCH_OPS[spec['type']]
+    if op not in allowed:
+        raise ValueError('字段「{}」({}) 只支持 {} 这些运算符, 收到 {!r}'.format(
+            spec['label'], spec['type'], '/'.join(allowed), op))
+    value = node.get('value')
+    if op not in ('empty', 'filled') and value is None:
+        raise ValueError('字段「{}」的条件缺 value'.format(spec['label']))
+    if spec['type'] == 'num' and op != 'between':
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError('字段「{}」需要数字, 收到 {!r}'.format(spec['label'], value)[:120])
+    extra = node.get('params') or {}
+    for need in (spec.get('needs') or []):
+        if not str(extra.get(need) or '').strip():
+            raise ValueError('字段「{}」还需要参数 {} —— 不给的话不知道查哪一份'.format(
+                spec['label'], need))
+    if spec.get('sub'):
+        return spec['sub'](op, value, extra)
+    return _cmp_sql(spec['sql'], spec['type'], op, value)
+
+
+def platform_search(body):
+    """§4.6(2) 受试者高级检索。{conditions:{...}, limit?, offset?}"""
+    conds = body.get('conditions')
+    try:
+        limit = min(max(int(body.get('limit') or 200), 1), 1000)
+        offset = max(int(body.get('offset') or 0), 0)
+    except (TypeError, ValueError):
+        return None, 'limit/offset 必须是整数'
+    where, params = '1=1', []
+    if conds:
+        try:
+            where, params = build_search_sql(conds)
+        except ValueError as e:
+            return None, str(e)
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT COUNT(*) FROM platform_patient p WHERE {}'.format(where), params)
+        total = cur.fetchone()[0]
+        cur.execute("""
+            SELECT p.patient_no, p.name, p.gender, p.age, p.group_tag, p.note, p.created_at,
+                   (SELECT COUNT(*) FROM platform_alarm a WHERE a.patient_no=p.patient_no
+                      AND a.status IN ('new','acked')) AS open_alarms,
+                   (SELECT COUNT(*) FROM platform_scale_response r WHERE r.patient_no=p.patient_no
+                      AND r.status='submitted') AS scale_n,
+                   (SELECT COUNT(*) FROM platform_crf_response cr WHERE cr.patient_no=p.patient_no
+                      AND cr.status='submitted') AS crf_n
+            FROM platform_patient p WHERE {} ORDER BY p.patient_no LIMIT %s OFFSET %s
+        """.format(where), params + [limit, offset])
+        cols = ['patient_no', 'name', 'gender', 'age', 'group_tag', 'note', 'created_at',
+                'open_alarms', 'scale_n', 'crf_n']
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            if r.get('created_at') is not None and hasattr(r['created_at'], 'strftime'):
+                r['created_at'] = r['created_at'].strftime('%Y-%m-%d')
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'total': total, 'count': len(out), 'patients': out,
+                'limit': limit, 'offset': offset}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+# 统计维度。和检索字段分开: 检索是"筛出哪些人", 统计是"这批人在某个维度上怎么分布"。
+# 图表类型由**规则**决定, 不是模型选的 —— 分类字段给饼图/柱状图, 数值字段分桶给直方图,
+# 时间给折线。方案里写的"AI 自动生成图表", 我们做到的是这一层, 别把它说成别的。
+STAT_DIMS = {
+    'gender':      {'label': '性别分布', 'kind': 'cat', 'sql': "COALESCE(p.gender,'未填')",
+                    'chart': 'pie', 'map': {'M': '男', 'F': '女'}},
+    'group_tag':   {'label': '分组分布', 'kind': 'cat', 'sql': "COALESCE(p.group_tag,'未分组')", 'chart': 'pie'},
+    'age_band':    {'label': '年龄段分布', 'kind': 'cat', 'chart': 'bar',
+                    'sql': ("CASE WHEN p.age IS NULL THEN '未填' WHEN p.age<18 THEN '<18' "
+                            "WHEN p.age<40 THEN '18-39' WHEN p.age<60 THEN '40-59' "
+                            "WHEN p.age<75 THEN '60-74' ELSE '75+' END")},
+    'alarm_band':  {'label': '未处理预警数分布', 'kind': 'cat', 'chart': 'bar',
+                    'sql': ("CASE WHEN (SELECT COUNT(*) FROM platform_alarm a WHERE a.patient_no=p.patient_no "
+                            "AND a.status IN ('new','acked'))=0 THEN '0' "
+                            "WHEN (SELECT COUNT(*) FROM platform_alarm a WHERE a.patient_no=p.patient_no "
+                            "AND a.status IN ('new','acked'))<=2 THEN '1-2' ELSE '3+' END")},
+    'enroll_month': {'label': '按月建档趋势', 'kind': 'time', 'chart': 'line',
+                     'sql': "DATE_FORMAT(p.created_at,'%%Y-%%m')"},
+    'scale_level': {'label': '量表分级占比', 'kind': 'cat', 'chart': 'pie', 'needs': ['scale_code'],
+                    'sql': ("COALESCE((SELECT r.level_label FROM platform_scale_response r "
+                            "WHERE r.patient_no=p.patient_no AND r.status='submitted' AND r.scale_code=%s "
+                            "ORDER BY r.created_at DESC LIMIT 1),'未评估')"),
+                    'sql_params': ['scale_code']},
+    'followup':    {'label': '随访完成情况', 'kind': 'cat', 'chart': 'bar',
+                    'sql': ("CASE WHEN NOT EXISTS (SELECT 1 FROM platform_plan pl "
+                            "WHERE pl.patient_no=p.patient_no AND pl.active=1) THEN '无在随计划' "
+                            "WHEN EXISTS (SELECT 1 FROM platform_plan pl WHERE pl.patient_no=p.patient_no "
+                            "AND pl.active=1 AND pl.next_due < CURDATE()) THEN '已超窗' "
+                            "ELSE '按期' END")},
+}
+
+
+def platform_stats(body):
+    """§4.6(2) 对检索结果做单维/多维统计。{conditions?, dims:[...], params?}"""
+    dims = body.get('dims') or ['gender']
+    if not isinstance(dims, list) or not dims:
+        return None, 'dims 必须是非空数组'
+    if len(dims) > 6:
+        return None, 'dims 最多 6 个'
+    for d in dims:
+        if d not in STAT_DIMS:
+            return None, '未知的统计维度: {!r}'.format(d)[:120]
+
+    where, params = '1=1', []
+    if body.get('conditions'):
+        try:
+            where, params = build_search_sql(body['conditions'])
+        except ValueError as e:
+            return None, str(e)
+    extra = body.get('params') or {}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT COUNT(*) FROM platform_patient p WHERE {}'.format(where), params)
+        total = cur.fetchone()[0]
+        charts = []
+        for d in dims:
+            spec = STAT_DIMS[d]
+            pre = []
+            for need in (spec.get('sql_params') or []):
+                v = str(extra.get(need) or '').strip()
+                if not v:
+                    cur.close()
+                    return None, '统计维度「{}」还需要参数 {}'.format(spec['label'], need)
+                pre.append(v)
+            cur.execute('SELECT {} AS k, COUNT(*) AS n FROM platform_patient p WHERE {} '
+                        'GROUP BY k ORDER BY {}'.format(
+                            spec['sql'], where, 'k' if spec['kind'] == 'time' else 'n DESC'),
+                        pre + params)
+            rows = [{'label': spec.get('map', {}).get(k, k) if k is not None else '未填',
+                     'value': n} for k, n in cur.fetchall()]
+            charts.append({'dim': d, 'label': spec['label'], 'chart': spec['chart'],
+                           'kind': spec['kind'], 'data': rows,
+                           'total': sum(r['value'] for r in rows)})
+        cur.close()
+        return {'ok': True, 'matched_patients': total, 'charts': charts}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def search_field_catalog():
+    """把可用的检索字段与统计维度交给前端 —— 前端不该自己硬编码一份, 那会和后端漂移。"""
+    fields = []
+    for k, v in SEARCH_FIELDS.items():
+        fields.append({'field': k, 'label': v['label'], 'type': v['type'],
+                       'group': v.get('group', '其他'), 'ops': list(SEARCH_OPS[v['type']]),
+                       'needs': v.get('needs') or [], 'options': v.get('options')})
+    dims = [{'dim': k, 'label': v['label'], 'chart': v['chart'],
+             'needs': v.get('sql_params') or []} for k, v in STAT_DIMS.items()]
+    return {'ok': True, 'fields': fields, 'dims': dims,
+            'ops': {k: list(v) for k, v in SEARCH_OPS.items()},
+            'limits': {'max_nodes': SEARCH_MAX_NODES, 'max_depth': SEARCH_MAX_DEPTH}}
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -6623,6 +7054,9 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/search/fields':
+            self._send_json(200, search_field_catalog())
+
         elif pathname == '/api/platform/edu':
             try:
                 limit = min(int((query.get('limit') or ['200'])[0]), 500)
@@ -6939,6 +7373,9 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/search/fields': '随访平台 M16: 可用检索字段与统计维度(前端据此建条件, 不自己硬编码)',
+                    'POST /api/platform/search': '随访平台 M16: 受试者高级检索 ({conditions:{op:and,children:[...]}})',
+                    'POST /api/platform/stats': '随访平台 M16: 对检索结果做分布统计 ({conditions?, dims:[...]})',
                     'GET  /api/platform/edu': '随访平台 M15: 宣教材料库 (?status=&category=&topic=&q=)',
                     'POST /api/platform/edu/material': '随访平台 M15: 建/改宣教材料 (status 只能 draft/reviewing)',
                     'POST /api/platform/edu/transition': '随访平台 M15: 提交/发布/退回/归档 ({id, action, operator})',
@@ -7123,6 +7560,16 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/search':
+                # 只读检索, 但用 POST: 条件树放不进查询串, 而且门诊号不该出现在
+                # 访问日志和浏览器历史里
+                result, err = platform_search(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/stats':
+                result, err = platform_stats(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/edu/material':
                 result, err = upsert_edu_material(body)
@@ -7403,6 +7850,8 @@ if __name__ == '__main__':
         ensure_platform_crf_tables()
         # M15: 宣教材料 + 流转留痕 (idempotent)
         ensure_platform_edu_tables()
+        # M16: 体征日聚合派生表 (idempotent)
+        ensure_platform_vital_daily()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -7454,6 +7903,9 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/search/fields           随访平台 M16: 可用检索字段')
+    print('[端点] POST /api/platform/search                  随访平台 M16: 受试者高级检索')
+    print('[端点] POST /api/platform/stats                   随访平台 M16: 分布统计')
     print('[端点] GET  /api/platform/edu                     随访平台 M15: 宣教材料库')
     print('[端点] POST /api/platform/edu/material            随访平台 M15: 建/改宣教材料')
     print('[端点] POST /api/platform/edu/transition          随访平台 M15: 提交/发布/退回/归档')
