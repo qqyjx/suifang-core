@@ -26,7 +26,9 @@ LOG_TAG="[sync-public-site]"
 # ---------------------------------------------------------------------------
 # platform-preview.html = 对外汇报用的裁剪展示版 (患者中心 + 体征视图两模块)。
 # 刻意不登记进根门户 index.html 的入口列表: 需要它的人拿直链, 浏览站点不会撞见。
-PROTOTYPE_FILES=(platform.html platform-demo.html platform-preview.html data-dashboard.html pulse-dashboard.html iwown-dashboard.html patient-demo.html index.html)
+# platform-v2.html = 「燕名医随」新平台外壳 (v2)。与 platform.html (v1) 并存, 共用同一后端,
+# 两者都会实时拉真实门诊号与报警 —— 公开站上的暴露面一致, 2026-08-02 经确认后公开。
+PROTOTYPE_FILES=(platform.html platform-v2.html platform-demo.html platform-preview.html data-dashboard.html pulse-dashboard.html iwown-dashboard.html patient-demo.html index.html)
 DOCS_FILES=("随访平台使用说明.html" "随访平台1.0设计方案.html" "智能穿戴设备调研与数据采集对接.html" "FAQ-常见问题清单.html" "医院交付使用指南.html" index.html)
 
 # ---------------------------------------------------------------------------
