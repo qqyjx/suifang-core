@@ -316,20 +316,36 @@ button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:g
         </div>
       </section>
 
-      <!-- ===================== 随访资料准备 (未建设) ===================== -->
+      <!-- ===================== 随访资料准备 (量表库已建, 其余未建设) ===================== -->
       <section class="module-page" id="assets">
-        <div class="module-hero"><div><h2>随访资料准备</h2><p>方案阶段一：CRF 表单 · 量表体系 · 宣教材料 · 知情同意</p></div></div>
+        <div class="module-hero">
+          <div><h2>随访资料准备</h2><p>方案阶段一：CRF 表单 · 量表体系 · 宣教材料 · 知情同意</p></div>
+          <button class="white-btn" id="scaleImportBtn">⬆ 导入量表 (JSON)</button>
+        </div>
         <div class="asset-grid">
           <div class="card asset"><div class="big-icon">▤</div><h3>智能 CRF 表单</h3><p>全题型覆盖、高级逻辑校验与临床数据元映射</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.1 · 4 个功能点</small></div></div>
-          <div class="card asset"><div class="big-icon">◈</div><h3>专业量表库</h3><p>标准量表底座与 AI 量表生成、评分及解释</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.2 · 3 个功能点</small></div></div>
+          <div class="card asset"><div class="big-icon">◈</div><h3>专业量表库</h3><p>题型配置 · 评分规则 · 分量表 · 划界值分级 · 字段映射 · 医护填报与患者自评</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="scaleCardN">--</small></div></div>
           <div class="card asset"><div class="big-icon">▧</div><h3>宣教材料库</h3><p>按病种、病程和人群生成个性化患教内容</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.3 · 2 个功能点</small></div></div>
           <div class="card asset"><div class="big-icon">✎</div><h3>知情与项目资料</h3><p>电子签署、版本管理、权限管控与全周期留痕</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.4 · 2 个功能点</small></div></div>
         </div>
-        <div class="wip-box" style="margin-top:16px">
-          <span class="ico">🚧</span>
-          <h3>本模块尚无任何实现</h3>
-          <div>这里刻意不放演示数据。方案阶段一共 11 个功能点，当前完成 0 个。</div>
+
+        <div class="tabs" style="margin-top:18px">
+          <button class="tab active" data-stab="lib">量表库 <span id="tabScaleN">0</span></button>
+          <button class="tab" data-stab="resp">填报记录 <span id="tabRespN">0</span></button>
         </div>
+        <div id="stabLib">
+          <div class="card panel" style="margin-bottom:14px">
+            <div class="panel-head"><div><h3>引擎已建成，量表内容待补</h3>
+              <small>存储 / 填报 / 评分这套骨架已经通了：五种题型、反向计分、分量表、划界值分级、必填与取值范围校验、逻辑一致性（条件必填 / 互斥）、错误修订留痕、同 code 多版本并存。
+              标书 ★1.6.2 要求的 200+ 个精神科量表是<b>内容</b>，题目与评分规则须由临床方提供 —— 而且多数量表（HAMD／HAMA／YMRS／PSQI／Y-BOCS／MMAS-8／MoCA 等）有版权与授权要求，不能自行编写。
+              当前内置的 PHQ-9 与 GAD-7 由 Pfizer 发布、可免授权使用，放在这里是为了验证引擎。补量表只需按同一份 JSON 结构追加导入。</small></div></div>
+          </div>
+          <div class="rows" id="scaleWrap"><div class="loading">加载中…</div></div>
+        </div>
+        <div id="stabResp" style="display:none">
+          <div class="rows" id="respWrap"><div class="loading">加载中…</div></div>
+        </div>
+        <input type="file" id="scaleFile" accept=".json" style="display:none">
       </section>
 
       <!-- ===================== 数据质控 (未建设) ===================== -->
@@ -541,6 +557,7 @@ const S = {
   patients: [], candidates: [], alarms: [], tasks: [], plans: [],
   alarmStatus: 'open', page: 'dashboard', ptab: 'known', etab: 'alarms',
   ctab: 'pending', candSel: new Set(),
+  scales: [], responses: [], scaleCache: {}, fillCode: null, fillRevision: null,
 };
 
 /* ================================================================ 导航 */
@@ -554,6 +571,7 @@ function goto(page) {
   if (page === 'plans') loadPlans();
   if (page === 'analytics') loadAnalytics();
   if (page === 'settings') fillSettings();
+  if (page === 'assets') { loadScales(); loadResponses(); }
 }
 document.addEventListener('click', e => {
   const nav = e.target.closest('[data-page]');
@@ -1258,6 +1276,313 @@ async function renderDashChains() {
       '<div class="detail-row"><span>脉诊仪</span><b><span class="chain zhenmaiyi">四诊报告事件</span></b></div>';
   } catch (e) { el.innerHTML = errBox(e); }
 }
+
+/* ================================================================ 量表 (M10) */
+const RATER_LABEL = { clinician: '医护填报', self: '患者自评', both: '皆可' };
+const TYPE_LABEL = { single: '单选', multi: '多选', number: '数字填空', text: '文本填空', scale: '视觉模拟' };
+
+async function loadScales() {
+  const wrap = document.getElementById('scaleWrap');
+  try {
+    const d = await getJSON('/api/platform/scales');
+    S.scales = d.scales || [];
+    document.getElementById('tabScaleN').textContent = S.scales.length;
+    document.getElementById('scaleCardN').textContent = S.scales.length + ' 份已入库';
+    wrap.innerHTML = S.scales.length ? S.scales.map(s =>
+      '<div class="row-card row-plan">'+
+        '<div><span class="strong mono">'+esc(s.code)+'</span><span class="sub">v'+esc(s.version)+' · '+esc(s.source || '')+'</span></div>'+
+        '<div>'+esc(s.name)+'<span class="sub">'+esc((s.stages || []).join(' / ') || '未配置阶段')+'</span></div>'+
+        '<div><span class="tag blue">'+esc(s.category || '未分类')+'</span><span class="sub">'+esc(RATER_LABEL[s.rater] || s.rater)+'</span></div>'+
+        '<div>'+(s.item_count != null ? s.item_count + ' 题' : '')+'<span class="sub">题目数</span></div>'+
+        '<div style="display:flex;gap:8px"><button class="secondary" onclick="previewScale(\''+esc(s.code)+'\')">预览</button>'+
+          '<button class="primary" onclick="openFill(\''+esc(s.code)+'\')">填报</button></div>'+
+      '</div>').join('')
+      : emptyBox('◈', '量表库还是空的', '用右上角「导入量表 (JSON)」按 database/scales/ 里的结构导入。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+
+async function getScale(code) {
+  if (S.scaleCache[code]) return S.scaleCache[code];
+  const d = await getJSON('/api/platform/scales?code=' + encodeURIComponent(code));
+  if (!d.scales.length) throw new Error('量表不存在: ' + code);
+  S.scaleCache[code] = d.scales[0];
+  return d.scales[0];
+}
+
+/* 预览管理 (★1.6.2 点名要的): 把题目、选项分值、评分规则、分级区间都摊开给人核对 ——
+   临床方验收量表配得对不对, 看的就是这一屏。 */
+async function previewScale(code) {
+  openDrawer('量表预览', code, '<div class="loading">加载中…</div>', '');
+  try {
+    const s = await getScale(code);
+    const d = s.definition || {};
+    const sc = d.scoring || {};
+    let h = '<div class="detail-card"><h4>'+esc(s.name)+'</h4>'+
+      '<div class="detail-row"><span>编码 / 版本</span><b class="mono">'+esc(s.code)+' v'+esc(s.version)+'</b></div>'+
+      '<div class="detail-row"><span>分类</span><b>'+esc(s.category || '--')+'</b></div>'+
+      '<div class="detail-row"><span>填报方式</span><b>'+esc(RATER_LABEL[s.rater] || s.rater)+'</b></div>'+
+      '<div class="detail-row"><span>适用阶段</span><b>'+esc((s.stages || []).join(' / ') || '未配置')+'</b></div>'+
+      (d.instruction ? '<div style="margin-top:8px;color:#687781;font-size:13px">'+esc(d.instruction)+'</div>' : '')+
+      '</div>';
+
+    h += '<div class="detail-card"><h4>题目（'+(d.items || []).length+' 道）</h4>';
+    (d.items || []).forEach((it, i) => {
+      h += '<div style="padding:8px 0;border-bottom:1px dashed #edf0f1">'+
+        '<div><b>'+(i+1)+'. '+esc(it.text)+'</b> <span class="tag grey">'+esc(TYPE_LABEL[it.type] || it.type)+'</span>'+
+        (it.required ? '<span class="tag red">必填</span>' : '')+
+        (it.reverse ? '<span class="tag orange">反向计分</span>' : '')+'</div>';
+      if (it.options) h += '<div class="sub" style="margin-top:4px">'+
+        it.options.map(o => esc(o.label)+'='+esc(String(o.value))).join(' · ')+'</div>';
+      if (it.min != null || it.max != null) h += '<div class="sub">取值范围 '+esc(String(it.min))+' ~ '+esc(String(it.max))+'</div>';
+      if (it.field_map) h += '<div class="sub">字段映射 <span class="mono">'+esc(it.field_map)+'</span></div>';
+      h += '</div>';
+    });
+    h += '</div>';
+
+    h += '<div class="detail-card"><h4>评分规则</h4>'+
+      '<div class="detail-row"><span>总分</span><b>'+esc((sc.total || {}).method || 'sum')+'</b></div>';
+    (sc.subscales || []).forEach(sb =>
+      h += '<div class="detail-row"><span>分量表 '+esc(sb.name)+'</span><b class="mono">'+esc((sb.items || []).join(', '))+'</b></div>');
+    h += '</div>';
+
+    if ((sc.levels || []).length) {
+      h += '<div class="detail-card"><h4>划界值分级</h4>';
+      sc.levels.forEach(lv => h += '<div class="detail-row"><span>'+esc(String(lv.min))+' ~ '+esc(String(lv.max))+
+        '</span><b>'+esc(lv.label)+'</b></div>'+
+        (lv.advice ? '<div class="sub" style="padding-bottom:6px">'+esc(lv.advice)+'</div>' : ''));
+      h += '</div>';
+    }
+    if ((d.consistency || []).length) {
+      h += '<div class="detail-card"><h4>逻辑一致性规则</h4>'+
+        d.consistency.map(r => '<div class="detail-row"><span>'+esc(r.type)+'</span><b class="mono">'+
+          esc(JSON.stringify(r.when || r.items || {}))+'</b></div>'+
+          (r.note ? '<div class="sub" style="padding-bottom:6px">'+esc(r.note)+'</div>' : '')).join('')+'</div>';
+    }
+    openDrawer(s.name, s.code + ' v' + s.version, h,
+      '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+      '<button class="primary" onclick="openFill(\''+esc(code)+'\')">去填报</button>');
+  } catch (e) {
+    openDrawer('量表预览', code, errBox(e), '<button class="secondary" onclick="closeDrawer()">关闭</button>');
+  }
+}
+
+/* 填报: 医护填报 / 患者自评 走同一个表单, 区别只在 rater_type 和署名。
+   实时算分调 /scale/score(只算不落库), 提交才调 /scale/response。分成两个端点是因为
+   填一半就想看当前分数是很自然的需求, 而那时候必填项还没填全, 不该被拒。 */
+async function openFill(code, revisionOf, preset) {
+  closeModal();
+  openDrawer('量表填报', code, '<div class="loading">加载中…</div>', '');
+  try {
+    const s = await getScale(code);
+    const d = s.definition || {};
+    const opts = S.patients.map(p => '<option value="'+esc(p.patient_no)+'">'+
+      esc(p.name || '(未命名)')+' / '+esc(p.patient_no)+'</option>').join('');
+    if (!opts) {
+      openDrawer(s.name, code, emptyBox('👤', '还没有建档患者', '量表要填给具体患者，先去「患者管理」建档。'),
+        '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+        '<button class="primary" onclick="closeDrawer();goto(\'patients\')">去建档</button>');
+      return;
+    }
+    let h = (revisionOf ? '<div class="err" style="margin-bottom:12px">正在修订 #'+revisionOf+
+        '：提交后原记录会被标记为历史版本并完整保留，不会被覆盖。</div>' : '')+
+      '<div class="form-row">'+
+        '<div class="field"><label>患者</label><select id="flPatient">'+opts+'</select></div>'+
+        '<div class="field"><label>填报方式</label><select id="flRater">'+
+          '<option value="clinician">医护填报</option><option value="self"'+
+          (s.rater === 'self' ? ' selected' : '')+'>患者自评</option></select></div>'+
+      '</div>'+
+      (d.instruction ? '<div class="detail-card"><b>'+esc(d.instruction)+'</b></div>' : '');
+
+    (d.items || []).forEach((it, i) => {
+      const pre = (preset || {})[it.id];
+      h += '<div class="field" data-item="'+esc(it.id)+'"><label>'+(i+1)+'. '+esc(it.text)+
+        (it.required ? ' <span style="color:#d04848">*</span>' : '')+'</label>';
+      if (it.type === 'single') {
+        h += '<select class="flIn" data-id="'+esc(it.id)+'" data-type="single"><option value="">请选择</option>'+
+          it.options.map(o => '<option value="'+esc(String(o.value))+'"'+
+            (pre !== undefined && String(pre) === String(o.value) ? ' selected' : '')+'>'+
+            esc(o.label)+'</option>').join('')+'</select>';
+      } else if (it.type === 'multi') {
+        h += '<div style="display:flex;flex-wrap:wrap;gap:12px;padding:6px 0">'+
+          it.options.map(o => '<label style="font-weight:400"><input type="checkbox" class="flIn" data-id="'+
+            esc(it.id)+'" data-type="multi" value="'+esc(String(o.value))+'"'+
+            (Array.isArray(pre) && pre.map(String).includes(String(o.value)) ? ' checked' : '')+'> '+
+            esc(o.label)+'</label>').join('')+'</div>';
+      } else if (it.type === 'number' || it.type === 'scale') {
+        h += '<input class="flIn" data-id="'+esc(it.id)+'" data-type="number" type="number"'+
+          (it.min != null ? ' min="'+esc(String(it.min))+'"' : '')+
+          (it.max != null ? ' max="'+esc(String(it.max))+'"' : '')+
+          (pre !== undefined ? ' value="'+esc(String(pre))+'"' : '')+'>';
+      } else {
+        h += '<textarea class="flIn" data-id="'+esc(it.id)+'" data-type="text">'+esc(pre || '')+'</textarea>';
+      }
+      h += '<div class="sub flErr" data-err="'+esc(it.id)+'" style="color:#d04848"></div></div>';
+    });
+
+    openDrawer(s.name + (revisionOf ? '（修订）' : ''), s.code + ' v' + s.version + ' · ' +
+      (d.items || []).length + ' 题', h,
+      '<div id="flScore" style="margin-right:auto;color:var(--muted);font-size:13px">尚未作答</div>'+
+      '<button class="secondary" onclick="closeDrawer()">取消</button>'+
+      '<button class="primary" id="flSubmit">提交</button>');
+
+    S.fillCode = code; S.fillRevision = revisionOf || null;
+    document.querySelectorAll('.flIn').forEach(el => {
+      el.addEventListener('change', liveScore);
+      if (el.tagName === 'TEXTAREA' || el.type === 'number') el.addEventListener('input', debounceScore);
+    });
+    document.getElementById('flSubmit').onclick = submitFill;
+    liveScore();
+  } catch (e) {
+    openDrawer('量表填报', code, errBox(e), '<button class="secondary" onclick="closeDrawer()">关闭</button>');
+  }
+}
+function collectAnswers() {
+  const a = {};
+  document.querySelectorAll('.flIn').forEach(el => {
+    const id = el.dataset.id, t = el.dataset.type;
+    if (t === 'multi') {
+      if (el.checked) (a[id] = a[id] || []).push(Number(el.value));
+    } else if (t === 'single') {
+      if (el.value !== '') a[id] = Number(el.value);
+    } else if (t === 'number') {
+      if (el.value !== '') a[id] = Number(el.value);
+    } else if (el.value.trim() !== '') a[id] = el.value.trim();
+  });
+  return a;
+}
+let _scoreTimer = null;
+function debounceScore() { clearTimeout(_scoreTimer); _scoreTimer = setTimeout(liveScore, 400); }
+async function liveScore() {
+  const box = document.getElementById('flScore');
+  if (!box) return;
+  try {
+    const res = await fetch(API_BASE + '/api/platform/scale/score', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scale_code: S.fillCode, answers: collectAnswers() }),
+    });
+    const d = await res.json();
+    const r = d.result || {};
+    document.querySelectorAll('.flErr').forEach(el => el.textContent = '');
+    (d.errors || []).forEach(x => {
+      const el = document.querySelector('[data-err="' + x.item + '"]');
+      if (el) el.textContent = x.error;
+    });
+    box.innerHTML = '已答 <b>'+r.answered+'/'+r.total_items+'</b> · 当前总分 <b>'+
+      (r.total != null ? r.total : '--')+'</b>'+
+      (r.level ? ' · <b style="color:#16a085">'+esc(r.level.label)+'</b>' : '')+
+      ((d.errors || []).length ? ' · <span style="color:#d04848">'+d.errors.length+' 处待修正</span>' : '');
+  } catch (e) { box.textContent = '实时计分不可用：' + e.message; }
+}
+async function submitFill() {
+  const btn = document.getElementById('flSubmit');
+  btn.disabled = true; btn.textContent = '提交中…';
+  try {
+    const payload = {
+      scale_code: S.fillCode, patient_no: document.getElementById('flPatient').value,
+      answers: collectAnswers(), rater_type: document.getElementById('flRater').value,
+      operator: localStorage.getItem(LS_OP) || null,
+    };
+    if (S.fillRevision) payload.revision_of = S.fillRevision;
+    const res = await apiFetch(API_BASE + '/api/platform/scale/response',
+      { method: 'POST', headers: headers(true), body: JSON.stringify(payload) });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
+    if (d.scored === false) {
+      btn.disabled = false; btn.textContent = '提交';
+      document.querySelectorAll('.flErr').forEach(el => el.textContent = '');
+      (d.errors || []).forEach(x => {
+        const el = document.querySelector('[data-err="' + x.item + '"]');
+        if (el) el.textContent = x.error;
+      });
+      toast('还有 ' + d.errors.length + ' 处需要修正', 4000);
+      return;
+    }
+    const r = d.result;
+    closeDrawer();
+    toast('已提交：总分 ' + r.total + (r.level ? ' · ' + r.level.label : ''), 5000);
+    await loadResponses();
+    document.querySelector('[data-stab="resp"]').click();
+  } catch (e) { btn.disabled = false; btn.textContent = '提交'; toast('提交失败：' + e.message, 4000); }
+}
+
+async function loadResponses() {
+  const wrap = document.getElementById('respWrap');
+  try {
+    const d = await getJSON('/api/platform/scale/responses?limit=200');
+    S.responses = d.responses || [];
+    document.getElementById('tabRespN').textContent = S.responses.length;
+    wrap.innerHTML = S.responses.length ? S.responses.map(r =>
+      '<div class="row-card row-plan">'+
+        '<div><span class="strong">'+esc(r.patient_name || '(未命名)')+'</span><span class="sub">门诊号 '+esc(r.patient_no)+'</span></div>'+
+        '<div>'+esc(r.scale_name || r.scale_code)+'<span class="sub">'+esc(r.scale_code)+' v'+esc(r.scale_version)+'</span></div>'+
+        '<div><b style="font-size:16px">'+(r.total_score != null ? r.total_score : '--')+'</b> 分'+
+          (r.level_label ? '<span class="tag orange">'+esc(r.level_label)+'</span>' : '')+
+          '<span class="sub">'+esc(RATER_LABEL[r.rater_type] || r.rater_type)+' · '+esc(r.operator || '匿名')+'</span></div>'+
+        '<div>'+esc(r.created_at)+'<span class="sub">'+(r.revision_of ? '修订自 #'+r.revision_of : '首次填报')+'</span></div>'+
+        '<div style="display:flex;gap:8px"><button class="secondary" onclick="viewResponse('+r.id+')">详情</button>'+
+          '<button class="link" onclick="reviseResponse('+r.id+')">修订</button></div>'+
+      '</div>').join('')
+      : emptyBox('📝', '还没有填报记录', '到「量表库」选一份量表点「填报」。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+function viewResponse(id) {
+  const r = S.responses.find(x => x.id === id);
+  if (!r) return;
+  let h = '<div class="detail-card"><h4>'+esc(r.scale_name || r.scale_code)+'</h4>'+
+    '<div class="detail-row"><span>患者</span><b>'+esc(r.patient_name || '(未命名)')+' / '+esc(r.patient_no)+'</b></div>'+
+    '<div class="detail-row"><span>总分</span><b style="font-size:16px">'+(r.total_score != null ? r.total_score : '--')+'</b></div>'+
+    (r.level_label ? '<div class="detail-row"><span>分级</span><b>'+esc(r.level_label)+'</b></div>' : '')+
+    (r.level_advice ? '<div class="sub" style="padding:4px 0 8px">'+esc(r.level_advice)+'</div>' : '')+
+    '<div class="detail-row"><span>填报方式</span><b>'+esc(RATER_LABEL[r.rater_type] || r.rater_type)+'</b></div>'+
+    '<div class="detail-row"><span>填报人</span><b>'+esc(r.operator || '匿名')+'</b></div>'+
+    '<div class="detail-row"><span>时间</span><b>'+esc(r.created_at)+'</b></div>'+
+    (r.revision_of ? '<div class="detail-row"><span>修订自</span><b class="mono">#'+r.revision_of+'</b></div>' : '')+
+    '</div>';
+  if (r.subscores && Object.keys(r.subscores).length) {
+    h += '<div class="detail-card"><h4>分量表得分</h4>'+
+      Object.entries(r.subscores).map(([k, v]) =>
+        '<div class="detail-row"><span>'+esc(k)+'</span><b>'+esc(String(v))+'</b></div>').join('')+'</div>';
+  }
+  openDrawer('填报详情 #' + r.id, r.scale_code, h,
+    '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+    '<button class="primary" onclick="reviseResponse('+r.id+')">修订</button>');
+}
+async function reviseResponse(id) {
+  const r = S.responses.find(x => x.id === id);
+  if (!r) return;
+  try {
+    const d = await getJSON('/api/platform/scale/responses?limit=200&includeSuperseded=1');
+    /* 修订要拿原始 answers 预填 —— 列表接口不返回 answers(几十道题的 JSON, 列表不该背这个),
+       所以这里退而求其次: 打开空表单并提示。真要预填得给单条详情端点, 留到下一轮。 */
+    toast('已打开修订表单，请重新作答；原记录会完整保留为历史版本', 5000);
+    openFill(r.scale_code, id, null);
+  } catch (e) { toast('打开修订失败：' + e.message, 4000); }
+}
+
+document.getElementById('scaleImportBtn').onclick = () => document.getElementById('scaleFile').click();
+document.getElementById('scaleFile').onchange = async e => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  try {
+    const s = JSON.parse(await f.text());
+    delete s.license;                       // 说明字段, 不入库
+    const res = await apiFetch(API_BASE + '/api/platform/scale',
+      { method: 'POST', headers: headers(true), body: JSON.stringify(s) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast('导入成功：' + d.code + ' v' + d.version + '（' + d.items + ' 题）', 5000);
+    S.scaleCache = {};
+    await loadScales();
+  } catch (err) { toast('导入失败：' + err.message, 6000); }
+};
+document.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => {
+  const t = b.dataset.stab;
+  document.querySelectorAll('[data-stab]').forEach(x => x.classList.toggle('active', x === b));
+  document.getElementById('stabLib').style.display = t === 'lib' ? '' : 'none';
+  document.getElementById('stabResp').style.display = t === 'resp' ? '' : 'none';
+  if (t === 'resp') loadResponses();
+});
 
 /* ================================================================ 系统管理 */
 function fillSettings() {

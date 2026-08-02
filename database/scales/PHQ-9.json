@@ -1,0 +1,333 @@
+{
+  "code": "PHQ-9",
+  "name": "患者健康问卷抑郁量表 (PHQ-9)",
+  "category": "抑郁",
+  "version": "1",
+  "rater": "self",
+  "source": "builtin",
+  "stages": [
+    "基线",
+    "随访"
+  ],
+  "license": "Pfizer 发布, 可免费使用无需授权。其他量表(如 MMAS-8、SDS、HAMD 等)多有版权与授权要求, 导入前须先确认。",
+  "definition": {
+    "instruction": "在过去两周内，您有多少时候受到以下问题的困扰？",
+    "items": [
+      {
+        "id": "q1",
+        "text": "做事时提不起劲或没有兴趣",
+        "type": "single",
+        "required": true,
+        "dimension": "情绪症状",
+        "field_map": "PHQ9_Q1",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q2",
+        "text": "感到心情低落、沮丧或绝望",
+        "type": "single",
+        "required": true,
+        "dimension": "情绪症状",
+        "field_map": "PHQ9_Q2",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q3",
+        "text": "入睡困难、睡不安稳或睡眠过多",
+        "type": "single",
+        "required": true,
+        "dimension": "躯体症状",
+        "field_map": "PHQ9_Q3",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q4",
+        "text": "感觉疲倦或没有活力",
+        "type": "single",
+        "required": true,
+        "dimension": "躯体症状",
+        "field_map": "PHQ9_Q4",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q5",
+        "text": "食欲不振或吃太多",
+        "type": "single",
+        "required": true,
+        "dimension": "躯体症状",
+        "field_map": "PHQ9_Q5",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q6",
+        "text": "觉得自己很糟，或觉得自己很失败，或让家人失望",
+        "type": "single",
+        "required": true,
+        "dimension": "情绪症状",
+        "field_map": "PHQ9_Q6",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q7",
+        "text": "对事物专注有困难，例如阅读报纸或看电视时",
+        "type": "single",
+        "required": true,
+        "dimension": "情绪症状",
+        "field_map": "PHQ9_Q7",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q8",
+        "text": "动作或说话速度缓慢到别人已经察觉？或正好相反——烦躁或坐立不安、动来动去的情况超过平常",
+        "type": "single",
+        "required": true,
+        "dimension": "情绪症状",
+        "field_map": "PHQ9_Q8",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q9",
+        "text": "有不如死掉或用某种方式伤害自己的念头",
+        "type": "single",
+        "required": true,
+        "dimension": "情绪症状",
+        "field_map": "PHQ9_Q9",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "risk_note",
+        "text": "自杀风险处置说明（第 9 题非「完全不会」时必填）",
+        "type": "text",
+        "field_map": "PHQ9_RISK_NOTE"
+      }
+    ],
+    "scoring": {
+      "total": {
+        "method": "sum",
+        "items": "all"
+      },
+      "subscales": [
+        {
+          "name": "躯体症状",
+          "items": [
+            "q3",
+            "q4",
+            "q5"
+          ]
+        },
+        {
+          "name": "情绪症状",
+          "items": [
+            "q1",
+            "q2",
+            "q6",
+            "q7",
+            "q8"
+          ]
+        }
+      ],
+      "levels": [
+        {
+          "min": 0,
+          "max": 4,
+          "label": "无或极轻",
+          "advice": "无明显抑郁症状，常规随访即可"
+        },
+        {
+          "min": 5,
+          "max": 9,
+          "label": "轻度抑郁",
+          "advice": "建议观察随访，2 周后复评"
+        },
+        {
+          "min": 10,
+          "max": 14,
+          "label": "中度抑郁",
+          "advice": "建议专科进一步评估，考虑心理干预"
+        },
+        {
+          "min": 15,
+          "max": 19,
+          "label": "中重度抑郁",
+          "advice": "建议尽快专科就诊，评估药物治疗指征"
+        },
+        {
+          "min": 20,
+          "max": 27,
+          "label": "重度抑郁",
+          "advice": "建议立即专科干预，同时评估自杀风险"
+        }
+      ]
+    },
+    "consistency": [
+      {
+        "type": "require_if",
+        "when": {
+          "item": "q9",
+          "in": [
+            1,
+            2,
+            3
+          ]
+        },
+        "then_required": [
+          "risk_note"
+        ],
+        "note": "第 9 题是自杀意念条目, 只要不是「完全不会」就必须留下处置说明"
+      }
+    ]
+  }
+}

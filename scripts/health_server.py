@@ -2037,6 +2037,503 @@ def platform_screening_mark(body):
         conn.close()
 
 
+# ============ 随访平台 1.3 M10 (量表引擎: 存储 / 填报 / 评分) ============
+# 对应设计方案 §2.2(1) 内置标准化量表底座, 以及北大六院标书 ★1.6.2 里点名的:
+#   CRF 设置 / 题型配置 / 评分规则配置 / 字段映射 / 阶段管理 / 预览管理
+#   + 医护填报 / 患者自评 / 错误修订
+#
+# 本轮做的是**引擎**, 不是**内容**。★1.6.2 要的 200+ 个精神科量表是内容, 题目与评分规则
+# 得临床方提供(且相当一部分量表有版权与授权要求, 不能自己编)。引擎先立住, 量表用
+# POST /api/platform/scale 一份一份导入即可 —— 导入一份就是一次 INSERT。
+#
+# 明确没做: §2.2(2) AI 量表生成、§2.2(3) 从文档/图片 OCR 结构化入库。
+#
+# 为什么 definition 用一整块 JSON 而不拆成 item/option 两张表:
+#   量表是"整体发布 + 整体版本化"的单位, 题目不会被单独查询或跨量表检索; 拆表要 3~4 张
+#   还得维护顺序字段, 收益极小。代价是没法按题目做跨量表检索(比如"哪些量表问了自杀意念"),
+#   真需要时再加一张倒排表, 不必现在就付这个复杂度。
+
+SCALE_ITEM_TYPES = ('single', 'multi', 'number', 'text', 'scale')
+
+
+def _scale_opt_values(item):
+    """取一道题所有选项的分值列表(用于反向计分)。"""
+    return [o.get('value') for o in (item.get('options') or []) if isinstance(o.get('value'), (int, float))]
+
+
+def validate_scale_definition(d):
+    """量表定义结构校验。返回 errors 列表(空 = 合法)。
+
+    导入时先过这一关, 免得一份结构就不对的量表进了库, 等到患者填到一半才炸。
+    """
+    errs = []
+    if not isinstance(d, dict):
+        return ['definition 必须是对象']
+    items = d.get('items')
+    if not isinstance(items, list) or not items:
+        return ['definition.items 必须是非空数组']
+
+    seen = set()
+    for i, it in enumerate(items):
+        where = 'items[{}]'.format(i)
+        if not isinstance(it, dict):
+            errs.append(where + ' 必须是对象'); continue
+        iid = it.get('id')
+        if not iid:
+            errs.append(where + ' 缺 id')
+        elif iid in seen:
+            errs.append(where + ' id 重复: ' + str(iid))
+        else:
+            seen.add(iid)
+        if not it.get('text'):
+            errs.append(where + ' 缺题干 text')
+        t = it.get('type')
+        if t not in SCALE_ITEM_TYPES:
+            errs.append('{} type 必须是 {} 之一, 得到 {!r}'.format(where, '/'.join(SCALE_ITEM_TYPES), t))
+        if t in ('single', 'multi'):
+            opts = it.get('options')
+            if not isinstance(opts, list) or not opts:
+                errs.append(where + ' 选择题必须有 options')
+            else:
+                for j, o in enumerate(opts):
+                    if not isinstance(o, dict) or 'label' not in o or 'value' not in o:
+                        errs.append('{}.options[{}] 必须含 label 和 value'.format(where, j))
+            if it.get('reverse') and len(_scale_opt_values(it)) < 2:
+                errs.append(where + ' 标了 reverse 但选项分值不足 2 个, 无法反向计分')
+        if t in ('number', 'scale'):
+            lo, hi = it.get('min'), it.get('max')
+            if lo is not None and hi is not None and lo > hi:
+                errs.append(where + ' min 大于 max')
+
+    sc = d.get('scoring') or {}
+    for k, sub in enumerate(sc.get('subscales') or []):
+        if not isinstance(sub, dict) or not sub.get('name') or not isinstance(sub.get('items'), list):
+            errs.append('scoring.subscales[{}] 必须含 name 和 items 数组'.format(k)); continue
+        for iid in sub['items']:
+            if iid not in seen:
+                errs.append('scoring.subscales[{}] 引用了不存在的题目 {!r}'.format(k, iid))
+    levels = sc.get('levels') or []
+    for k, lv in enumerate(levels):
+        if not isinstance(lv, dict) or 'min' not in lv or 'max' not in lv or not lv.get('label'):
+            errs.append('scoring.levels[{}] 必须含 min/max/label'.format(k))
+        elif lv['min'] > lv['max']:
+            errs.append('scoring.levels[{}] min 大于 max'.format(k))
+    # 分级区间重叠会导致同一个总分落进两档, 判定结果取决于数组顺序 —— 这是隐蔽的错源, 直接拦
+    ok_levels = [lv for lv in levels if isinstance(lv, dict) and isinstance(lv.get('min'), (int, float))
+                 and isinstance(lv.get('max'), (int, float))]
+    for a in range(len(ok_levels)):
+        for b in range(a + 1, len(ok_levels)):
+            x, y = ok_levels[a], ok_levels[b]
+            if x['min'] <= y['max'] and y['min'] <= x['max']:
+                errs.append('scoring.levels 区间重叠: [{},{}] 与 [{},{}]'.format(
+                    x['min'], x['max'], y['min'], y['max']))
+
+    for k, r in enumerate(d.get('consistency') or []):
+        if not isinstance(r, dict) or r.get('type') not in ('require_if', 'exclusive'):
+            errs.append('consistency[{}] type 必须是 require_if 或 exclusive'.format(k))
+    return errs
+
+
+def score_scale(definition, answers):
+    """按量表定义对一份作答评分 + 校验。返回 (result, errors)。
+
+    评分口径:
+      single  取所选选项的 value
+      multi   取所选各选项 value 之和
+      number  取数值本身
+      scale   取数值本身(视觉模拟/滑块)
+      text    不计分
+
+      reverse=true 的题按 (选项最大分 + 选项最小分) - 原始分 反向 —— 这是量表学里标准的
+      反向计分公式, 不是简单的 max-x。很多自评量表(如 Zung SDS)有近半题目是反向题,
+      算错方向会让抑郁分变成健康分, 所以单列出来并有专门的单元测试。
+
+    校验(方案 §2.2(3) 的"必填校验/取值范围校验/逻辑一致性校验"):
+      - required 缺答
+      - number/scale 越 min/max
+      - 选择题答案不在选项里
+      - consistency: require_if(条件必填) / exclusive(互斥)
+    未做: 从文档/图片 OCR 结构化入库(那是 AI 侧的事)。
+    """
+    errors = []
+    items = definition.get('items') or []
+    by_id = {it.get('id'): it for it in items if isinstance(it, dict)}
+    item_scores = {}
+    answered = 0
+
+    for it in items:
+        iid = it.get('id')
+        t = it.get('type')
+        raw = answers.get(iid)
+        missing = raw is None or raw == '' or (isinstance(raw, list) and not raw)
+        if missing:
+            if it.get('required'):
+                errors.append({'item': iid, 'error': '必填项未作答'})
+            continue
+        answered += 1
+
+        if t == 'single':
+            vals = {o.get('value') for o in (it.get('options') or [])}
+            if raw not in vals:
+                errors.append({'item': iid, 'error': '答案不在选项内: {!r}'.format(raw)})
+                continue
+            score = raw
+        elif t == 'multi':
+            if not isinstance(raw, list):
+                errors.append({'item': iid, 'error': '多选题答案必须是数组'}); continue
+            vals = {o.get('value') for o in (it.get('options') or [])}
+            bad = [x for x in raw if x not in vals]
+            if bad:
+                errors.append({'item': iid, 'error': '答案不在选项内: {!r}'.format(bad)}); continue
+            score = sum(x for x in raw if isinstance(x, (int, float)))
+        elif t in ('number', 'scale'):
+            try:
+                score = float(raw)
+            except (TypeError, ValueError):
+                errors.append({'item': iid, 'error': '必须是数字'}); continue
+            lo, hi = it.get('min'), it.get('max')
+            if lo is not None and score < lo:
+                errors.append({'item': iid, 'error': '低于下限 {}'.format(lo)}); continue
+            if hi is not None and score > hi:
+                errors.append({'item': iid, 'error': '高于上限 {}'.format(hi)}); continue
+        else:                      # text 不计分
+            continue
+
+        if it.get('reverse'):
+            ov = _scale_opt_values(it)
+            if ov:
+                score = (max(ov) + min(ov)) - score
+            else:
+                lo, hi = it.get('min'), it.get('max')
+                if lo is not None and hi is not None:
+                    score = (hi + lo) - score
+        item_scores[iid] = score
+
+    # --- 逻辑一致性 ---
+    for rule in (definition.get('consistency') or []):
+        if rule.get('type') == 'require_if':
+            w = rule.get('when') or {}
+            trig = answers.get(w.get('item'))
+            hit = trig in (w.get('in') or []) if isinstance(w.get('in'), list) else trig == w.get('equals')
+            if hit:
+                for need in (rule.get('then_required') or []):
+                    v = answers.get(need)
+                    if v is None or v == '' or (isinstance(v, list) and not v):
+                        errors.append({'item': need, 'error': '当 {} 选了特定项时此题必填'.format(w.get('item'))})
+        elif rule.get('type') == 'exclusive':
+            picked = [i for i in (rule.get('items') or [])
+                      if answers.get(i) not in (None, '', []) ]
+            if len(picked) > 1:
+                errors.append({'item': picked[0], 'error': '互斥题只能选其一, 现有 {}'.format('、'.join(picked))})
+
+    sc = definition.get('scoring') or {}
+    total_cfg = sc.get('total') or {'method': 'sum', 'items': 'all'}
+    pick = total_cfg.get('items')
+    ids = list(item_scores) if pick in (None, 'all') else [i for i in pick if i in item_scores]
+    vals = [item_scores[i] for i in ids]
+    if total_cfg.get('method') == 'mean':
+        total = round(sum(vals) / len(vals), 2) if vals else None
+    else:
+        total = sum(vals) if vals else 0
+
+    subscores = {}
+    for sub in (sc.get('subscales') or []):
+        sv = [item_scores[i] for i in sub.get('items', []) if i in item_scores]
+        subscores[sub['name']] = round(sum(sv) / len(sv), 2) if sub.get('method') == 'mean' else sum(sv)
+
+    level = None
+    if total is not None:
+        for lv in (sc.get('levels') or []):
+            try:
+                if lv['min'] <= total <= lv['max']:
+                    level = {'label': lv.get('label'), 'advice': lv.get('advice'),
+                             'min': lv['min'], 'max': lv['max']}
+                    break
+            except (KeyError, TypeError):
+                continue
+
+    return {
+        'item_scores': item_scores, 'total': total, 'subscores': subscores,
+        'level': level, 'answered': answered, 'total_items': len(items),
+        'unanswered': [it.get('id') for it in items if it.get('id') not in item_scores
+                       and it.get('type') != 'text'],
+    }, errors
+
+
+def ensure_platform_scale_tables():
+    """M10: 量表定义表 + 填报记录表 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_scale (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(64) NOT NULL COMMENT '量表编码, 如 PHQ-9',
+                name VARCHAR(128) NOT NULL,
+                category VARCHAR(64) DEFAULT NULL COMMENT '抑郁/焦虑/睡眠/认知/服药依从性...',
+                version VARCHAR(32) DEFAULT '1',
+                rater ENUM('clinician','self','both') DEFAULT 'both' COMMENT '他评/自评/皆可',
+                source VARCHAR(32) DEFAULT 'import' COMMENT 'builtin/import/ai',
+                stages JSON DEFAULT NULL COMMENT '阶段管理: 适用的随访阶段名数组',
+                definition JSON NOT NULL COMMENT '题目+选项+评分规则+分级+字段映射',
+                active TINYINT(1) DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_code_version (code, version),
+                INDEX idx_category (category),
+                INDEX idx_active (active)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M10 量表定义'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_scale_response (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                scale_code VARCHAR(64) NOT NULL,
+                scale_version VARCHAR(32) DEFAULT '1',
+                patient_no VARCHAR(64) NOT NULL,
+                plan_id BIGINT DEFAULT NULL COMMENT '关联随访计划 = 阶段管理落点',
+                answers JSON NOT NULL,
+                total_score DECIMAL(10,2) DEFAULT NULL,
+                subscores JSON DEFAULT NULL,
+                level_label VARCHAR(64) DEFAULT NULL,
+                level_advice VARCHAR(500) DEFAULT NULL,
+                rater_type ENUM('clinician','self') DEFAULT 'clinician',
+                operator VARCHAR(64) DEFAULT NULL,
+                status ENUM('submitted','superseded') DEFAULT 'submitted',
+                revision_of BIGINT DEFAULT NULL COMMENT '错误修订: 指向被本条取代的上一版',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_patient (patient_no, created_at),
+                INDEX idx_scale (scale_code),
+                INDEX idx_status (status),
+                INDEX idx_plan (plan_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M10 量表填报记录 (修订走新增+标记旧版, 不原地改, 留痕)'
+        """)
+        print('[启动] platform_scale / platform_scale_response 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_scale_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def upsert_platform_scale(body):
+    """建/改量表 (= 量表导入)。同 (code, version) 覆盖, 换 version 则并存新旧两版。"""
+    code = str(body.get('code') or '').strip()
+    name = str(body.get('name') or '').strip()
+    if not code or not name:
+        return None, 'code 和 name 必填'
+    version = str(body.get('version') or '1').strip()
+    rater = body.get('rater') or 'both'
+    if rater not in ('clinician', 'self', 'both'):
+        return None, "rater 必须是 clinician/self/both"
+    definition = body.get('definition')
+    if isinstance(definition, str):
+        try:
+            definition = json.loads(definition)
+        except ValueError:
+            return None, 'definition 不是合法 JSON'
+    errs = validate_scale_definition(definition)
+    if errs:
+        return None, '量表定义有 {} 处问题: {}'.format(len(errs), '; '.join(errs[:6]))
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO platform_scale (code, name, category, version, rater, source, stages, definition, active)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+              name=VALUES(name), category=VALUES(category), rater=VALUES(rater),
+              source=VALUES(source), stages=VALUES(stages), definition=VALUES(definition),
+              active=VALUES(active)
+        """, (code, name, body.get('category') or None, version, rater,
+              body.get('source') or 'import',
+              json.dumps(body.get('stages') or [], ensure_ascii=False),
+              json.dumps(definition, ensure_ascii=False),
+              0 if body.get('active') in (0, False, '0') else 1))
+        cur.close()
+        return {'code': code, 'version': version, 'items': len(definition.get('items') or [])}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_platform_scales(code=None, category=None, active_only=True, with_definition=False):
+    """量表列表 / 单份定义。列表默认不带 definition —— 一份量表几十道题, 列表页不需要。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if code:
+            where.append('code = %s'); params.append(code)
+        if category:
+            where.append('category = %s'); params.append(category)
+        if active_only:
+            where.append('active = 1')
+        # 题目数走 SQL 侧的 JSON_LENGTH 取, 不为了数个数把整份 definition(几十道题) 拉回来 ——
+        # 列表页只需要这一个数字。带 definition 时仍然算, 保证两条路径的字段一致。
+        cols = ('id, code, name, category, version, rater, source, stages, active, '
+                "created_at, updated_at, JSON_LENGTH(definition, '$.items') AS item_count")
+        if with_definition or code:
+            cols += ', definition'
+        cur.execute('SELECT {} FROM platform_scale WHERE {} ORDER BY category, code'.format(
+            cols, ' AND '.join(where)), params)
+        names = [d[0] for d in cur.description]
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(names, row))
+            for k in ('created_at', 'updated_at'):
+                if r.get(k) is not None and hasattr(r[k], 'strftime'):
+                    r[k] = r[k].strftime('%Y-%m-%d %H:%M:%S')
+            for k in ('stages', 'definition'):
+                if isinstance(r.get(k), str):
+                    try:
+                        r[k] = json.loads(r[k])
+                    except ValueError:
+                        pass
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'scales': out}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def submit_scale_response(body):
+    """提交一份填报: 取定义 -> 评分 + 校验 -> 落库。
+
+    {scale_code, scale_version?, patient_no, answers{}, rater_type?, operator?, plan_id?,
+     revision_of?, allow_errors?}
+
+    revision_of 给了 = 错误修订: 新插一条, 把被修订的那条标成 superseded, 两条都留在库里。
+    不原地 UPDATE —— 标书 ★1.6.2 要"错误修订", 方案 §4.3(3) 要"修改留痕/历史版本/可回退",
+    原地改就把这两条都毁了。
+
+    默认校验不过就拒收(errors 原样返回给前端逐题标红)。allow_errors=true 时仍落库,
+    用于"先存草稿、回头补"的场景, 但 status 仍是 submitted, 由前端自己决定要不要提示。
+    """
+    code = str(body.get('scale_code') or '').strip()
+    patient_no = str(body.get('patient_no') or '').strip()
+    answers = body.get('answers')
+    if not code or not patient_no:
+        return None, 'scale_code 和 patient_no 必填'
+    if not isinstance(answers, dict):
+        return None, 'answers 必须是对象 {题目id: 答案}'
+    rater_type = body.get('rater_type') or 'clinician'
+    if rater_type not in ('clinician', 'self'):
+        return None, "rater_type 必须是 clinician 或 self"
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        version = body.get('scale_version')
+        if version:
+            cur.execute('SELECT version, definition FROM platform_scale WHERE code=%s AND version=%s',
+                        (code, str(version)))
+        else:
+            cur.execute('SELECT version, definition FROM platform_scale WHERE code=%s AND active=1 '
+                        'ORDER BY updated_at DESC LIMIT 1', (code,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '量表不存在或已停用: {}'.format(code)
+        version, definition = row[0], row[1]
+        if isinstance(definition, str):
+            definition = json.loads(definition)
+
+        result, errors = score_scale(definition, answers)
+        if errors and not body.get('allow_errors'):
+            cur.close()
+            return {'ok': False, 'scored': False, 'errors': errors, 'result': result}, None
+
+        revision_of = body.get('revision_of')
+        if revision_of is not None:
+            try:
+                revision_of = int(revision_of)
+            except (TypeError, ValueError):
+                cur.close()
+                return None, 'revision_of 必须是整数'
+            cur.execute('SELECT id FROM platform_scale_response WHERE id=%s', (revision_of,))
+            if not cur.fetchone():
+                cur.close()
+                return None, '被修订的记录不存在: {}'.format(revision_of)
+
+        lv = result.get('level') or {}
+        cur.execute("""
+            INSERT INTO platform_scale_response
+              (scale_code, scale_version, patient_no, plan_id, answers, total_score, subscores,
+               level_label, level_advice, rater_type, operator, status, revision_of)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'submitted',%s)
+        """, (code, version, patient_no, body.get('plan_id'),
+              json.dumps(answers, ensure_ascii=False), result.get('total'),
+              json.dumps(result.get('subscores') or {}, ensure_ascii=False),
+              lv.get('label'), lv.get('advice'), rater_type, body.get('operator') or None,
+              revision_of))
+        new_id = cur.lastrowid
+        if revision_of is not None:
+            cur.execute("UPDATE platform_scale_response SET status='superseded' WHERE id=%s", (revision_of,))
+        cur.close()
+        return {'ok': True, 'scored': True, 'id': new_id, 'scale_code': code,
+                'scale_version': version, 'result': result, 'errors': errors}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_scale_responses(patient_no=None, code=None, include_superseded=False, limit=100):
+    """填报记录列表。默认只给现行版(superseded 的历史版要显式要)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if patient_no:
+            where.append('r.patient_no = %s'); params.append(patient_no)
+        if code:
+            where.append('r.scale_code = %s'); params.append(code)
+        if not include_superseded:
+            where.append("r.status = 'submitted'")
+        params.append(int(limit))
+        cur.execute("""
+            SELECT r.id, r.scale_code, r.scale_version, s.name, r.patient_no, p.name,
+                   r.total_score, r.subscores, r.level_label, r.level_advice,
+                   r.rater_type, r.operator, r.status, r.revision_of, r.plan_id, r.created_at
+            FROM platform_scale_response r
+            LEFT JOIN platform_scale s ON s.code = r.scale_code AND s.version = r.scale_version
+            LEFT JOIN platform_patient p ON p.patient_no = r.patient_no
+            WHERE {}
+            ORDER BY r.created_at DESC, r.id DESC
+            LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'scale_code', 'scale_version', 'scale_name', 'patient_no', 'patient_name',
+                'total_score', 'subscores', 'level_label', 'level_advice', 'rater_type',
+                'operator', 'status', 'revision_of', 'plan_id', 'created_at']
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            if r.get('created_at') is not None and hasattr(r['created_at'], 'strftime'):
+                r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+            if r.get('total_score') is not None:
+                r['total_score'] = float(r['total_score'])
+            if isinstance(r.get('subscores'), str):
+                try:
+                    r['subscores'] = json.loads(r['subscores'])
+                except ValueError:
+                    pass
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'responses': out}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -3114,6 +3611,26 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send_json(500, {'ok': False, 'error': str(e)})
 
+        elif pathname == '/api/platform/scales':
+            result, err = query_platform_scales(
+                code=(query.get('code') or [None])[0],
+                category=(query.get('category') or [None])[0],
+                active_only=(query.get('all') or ['0'])[0] not in ('1', 'true'),
+                with_definition=(query.get('withDefinition') or ['0'])[0] in ('1', 'true'))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/scale/responses':
+            try:
+                limit = min(int((query.get('limit') or ['100'])[0]), 500)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'limit 必须是整数'}); return
+            result, err = query_scale_responses(
+                patient_no=(query.get('patientNo') or [None])[0],
+                code=(query.get('code') or [None])[0],
+                include_superseded=(query.get('includeSuperseded') or ['0'])[0] in ('1', 'true'),
+                limit=limit)
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/discover':
             try:
                 min_records = int((query.get('minRecords') or ['0'])[0] or 0)
@@ -3479,6 +3996,31 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(200, result)
 
+            elif pathname == '/api/platform/scale':
+                if not check_platform_token(self):
+                    return
+                result, err = upsert_platform_scale(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/scale/score':
+                # 试评分: 只算不落库, 供填报页实时出分与预览管理用, 因此不走写接口门禁
+                definition = body.get('definition')
+                if not definition and body.get('scale_code'):
+                    q, e = query_platform_scales(code=str(body['scale_code']))
+                    if e or not q['scales']:
+                        self._send_json(404, {'ok': False, 'error': e or '量表不存在'}); return
+                    definition = q['scales'][0]['definition']
+                if not isinstance(definition, dict):
+                    self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
+                result, errors = score_scale(definition, body.get('answers') or {})
+                self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/scale/response':
+                if not check_platform_token(self):
+                    return
+                result, err = submit_scale_response(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
             elif pathname == '/api/platform/screening':
                 if not check_platform_token(self):
                     return
@@ -3599,6 +4141,8 @@ if __name__ == '__main__':
         ensure_platform_alarm_m7_columns()
         # M9: 筛查排除名单表 (idempotent)
         ensure_platform_screening_table()
+        # M10: 量表定义 + 填报记录 (idempotent)
+        ensure_platform_scale_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,

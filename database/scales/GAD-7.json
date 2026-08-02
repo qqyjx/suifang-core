@@ -1,0 +1,227 @@
+{
+  "code": "GAD-7",
+  "name": "广泛性焦虑障碍量表 (GAD-7)",
+  "category": "焦虑",
+  "version": "1",
+  "rater": "self",
+  "source": "builtin",
+  "stages": [
+    "基线",
+    "随访"
+  ],
+  "license": "Pfizer 发布, 可免费使用无需授权。",
+  "definition": {
+    "instruction": "在过去两周内，您有多少时候受到以下问题的困扰？",
+    "items": [
+      {
+        "id": "q1",
+        "text": "感觉紧张、焦虑或急切",
+        "type": "single",
+        "required": true,
+        "field_map": "GAD7_Q1",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q2",
+        "text": "不能够停止或控制担忧",
+        "type": "single",
+        "required": true,
+        "field_map": "GAD7_Q2",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q3",
+        "text": "对各种各样的事情担忧过多",
+        "type": "single",
+        "required": true,
+        "field_map": "GAD7_Q3",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q4",
+        "text": "很难放松下来",
+        "type": "single",
+        "required": true,
+        "field_map": "GAD7_Q4",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q5",
+        "text": "由于不安而无法静坐",
+        "type": "single",
+        "required": true,
+        "field_map": "GAD7_Q5",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q6",
+        "text": "变得容易烦恼或急躁",
+        "type": "single",
+        "required": true,
+        "field_map": "GAD7_Q6",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      },
+      {
+        "id": "q7",
+        "text": "感到似乎将有可怕的事情发生而害怕",
+        "type": "single",
+        "required": true,
+        "field_map": "GAD7_Q7",
+        "options": [
+          {
+            "label": "完全不会",
+            "value": 0
+          },
+          {
+            "label": "好几天",
+            "value": 1
+          },
+          {
+            "label": "一半以上时间",
+            "value": 2
+          },
+          {
+            "label": "几乎天天",
+            "value": 3
+          }
+        ]
+      }
+    ],
+    "scoring": {
+      "total": {
+        "method": "sum",
+        "items": "all"
+      },
+      "subscales": [],
+      "levels": [
+        {
+          "min": 0,
+          "max": 4,
+          "label": "无焦虑",
+          "advice": "无明显焦虑症状"
+        },
+        {
+          "min": 5,
+          "max": 9,
+          "label": "轻度焦虑",
+          "advice": "建议观察随访"
+        },
+        {
+          "min": 10,
+          "max": 14,
+          "label": "中度焦虑",
+          "advice": "建议专科进一步评估"
+        },
+        {
+          "min": 15,
+          "max": 21,
+          "label": "重度焦虑",
+          "advice": "建议尽快专科就诊"
+        }
+      ]
+    },
+    "consistency": []
+  }
+}
