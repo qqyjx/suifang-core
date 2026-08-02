@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>燕名医随 · AI智能随访一体化平台</title>
+<!--
+  燕名医随 v2 外壳 —— 把《V1.0通用AI智能随访一体化平台产品功能设计方案》那份原型的
+  8 模块骨架立起来, 并把随访平台 1.0/1.1/1.2 已建成的 M1~M8 全部真实能力接进来。
+
+  和原型演示.html 的根本区别: 原型里所有数字都是写死的 (2,846 在管患者 / 186 今日任务 /
+  84.6% 接通率 ...)。这里**一个假数字都没有** —— 能从 API 取到的就取真的, 取不到的模块
+  明确标成"未建设", 绝不用漂亮的假数据糊过去。对外演示时这条是底线: 一旦有人点进去发现
+  数字是编的, 整个平台的可信度就没了。
+
+  模块与真实能力的对应:
+    运营驾驶舱   真实   患者数/待建档数/未处理报警/今日任务, 均现算
+    随访资料准备 未建设  CRF/量表/宣教/知情 —— 方案阶段一 11 个功能点, 尚无实现
+    随访计划编排 真实   M5 platform_plan
+    随访执行中心 真实   M2 报警闭环 + M7 体征阈值/趋势预警 + M5 今日任务
+    患者管理     真实   M1 建档/绑定/体征 + M4 佩戴依从性 + M8 待建档发现
+    数据质控     未建设  方案 §4.3 四个功能点, 尚无实现
+    统计分析     部分   M6 队列导出已通; 高级检索与可视化统计未建设
+    系统管理     真实   API 配置 / 服务自检 (多角色权限体系未建设)
+-->
+<style>
+:root{--nav:#102b2a;--nav2:#17403d;--green:#16a085;--green2:#0f8d76;--mint:#e9f7f3;--blue:#4d7cfe;--orange:#ff9f43;--red:#ef5b5b;--ink:#1f2d3d;--muted:#7c8b9a;--line:#e8edf1;--bg:#f5f7f8;--white:#fff;--shadow:0 10px 30px rgba(30,55,60,.07)}
+*{box-sizing:border-box} body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg)}
+button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
+.sidebar{position:fixed;inset:0 auto 0 0;width:232px;background:linear-gradient(180deg,var(--nav),#0b2423);color:#fff;padding:24px 14px;z-index:10;overflow-y:auto}
+.brand{display:flex;gap:11px;align-items:center;padding:0 9px 27px}.brand-mark{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(135deg,#29c5a6,#78dfc6);box-shadow:0 7px 20px rgba(35,196,163,.28)}.brand-mark svg{width:23px}.brand b{font-size:17px}.brand small{display:block;color:#8db7b1;font-size:10px;letter-spacing:1px}
+.nav-title{padding:14px 12px 7px;color:#709b95;font-size:11px}.nav-item{display:flex;align-items:center;gap:11px;padding:10px 12px;margin:3px 0;border-radius:9px;color:#b8cecb;text-decoration:none;transition:.2s;cursor:pointer}.nav-item:hover,.nav-item.active{background:rgba(70,211,180,.13);color:#fff}.nav-item.active{box-shadow:inset 3px 0 #44d1b1}
+.nav-item .badge{margin-left:auto;background:#e85959;color:#fff;border-radius:10px;padding:0 6px;font-size:10px}
+.nav-item .wip{margin-left:auto;color:#5c7f7a;font-size:10px;border:1px solid #2b4f4b;border-radius:8px;padding:0 5px}
+.userbox{border-top:1px solid rgba(255,255,255,.08);padding:16px 8px 0;margin-top:18px;display:flex;align-items:center;gap:10px}.avatar{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#d6f3eb;color:#147866;font-weight:700}.userbox small{display:block;color:#7fa7a2;font-size:11px}
+.main{grid-column:2;min-width:0}.topbar{height:68px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 28px;position:sticky;top:0;z-index:5;gap:10px}
+.hospital{display:flex;gap:9px;align-items:center;font-weight:600}.hospital span{color:var(--green)}
+.svc{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:#c9d2d6}.dot.ok{background:#16a085}.dot.warn{background:var(--orange)}.dot.err{background:var(--red)}
+.top-icon{border:0;background:transparent;color:#647481;font-size:16px}
+.content{padding:25px 28px 45px;max-width:1600px;margin:auto}
+.page-title{display:flex;align-items:end;justify-content:space-between;margin-bottom:20px;gap:14px;flex-wrap:wrap}.page-title h1{font-size:24px;margin:0 0 3px}.page-title p{margin:0;color:var(--muted)}
+.primary{border:0;color:#fff;background:linear-gradient(135deg,#18aa8e,#118670);padding:10px 17px;border-radius:9px;box-shadow:0 7px 16px rgba(20,151,126,.2)}.primary:hover{transform:translateY(-1px)}.primary[disabled]{opacity:.55;cursor:not-allowed;transform:none}
+.stagebar{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 18px;display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;margin-bottom:18px;box-shadow:var(--shadow)}
+.stage{display:flex;gap:11px;align-items:center;padding:8px;border-radius:10px;cursor:pointer}.stage:hover{background:#f4fbf9}.stage-num{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:#eaf0f0;color:#56706c;font-weight:700}.stage.live .stage-num{background:var(--green);color:#fff}.stage b{display:block;font-size:13px}.stage small{color:var(--muted);font-size:11px}.stage-arrow{color:#bdc8c7;padding:0 8px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-bottom:18px}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+.stat{padding:19px;position:relative;overflow:hidden;cursor:pointer}.stat-head{display:flex;justify-content:space-between;color:var(--muted)}.stat-icon{width:36px;height:36px;border-radius:10px;display:grid;place-items:center}.stat strong{display:block;font-size:27px;margin:11px 0 3px}.trend{font-size:12px;color:#1b9a78}.trend.down{color:#e85d63}.stat:after{content:"";position:absolute;width:60px;height:60px;border:13px solid currentColor;border-radius:50%;opacity:.035;right:-15px;bottom:-20px}
+.grid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(300px,.75fr);gap:17px}
+/* grid/flex 子项默认 min-width:auto —— 不会缩到内容宽度以下。里面那张 table 有
+   min-width:620px, 于是在 390px 窄屏上把整个栅格撑到 676px, 页面横向溢出。
+   医护端要在手机微信里看(▲1.8.3 承诺函第 2 条), 这条必须显式压掉。 */
+.grid>*,.bottom-grid>*{min-width:0}
+.panel{padding:20px}.panel-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:17px;gap:10px;flex-wrap:wrap}.panel-head h3{margin:0;font-size:16px}.panel-head small{color:var(--muted)}
+.link{border:0;background:none;color:var(--green);padding:0}
+.alerts{display:flex;flex-direction:column;gap:10px}
+.tag{border-radius:12px;padding:2px 8px;font-size:11px;white-space:nowrap}.tag.red{color:#d74c55;background:#fff0f1}.tag.orange{color:#d97b22;background:#fff4e8}.tag.blue{color:#4b6ed3;background:#eef2ff}.tag.grey{color:#6b7883;background:#eff2f4}
+.bottom-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:17px;margin-top:17px}
+.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;min-width:620px}th{text-align:left;color:#82909c;font-size:12px;font-weight:500;padding:10px;border-bottom:1px solid var(--line)}td{padding:12px 10px;border-bottom:1px solid #f0f2f3}tr:last-child td{border:0}tbody tr{transition:.15s}tbody tr:hover{background:#f8fbfa}
+.status{padding:3px 9px;border-radius:11px;font-size:11px;color:#18866f;background:#eaf7f4}
+.quick-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.quick{border:1px solid var(--line);border-radius:11px;background:#fff;padding:15px 8px;text-align:center;color:#43535e;transition:.2s}.quick:hover{border-color:#9ed9cc;background:#f4fbf9;transform:translateY(-2px)}.quick i{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--mint);color:var(--green);font-style:normal;font-size:18px;margin:0 auto 8px}
+.module-page{display:none}.module-page.active{display:block}
+.module-hero{background:linear-gradient(115deg,#123d38,#1b7665);color:#fff;padding:24px 26px;border-radius:15px;margin-bottom:17px;display:flex;justify-content:space-between;align-items:center;overflow:hidden;position:relative;gap:14px;flex-wrap:wrap}.module-hero:after{content:"AI";position:absolute;right:210px;top:-35px;font-size:130px;font-weight:800;opacity:.04}.module-hero h2{margin:0 0 5px}.module-hero p{margin:0;color:#b7ddd5}
+.white-btn{border:0;background:#fff;color:#147b69;border-radius:9px;padding:10px 16px}
+.asset-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:15px}.asset{padding:20px}.asset .big-icon{width:46px;height:46px;border-radius:13px;background:var(--mint);display:grid;place-items:center;font-size:23px}.asset h3{margin:15px 0 5px;font-size:15px}.asset p{color:var(--muted);min-height:42px;margin:0 0 16px;font-size:13px}.asset-foot{border-top:1px solid var(--line);padding-top:13px;display:flex;justify-content:space-between;align-items:center}
+.field{margin-bottom:14px}.field label{display:block;margin-bottom:6px;color:#657580;font-size:13px}.field input,.field select,.field textarea{width:100%;border:1px solid #dfe5e7;border-radius:9px;padding:10px;background:#fff}.field textarea{height:78px;resize:vertical}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+.modal{position:fixed;inset:0;background:rgba(8,28,27,.48);display:none;place-items:center;z-index:50;padding:20px}.modal.show{display:grid}.dialog{background:#fff;width:min(560px,100%);max-height:90vh;overflow:auto;border-radius:16px;box-shadow:0 30px 70px rgba(0,0,0,.2);padding:24px}.dialog-head{display:flex;justify-content:space-between;margin-bottom:16px}.dialog h2{margin:0;font-size:19px}.close{border:0;background:#f0f3f3;width:30px;height:30px;border-radius:50%}.dialog-foot{text-align:right;margin-top:8px;display:flex;gap:10px;justify-content:flex-end}
+.toast{position:fixed;right:25px;bottom:25px;background:#153c38;color:#fff;padding:12px 18px;border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.18);transform:translateY(80px);opacity:0;transition:.3s;z-index:60;max-width:min(420px,90vw)}.toast.show{transform:none;opacity:1}
+.mobile-menu{display:none;border:0;background:none;font-size:20px;margin-right:6px}
+.drawer-mask{position:fixed;inset:0;background:rgba(7,27,26,.35);opacity:0;pointer-events:none;transition:.25s;z-index:39}.drawer-mask.show{opacity:1;pointer-events:auto}
+.drawer{position:fixed;right:0;top:0;bottom:0;width:min(520px,94vw);background:#fff;z-index:40;transform:translateX(102%);transition:.3s;box-shadow:-20px 0 50px rgba(15,40,38,.14);display:flex;flex-direction:column}.drawer.show{transform:none}
+.drawer-head{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:start;gap:10px}.drawer-head h2{margin:0 0 3px;font-size:19px}.drawer-head small{color:var(--muted)}
+.drawer-body{padding:20px 24px;overflow:auto;flex:1}.drawer-foot{padding:14px 24px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.secondary{border:1px solid #dce4e5;background:#fff;padding:9px 15px;border-radius:9px;color:#53636d}.secondary[disabled]{opacity:.5;cursor:not-allowed}
+.detail-card{padding:15px;border:1px solid var(--line);border-radius:11px;margin-bottom:12px}.detail-card h4{margin:0 0 8px;font-size:14px}
+.detail-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed #edf0f1;color:#687781;font-size:13px}.detail-row:last-child{border:0}.detail-row b{color:var(--ink)}
+.choice-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.choice{padding:12px;border:1px solid var(--line);border-radius:10px;cursor:pointer;font-size:13px}.choice:hover,.choice.selected{border-color:var(--green);background:var(--mint)}
+
+/* ---- 真实数据视图专用 ---- */
+.tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.tab{padding:7px 14px;border-radius:20px;font-size:13px;color:#6b7883;background:#fff;border:1px solid var(--line)}
+.tab:hover{border-color:var(--green);color:var(--green)}.tab.active{background:var(--green);color:#fff;border-color:var(--green)}
+.rows{display:flex;flex-direction:column;gap:8px}
+.row-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 16px;display:grid;gap:14px;align-items:center;box-shadow:0 1px 4px rgba(0,0,0,.04);cursor:pointer;transition:box-shadow .15s;font-size:13px}
+.row-card:hover{box-shadow:0 3px 12px rgba(22,160,133,.15)}
+.row-alarm{grid-template-columns:12px 1.3fr 1.2fr 1fr 1.5fr}
+.row-task{grid-template-columns:1.2fr 1.4fr 1fr auto}
+.row-plan{grid-template-columns:1.2fr 1.4fr 1fr 1fr auto}
+.row-cand{grid-template-columns:1.1fr 1fr 1.4fr 1.4fr auto}
+.sev{width:10px;height:10px;border-radius:50%}.sev.crit{background:#d04848}.sev.warn{background:#f59e0b}.sev.info{background:#9ca3af}
+.sub{display:block;font-size:11px;color:#9ca3af;font-weight:400;margin-top:2px}
+.strong{font-weight:600;color:#1f2d3d}
+.chain{display:inline-block;font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;margin-left:6px;vertical-align:1px}
+.chain.iwown{background:#eef2ff;color:#4f46e5}.chain.s101{background:#e0f2fe;color:#0369a1}.chain.zhenmaiyi{background:#fef3c7;color:#b45309}
+.pill{display:inline-block;font-size:10px;padding:1px 7px;border-radius:9px;margin-left:6px}
+.pill.new{background:#fff0f1;color:#d74c55}.pill.acked{background:#fff4e8;color:#d97b22}.pill.followed{background:#eef2ff;color:#4b6ed3}.pill.closed{background:#eff2f4;color:#6b7883}
+.empty{padding:44px 20px;text-align:center;color:#9ca3af;background:#fff;border:1px dashed #dfe5e7;border-radius:12px}
+.empty .ico{font-size:34px;display:block;margin-bottom:10px}
+.loading{padding:30px;text-align:center;color:#9ca3af}
+.err{padding:14px 16px;background:#fff0f1;border:1px solid #f7d2d5;border-radius:10px;color:#b1434c;font-size:13px}
+.wip-box{padding:34px 26px;text-align:center;background:#fff;border:1px dashed #cfdad9;border-radius:14px;color:#6b7883}
+.wip-box .ico{font-size:38px;display:block;margin-bottom:12px;opacity:.5}
+.wip-box h3{margin:0 0 8px;color:var(--ink)}
+.wip-list{display:inline-block;text-align:left;margin:14px auto 0;color:var(--muted);font-size:13px;line-height:1.9}
+.spark{width:100%;height:58px;display:block}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;color:#687781}
+.kv b{color:var(--ink);font-weight:600}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+@media(max-width:1100px){.stats{grid-template-columns:repeat(2,1fr)}.asset-grid{grid-template-columns:repeat(2,1fr)}.grid,.bottom-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.app{display:block}.sidebar{transform:translateX(-100%);transition:.25s}.sidebar.open{transform:none}.main{width:100%}.mobile-menu{display:block}.content{padding:18px 14px}.topbar{padding:0 14px}.stagebar{grid-template-columns:1fr;gap:4px}.stage-arrow{display:none}.stats,.asset-grid{grid-template-columns:1fr}.quick-grid{grid-template-columns:repeat(2,1fr)}.form-row{grid-template-columns:1fr}
+.row-alarm,.row-task,.row-plan,.row-cand{grid-template-columns:1fr;gap:5px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M12 3v18M3 12h18"/><path d="M7 7l10 10M17 7L7 17" opacity=".35"/></svg></div>
+      <div><b>燕名医随</b><small>AI FOLLOW-UP</small></div>
+    </div>
+    <div class="nav-title">工作台</div>
+    <a class="nav-item active" data-page="dashboard">⌂ <span>运营驾驶舱</span></a>
+    <div class="nav-title">随访全流程</div>
+    <a class="nav-item" data-page="assets">▣ <span>随访资料准备</span><i class="wip">未建设</i></a>
+    <a class="nav-item" data-page="plans">⌘ <span>随访计划编排</span></a>
+    <a class="nav-item" data-page="execute">▶ <span>随访执行中心</span><i class="badge" id="navAlarmBadge" style="display:none">0</i></a>
+    <div class="nav-title">业务管理</div>
+    <a class="nav-item" data-page="patients">♙ <span>患者管理</span><i class="badge" id="navCandBadge" style="display:none">0</i></a>
+    <a class="nav-item" data-page="quality">✓ <span>数据质控</span><i class="wip">未建设</i></a>
+    <a class="nav-item" data-page="analytics">⌁ <span>统计分析</span></a>
+    <a class="nav-item" data-page="settings">⚙ <span>系统管理</span></a>
+    <div class="userbox">
+      <div class="avatar" id="opAvatar">医</div>
+      <div><b id="opName">未署名</b><small id="opSub">点击设置操作人</small></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="mobile-menu" id="menuBtn">☰</button>
+      <div class="hospital"><span>✚</span><span id="siteName">智能随访平台</span></div>
+      <div class="svc"><i class="dot" id="svcDot"></i><span id="svcText">连接中…</span></div>
+      <button class="top-icon" id="refreshBtn" title="刷新全部">⟳</button>
+    </header>
+
+    <div class="content">
+
+      <!-- ===================== 运营驾驶舱 ===================== -->
+      <section class="module-page active" id="dashboard">
+        <div class="page-title">
+          <div><h1 id="greet">运营驾驶舱</h1><p id="dashSub">正在读取真实业务数据…</p></div>
+          <button class="primary" data-goto="patients">＋ 患者建档</button>
+        </div>
+
+        <div class="stagebar">
+          <div class="stage" data-goto="assets"><span class="stage-num">1</span><div><b>随访资料准备</b><small>CRF · 量表 · 宣教 —— 未建设</small></div></div>
+          <span class="stage-arrow">›</span>
+          <div class="stage live" data-goto="plans"><span class="stage-num">2</span><div><b>随访计划生成</b><small>计划引擎已上线</small></div></div>
+          <span class="stage-arrow">›</span>
+          <div class="stage live" data-goto="execute"><span class="stage-num">3</span><div><b>随访计划执行</b><small>院外监测 · 预警闭环已上线</small></div></div>
+        </div>
+
+        <div class="stats">
+          <div class="card stat" style="color:var(--green)" data-goto="patients">
+            <div class="stat-head"><span>已建档患者</span><span class="stat-icon" style="background:#eaf7f4">♙</span></div>
+            <strong id="kpiPatients">--</strong><span class="trend" id="kpiPatientsSub">platform_patient</span>
+          </div>
+          <div class="card stat" style="color:var(--blue)" data-goto="patients">
+            <div class="stat-head"><span>待建档门诊号</span><span class="stat-icon" style="background:#eef2ff">＋</span></div>
+            <strong id="kpiCand">--</strong><span class="trend" id="kpiCandSub">设备已上传数据</span>
+          </div>
+          <div class="card stat" style="color:var(--red)" data-goto="execute">
+            <div class="stat-head"><span>未处理报警</span><span class="stat-icon" style="background:#fff0f1">⚠</span></div>
+            <strong id="kpiAlarms">--</strong><span class="trend down" id="kpiAlarmsSub">status ≠ closed</span>
+          </div>
+          <div class="card stat" style="color:var(--orange)" data-goto="execute">
+            <div class="stat-head"><span>今日待办任务</span><span class="stat-icon" style="background:#fff4e8">▤</span></div>
+            <strong id="kpiTasks">--</strong><span class="trend" id="kpiTasksSub">含逾期</span>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="card panel">
+            <div class="panel-head"><div><h3>最新预警</h3><small>三条链路合并 · 最近 6 条</small></div>
+              <button class="link" data-goto="execute">进入执行中心 →</button></div>
+            <div class="alerts" id="dashAlerts"><div class="loading">加载中…</div></div>
+          </div>
+          <div class="card panel">
+            <div class="panel-head"><h3>数据链路</h3><small>院外监测</small></div>
+            <div id="dashChains"><div class="loading">加载中…</div></div>
+          </div>
+        </div>
+
+        <div class="bottom-grid">
+          <div class="card panel">
+            <div class="panel-head"><div><h3>近期上传的门诊号</h3><small>按最近上传时间</small></div>
+              <button class="link" data-goto="patients">全部 →</button></div>
+            <div class="table-wrap"><table><thead><tr><th>门诊号</th><th>记录数</th><th>数据类型</th><th>最近上传</th><th>状态</th></tr></thead>
+              <tbody id="dashRecent"><tr><td colspan="5" class="loading">加载中…</td></tr></tbody></table></div>
+          </div>
+          <div class="card panel">
+            <div class="panel-head"><h3>快捷入口</h3><small>常用功能</small></div>
+            <div class="quick-grid">
+              <button class="quick" data-goto="patients"><i>♙</i>患者建档</button>
+              <button class="quick" data-goto="execute"><i>⚠</i>报警工作台</button>
+              <button class="quick" data-goto="plans"><i>⌘</i>随访计划</button>
+              <button class="quick" data-goto="execute"><i>▤</i>今日任务</button>
+              <button class="quick" data-goto="analytics"><i>⌁</i>数据导出</button>
+              <button class="quick" data-goto="settings"><i>⚙</i>系统设置</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== 患者管理 (M1 + M4 + M8) ===================== -->
+      <section class="module-page" id="patients">
+        <div class="module-hero">
+          <div><h2>患者全周期管理</h2><p>建档 · 设备绑定 · 体征回溯 · 佩戴依从性</p></div>
+          <button class="white-btn" id="newPatientBtn">＋ 手工建档</button>
+        </div>
+        <div class="tabs">
+          <button class="tab active" data-ptab="known">已建档 <span id="tabKnownN">0</span></button>
+          <button class="tab" data-ptab="cand">待建档门诊号 <span id="tabCandN">0</span></button>
+        </div>
+        <div id="ptabKnown"><div class="rows" id="patientsWrap"><div class="loading">加载中…</div></div></div>
+        <div id="ptabCand" style="display:none">
+          <div class="card panel" style="margin-bottom:14px">
+            <div class="panel-head"><div><h3>这些门诊号已经在传数据，但平台里还没有档案</h3>
+              <small>患者在小程序里自己输门诊号就能上传 —— 数据先到、档案后建。建档后才会出现在患者列表、才能配随访计划、才能归属报警。</small></div></div>
+          </div>
+          <div class="rows" id="candWrap"><div class="loading">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ===================== 随访执行中心 (M2 + M5 + M7) ===================== -->
+      <section class="module-page" id="execute">
+        <div class="module-hero">
+          <div><h2>随访执行中心</h2><p>院外监测预警闭环 · 今日随访任务</p></div>
+          <button class="white-btn" id="vitalIngestBtn" title="对 S101 体征跑一次阈值+趋势判定">⟳ 补判体征预警</button>
+        </div>
+        <div class="tabs">
+          <button class="tab active" data-etab="alarms">报警工作台 <span id="tabAlarmN">0</span></button>
+          <button class="tab" data-etab="tasks">今日任务 <span id="tabTaskN">0</span></button>
+        </div>
+        <div id="etabAlarms">
+          <div class="tabs">
+            <button class="tab active" data-astatus="open">未关闭</button>
+            <button class="tab" data-astatus="new">待处理</button>
+            <button class="tab" data-astatus="acked">已知晓</button>
+            <button class="tab" data-astatus="followed">已回访</button>
+            <button class="tab" data-astatus="closed">已关闭</button>
+            <button class="tab" data-astatus="">全部</button>
+          </div>
+          <div class="rows" id="alarmWrap"><div class="loading">加载中…</div></div>
+        </div>
+        <div id="etabTasks" style="display:none">
+          <div class="rows" id="taskWrap"><div class="loading">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ===================== 随访计划编排 (M5) ===================== -->
+      <section class="module-page" id="plans">
+        <div class="module-hero">
+          <div><h2>随访计划编排</h2><p>固定频次 / 一次性计划 · 任务由 next_due 现算，不落地存储</p></div>
+          <button class="white-btn" id="newPlanBtn">＋ 新建计划</button>
+        </div>
+        <div class="card panel" style="margin-bottom:14px">
+          <div class="panel-head"><div><h3>已实现的与方案要求的差距</h3>
+            <small>当前只支持"固定频次 / 一次性"两种模式。方案 §3.3 还要求非均匀随访、随到随访、三级以上多级流程、事件触发与终止、流程库复用 —— 这些尚未建设。</small></div></div>
+        </div>
+        <div class="rows" id="planWrap"><div class="loading">加载中…</div></div>
+      </section>
+
+      <!-- ===================== 统计分析 (M6) ===================== -->
+      <section class="module-page" id="analytics">
+        <div class="module-hero">
+          <div><h2>统计分析与数据导出</h2><p>队列数据导出已上线；高级检索与智能可视化尚未建设</p></div>
+          <button class="white-btn" id="exportBtn">⬇ 导出数据</button>
+        </div>
+        <div class="stats" id="anaStats"></div>
+        <div class="card panel">
+          <div class="panel-head"><div><h3>导出能力现状</h3><small>对照方案 §4.6(1)</small></div></div>
+          <div class="table-wrap"><table><thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead><tbody>
+            <tr><td>全量导出 (患者/体征/报警/随访记录/计划)</td><td><span class="status">已上线</span></td><td>CSV 打包 ZIP，中文文件名，UTF-8 BOM 可直接用 Excel 打开</td></tr>
+            <tr><td>按门诊号 / 体征天数筛选</td><td><span class="status">已上线</span></td><td>导出弹窗里可选</td></tr>
+            <tr><td>CDISC 标准格式</td><td><span class="tag grey">未建设</span></td><td>方案要求的临床研究级导出规范</td></tr>
+            <tr><td>横向 / 纵向 / 历史三种变量挑选</td><td><span class="tag grey">未建设</span></td><td></td></tr>
+            <tr><td>导出文件加密 + 短信/邮件发密码</td><td><span class="tag grey">未建设</span></td><td>方案要求的导出安全机制</td></tr>
+            <tr><td>大样本异步后台导出 + 导出记录留存</td><td><span class="tag grey">未建设</span></td><td>当前是同步导出，样本量大会占住请求</td></tr>
+          </tbody></table></div>
+        </div>
+      </section>
+
+      <!-- ===================== 随访资料准备 (未建设) ===================== -->
+      <section class="module-page" id="assets">
+        <div class="module-hero"><div><h2>随访资料准备</h2><p>方案阶段一：CRF 表单 · 量表体系 · 宣教材料 · 知情同意</p></div></div>
+        <div class="asset-grid">
+          <div class="card asset"><div class="big-icon">▤</div><h3>智能 CRF 表单</h3><p>全题型覆盖、高级逻辑校验与临床数据元映射</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.1 · 4 个功能点</small></div></div>
+          <div class="card asset"><div class="big-icon">◈</div><h3>专业量表库</h3><p>标准量表底座与 AI 量表生成、评分及解释</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.2 · 3 个功能点</small></div></div>
+          <div class="card asset"><div class="big-icon">▧</div><h3>宣教材料库</h3><p>按病种、病程和人群生成个性化患教内容</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.3 · 2 个功能点</small></div></div>
+          <div class="card asset"><div class="big-icon">✎</div><h3>知情与项目资料</h3><p>电子签署、版本管理、权限管控与全周期留痕</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.4 · 2 个功能点</small></div></div>
+        </div>
+        <div class="wip-box" style="margin-top:16px">
+          <span class="ico">🚧</span>
+          <h3>本模块尚无任何实现</h3>
+          <div>这里刻意不放演示数据。方案阶段一共 11 个功能点，当前完成 0 个。</div>
+        </div>
+      </section>
+
+      <!-- ===================== 数据质控 (未建设) ===================== -->
+      <section class="module-page" id="quality">
+        <div class="module-hero"><div><h2>数据质控中心</h2><p>方案 §4.3：自动质控 · 多级人工质控 · 数据留痕 · OCR 辅助采集</p></div></div>
+        <div class="wip-box">
+          <span class="ico">🚧</span>
+          <h3>本模块尚无任何实现</h3>
+          <div class="wip-list">
+            · 自动质控：必填/数值范围/格式校验，历次随访数据自动对比标红<br>
+            · 多级人工质控：单位质控员 + 数据库级质控员，质疑—核查—修正闭环<br>
+            · 数据留痕：修改日志、历史版本对比与回退<br>
+            · OCR 辅助采集：病历/检验单拍照识别并自动填充 CRF
+          </div>
+          <div style="margin-top:16px;color:#9ca3af;font-size:13px">
+            现有的 <b>platform_followup_log</b> 只记录随访动作（ack/call/visit/note/close），
+            不记录字段的改前改后值，也没有版本回退——离方案要求的"数据留痕"还有距离。
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== 系统管理 ===================== -->
+      <section class="module-page" id="settings">
+        <div class="module-hero"><div><h2>系统与连接管理</h2><p>后端地址 · 写接口口令 · 操作人 · 服务自检</p></div></div>
+        <div class="grid">
+          <div class="card panel">
+            <div class="panel-head"><h3>连接配置</h3></div>
+            <div class="field"><label>后端 API_BASE</label><input id="cfgApi" placeholder="https://dc.ncrc.org.cn/api2"></div>
+            <div class="field"><label>写接口口令 X-Platform-Token<span class="sub">仅存本机 localStorage，不随页面分发；留空则不带该 header</span></label><input id="cfgToken" type="password" placeholder="留空 = 不带"></div>
+            <div class="field"><label>操作人姓名<span class="sub">会写进随访记录的 operator 字段</span></label><input id="cfgOperator" placeholder="如 林医生"></div>
+            <button class="primary" id="cfgSaveBtn">保存并刷新</button>
+          </div>
+          <div class="card panel">
+            <div class="panel-head"><h3>服务自检</h3><button class="link" id="selfCheckBtn">重新检测</button></div>
+            <div id="selfCheck"><div class="loading">点「重新检测」开始</div></div>
+          </div>
+        </div>
+        <div class="card panel" style="margin-top:17px">
+          <div class="panel-head"><div><h3>权限体系</h3><small>对照方案 §3.4(1)</small></div></div>
+          <div class="wip-box" style="border:0;padding:18px 0">
+            <div>当前只有一道<b>共享口令</b>门禁（<span class="mono">X-Platform-Token</span>，仅保护写接口）。
+            方案要求的申办人／负责人／分中心负责人／权限管理员／录入员／稽查员／监察员等
+            <b>多角色分级权限体系</b>尚未建设，读接口目前也不鉴权。</div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="drawer-mask" id="drawerMask"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head"><div><h2 id="drTitle">详情</h2><small id="drSub"></small></div><button class="close" id="drClose">×</button></div>
+  <div class="drawer-body" id="drBody"></div>
+  <div class="drawer-foot" id="drFoot"></div>
+</aside>
+
+<div class="modal" id="modal">
+  <div class="dialog">
+    <div class="dialog-head"><div><h2 id="mdTitle">对话框</h2><small id="mdSub" style="color:var(--muted)"></small></div><button class="close" id="mdClose">×</button></div>
+    <div id="mdBody"></div>
+    <div class="dialog-foot" id="mdFoot"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ================================================================
+   配置层 —— 与 platform.html 同一套约定, 保证两个页面可以并存、互不打架:
+   ?api= 覆盖并持久化; 口令与操作人都只存 localStorage, 绝不写进页面。
+   ================================================================ */
+const DEFAULT_API_BASE = 'https://dc.ncrc.org.cn/api2';
+const LS_API = 'suifang_platform_api_base';
+const LS_TOKEN = 'suifang_platform_token';
+const LS_OP = 'suifang_platform_operator';
+
+function resolveApiBase() {
+  const p = new URLSearchParams(location.search).get('api');
+  if (p) { localStorage.setItem(LS_API, p); return p; }
+  return localStorage.getItem(LS_API) || DEFAULT_API_BASE;
+}
+let API_BASE = resolveApiBase();
+
+function headers(json) {
+  const h = {};
+  if (json) h['Content-Type'] = 'application/json';
+  const t = localStorage.getItem(LS_TOKEN);
+  if (t) h['X-Platform-Token'] = t;
+  return h;
+}
+/* 403 = 没存口令或口令不对。弹一次让人补, 补对了自动重试一次 —— 免得每个写操作
+   都要先跑去系统管理页设置。 */
+async function apiFetch(url, opts) {
+  let res = await fetch(url, opts);
+  if (res.status === 403) {
+    const before = localStorage.getItem(LS_TOKEN) || '';
+    const t = prompt('写接口需要 X-Platform-Token（与服务端 PLATFORM_TOKEN 一致），只存本机:', before);
+    if (t !== null && t.trim() !== before) {
+      localStorage.setItem(LS_TOKEN, t.trim());
+      const o2 = Object.assign({}, opts);
+      o2.headers = headers(!!(opts && opts.headers && opts.headers['Content-Type']));
+      res = await fetch(url, o2);
+    }
+  }
+  return res;
+}
+async function getJSON(path) {
+  const res = await fetch(API_BASE + path, { cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const d = await res.json();
+  if (d.ok === false) throw new Error(d.error || '接口返回 ok:false');
+  return d;
+}
+
+/* ================================================================ 工具 */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function gender(g) { return g === 'F' ? '女' : (g === 'M' ? '男' : '--'); }
+
+/* 时间统一按北京时间排版。两条链路原始格式本来就不同: iwown 给的是 MySQL datetime
+   (已是北京时间), S101/R04 给的是 ISO-8601 UTC(末尾 Z)。只对带 Z 的做 +8 换算,
+   不按浏览器时区渲染 —— 同一份数据在任何机器上打开都显示同一个时刻。 */
+function fmtTime(v) {
+  if (v === null || v === undefined || v === '') return '--';
+  const s = String(v);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/);
+  if (!m) return s;
+  const d = new Date(Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]) + 8*3600*1000);
+  const p2 = n => String(n).padStart(2, '0');
+  return d.getUTCFullYear()+'-'+p2(d.getUTCMonth()+1)+'-'+p2(d.getUTCDate())+' '+
+    p2(d.getUTCHours())+':'+p2(d.getUTCMinutes())+':'+p2(d.getUTCSeconds());
+}
+function toast(msg, ms) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove('show'), ms || 2600);
+}
+function emptyBox(icon, title, hint) {
+  return '<div class="empty"><span class="ico">'+icon+'</span>'+esc(title)+
+    (hint ? '<div class="sub" style="margin-top:6px">'+esc(hint)+'</div>' : '')+'</div>';
+}
+function errBox(e) { return '<div class="err">加载失败：'+esc(e.message)+'</div>'; }
+
+/* ================================================================ 报警展示 (M2 + M7) */
+const ALARM_LABELS = {
+  fall:'跌倒', sos:'SOS', hr:'心率越限', spo2:'血氧越限', bp:'血压越限', temp:'体温越限',
+  sleep:'睡眠时长越限', sedentary:'久坐', not_worn:'未佩戴', low_battery:'低电量', unknown:'未分类',
+  /* 趋势类与越限类刻意分成两个标签: "心率越限"是绝对阈值,
+     "心率趋势异常"是相对该患者自己的基线, 医生看到后的处置动作不同。 */
+  hr_trend:'心率趋势异常', spo2_trend:'血氧趋势异常', bp_trend:'血压趋势异常',
+  temp_trend:'体温趋势异常', sleep_trend:'睡眠趋势异常', pulse_report:'脉诊新报告',
+};
+const CHAIN_LABELS = { iwown:'iwown 4G', s101:'S101 手环', zhenmaiyi:'脉诊仪' };
+const STATUS_LABELS = { new:'待处理', acked:'已知晓', followed:'已回访', closed:'已关闭' };
+
+function alarmLabel(t) { return ALARM_LABELS[t] || t || '未分类'; }
+function chainBadge(c) {
+  const k = c || 'iwown';
+  return CHAIN_LABELS[k] ? '<span class="chain '+esc(k)+'">'+esc(CHAIN_LABELS[k])+'</span>' : '';
+}
+/* M7 落库时已经把判定结论写成人话放进 payload_json.text, 这里直接用 ——
+   阈值表改在服务端一处, 页面跟着变, 不在前端再抄一遍判定逻辑。 */
+function alarmSummary(a) {
+  const p = a.payload_json;
+  if (!p || typeof p !== 'object') return '--';
+  if (p.rule && p.text) return esc(p.text);
+  const al = p.alarm || {}, inf = p.Alarminfo || {};
+  try {
+    if (a.alarm_type === 'hr' && al.alarm_hr && al.alarm_hr[0]) return '心率 ' + al.alarm_hr[0].hr + ' bpm';
+    if (a.alarm_type === 'spo2' && al.alarm_spo2 && al.alarm_spo2[0]) return '血氧 ' + al.alarm_spo2[0].spo2 + '%';
+    if (a.alarm_type === 'bp' && al.alarm_Bp && al.alarm_Bp[0]) return '血压 ' + al.alarm_Bp[0].sbp + '/' + al.alarm_Bp[0].dbp;
+    if (a.alarm_type === 'not_worn') return '未佩戴信号';
+    if (a.alarm_type === 'fall') return '检测到跌倒';
+    if (a.alarm_type === 'sos') return 'SOS 求助' + (a.lat != null ? '（含定位）' : '');
+    if (a.alarm_type === 'low_battery') return '电量 ' + (inf.lowpowerPercentage != null ? inf.lowpowerPercentage : inf.poweroffPercentage) + '%';
+  } catch (e) { /* 落到下面兜底 */ }
+  return esc(JSON.stringify(p).slice(0, 60)) + '…';
+}
+/* 判定依据: 要能当场回答"这条为什么报"。阈值类给实测值/阈值线/原始 UTC 采样时刻
+   (不折时区, 便于和 wearable_device_data 里的记录逐条对上); 趋势类给基线均值±标准差
+   /样本天数/偏移量。iwown 的判定发生在手表固件里, 服务端拿不到参数, 不显示。 */
+function alarmBasis(a) {
+  const p = a.payload_json;
+  if (!p || typeof p !== 'object') return '';
+  const u = esc(p.unit || '');
+  if (p.rule === 'threshold') {
+    return '<div class="detail-row"><span>判定依据</span><b>实测 '+esc(String(p.value))+u+
+      ' · 阈值线 '+esc(String(p.bound))+u+'</b></div>'+
+      '<div class="detail-row"><span>原始采样时刻 (UTC)</span><b class="mono">'+esc(p.sample_ts_utc||'--')+'</b></div>';
+  }
+  if (p.rule === 'trend') {
+    return '<div class="detail-row"><span>当日均值</span><b>'+esc(String(p.value))+u+'</b></div>'+
+      '<div class="detail-row"><span>个体基线</span><b>'+esc(String(p.baseline_mean))+u+' ± '+esc(String(p.baseline_sigma))+
+      '（'+esc(String(p.baseline_days))+' 天样本）</b></div>'+
+      '<div class="detail-row"><span>偏移</span><b>'+esc(String(p.delta))+u+'</b></div>';
+  }
+  if (p.rule === 'report') {
+    return '<div class="detail-row"><span>报告编号</span><b class="mono">'+esc(p.case_id||'--')+'</b></div>';
+  }
+  return '';
+}
+
+/* ================================================================ 全局状态 */
+const S = {
+  patients: [], candidates: [], alarms: [], tasks: [], plans: [],
+  alarmStatus: 'open', page: 'dashboard', ptab: 'known', etab: 'alarms',
+};
+
+/* ================================================================ 导航 */
+function goto(page) {
+  S.page = page;
+  document.querySelectorAll('.module-page').forEach(el => el.classList.toggle('active', el.id === page));
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+  document.getElementById('sidebar').classList.remove('open');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (page === 'execute') { loadAlarms(); loadTasks(); }
+  if (page === 'plans') loadPlans();
+  if (page === 'analytics') loadAnalytics();
+  if (page === 'settings') fillSettings();
+}
+document.addEventListener('click', e => {
+  const nav = e.target.closest('[data-page]');
+  if (nav) { goto(nav.dataset.page); return; }
+  const g = e.target.closest('[data-goto]');
+  if (g) { goto(g.dataset.goto); return; }
+});
+document.getElementById('menuBtn').onclick = () => document.getElementById('sidebar').classList.toggle('open');
+document.getElementById('refreshBtn').onclick = () => { toast('正在刷新…'); loadAll(); };
+
+/* ================================================================ 抽屉 / 弹窗 */
+function openDrawer(title, sub, body, foot) {
+  document.getElementById('drTitle').textContent = title;
+  document.getElementById('drSub').textContent = sub || '';
+  document.getElementById('drBody').innerHTML = body;
+  document.getElementById('drFoot').innerHTML = foot || '';
+  document.getElementById('drawer').classList.add('show');
+  document.getElementById('drawerMask').classList.add('show');
+}
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('show');
+  document.getElementById('drawerMask').classList.remove('show');
+}
+document.getElementById('drClose').onclick = closeDrawer;
+document.getElementById('drawerMask').onclick = closeDrawer;
+
+function openModal(title, sub, body, foot) {
+  document.getElementById('mdTitle').textContent = title;
+  document.getElementById('mdSub').textContent = sub || '';
+  document.getElementById('mdBody').innerHTML = body;
+  document.getElementById('mdFoot').innerHTML = foot || '';
+  document.getElementById('modal').classList.add('show');
+}
+function closeModal() { document.getElementById('modal').classList.remove('show'); }
+document.getElementById('mdClose').onclick = closeModal;
+document.getElementById('modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+
+/* ================================================================ 服务状态 */
+async function loadStatus() {
+  try {
+    const st = await getJSON('/api/status');
+    document.getElementById('svcDot').className = 'dot ' + (st.mysql === 'connected' ? 'ok' : 'warn');
+    document.getElementById('svcText').textContent = st.status + ' · ' + st.total_devices + ' 台设备';
+    return st;
+  } catch (e) {
+    document.getElementById('svcDot').className = 'dot err';
+    document.getElementById('svcText').textContent = '后端未连接';
+    return null;
+  }
+}
+
+/* ================================================================ 患者 (M1) + 待建档 (M8) */
+async function loadPatients() {
+  const wrap = document.getElementById('patientsWrap');
+  try {
+    const d = await getJSON('/api/platform/patients');
+    S.patients = d.patients || [];
+    document.getElementById('tabKnownN').textContent = S.patients.length;
+    document.getElementById('kpiPatients').textContent = S.patients.length;
+    renderPatients();
+  } catch (e) { wrap.innerHTML = errBox(e); document.getElementById('kpiPatients').textContent = '--'; }
+}
+function renderPatients() {
+  const wrap = document.getElementById('patientsWrap');
+  if (!S.patients.length) {
+    wrap.innerHTML = emptyBox('👤', '还没有任何患者档案',
+      '设备数据里已经有门诊号在传了，切到「待建档门诊号」一键建档即可。');
+    return;
+  }
+  wrap.innerHTML = S.patients.map(p => {
+    const wear = p.wear_rate_7d != null ? Math.round(p.wear_rate_7d * 100) + '%' : '--';
+    return '<div class="row-card row-cand" onclick="openPatient(\''+esc(p.patient_no)+'\')">'+
+      '<div><span class="strong">'+esc(p.name || '(未命名)')+'</span>'+
+        '<span class="sub">门诊号 '+esc(p.patient_no)+'</span></div>'+
+      '<div>'+gender(p.gender)+(p.age != null ? ' · '+esc(String(p.age))+' 岁' : '')+
+        '<span class="sub">'+esc(p.group_tag || '未分组')+'</span></div>'+
+      '<div>最近上传<span class="sub">'+esc(fmtTime(p.latest_upload))+'</span></div>'+
+      '<div>近 7 天佩戴率 <b>'+wear+'</b>'+
+        '<span class="sub">未关闭报警 '+(p.open_alarm_count || 0)+' · 待办任务 '+(p.task_due_count || 0)+'</span></div>'+
+      '<div><button class="link">查看 →</button></div>'+
+    '</div>';
+  }).join('');
+}
+
+async function loadCandidates() {
+  const wrap = document.getElementById('candWrap');
+  try {
+    const d = await getJSON('/api/platform/discover');
+    S.candidates = d.candidates || [];
+    document.getElementById('tabCandN').textContent = S.candidates.length;
+    document.getElementById('kpiCand').textContent = S.candidates.length;
+    const badge = document.getElementById('navCandBadge');
+    badge.textContent = S.candidates.length;
+    badge.style.display = S.candidates.length ? '' : 'none';
+    renderCandidates();
+    renderDashRecent();
+  } catch (e) { wrap.innerHTML = errBox(e); document.getElementById('kpiCand').textContent = '--'; }
+}
+function typesText(t) {
+  return Object.entries(t || {}).sort((a, b) => b[1] - a[1]).slice(0, 4)
+    .map(([k, v]) => k + '×' + v).join(' ') || '--';
+}
+function renderCandidates() {
+  const wrap = document.getElementById('candWrap');
+  if (!S.candidates.length) {
+    wrap.innerHTML = emptyBox('✅', '没有待建档的门诊号', '设备数据里出现过的门诊号都已经建过档了。');
+    return;
+  }
+  wrap.innerHTML = S.candidates.map(c =>
+    '<div class="row-card row-cand">'+
+      '<div><span class="strong mono">'+esc(c.patient_no)+'</span><span class="sub">门诊号</span></div>'+
+      '<div>'+c.s101_count+' 条<span class="sub">S101 记录</span></div>'+
+      '<div>'+esc(typesText(c.s101_types))+'<span class="sub">数据类型</span></div>'+
+      '<div>'+esc(fmtTime(c.s101_latest))+'<span class="sub">最近上传</span></div>'+
+      '<div><button class="primary" onclick="quickEnroll(\''+esc(c.patient_no)+'\')">建档</button></div>'+
+    '</div>').join('');
+}
+
+function quickEnroll(patientNo) {
+  openModal('为门诊号建档', patientNo,
+    '<div class="field"><label>门诊号</label><input id="enNo" value="'+esc(patientNo)+'" readonly></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>姓名</label><input id="enName" placeholder="选填"></div>'+
+      '<div class="field"><label>性别</label><select id="enGender"><option value="">未填</option><option value="M">男</option><option value="F">女</option></select></div>'+
+    '</div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>年龄</label><input id="enAge" type="number" min="0" max="130" placeholder="选填"></div>'+
+      '<div class="field"><label>分组 / 队列</label><input id="enGroup" placeholder="选填"></div>'+
+    '</div>'+
+    '<div class="field"><label>备注</label><textarea id="enNote" placeholder="选填"></textarea></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button>'+
+    '<button class="primary" id="enSave">建档</button>');
+  document.getElementById('enSave').onclick = async () => {
+    const btn = document.getElementById('enSave');
+    btn.disabled = true; btn.textContent = '提交中…';
+    const body = {
+      patient_no: patientNo,
+      name: document.getElementById('enName').value.trim() || null,
+      gender: document.getElementById('enGender').value || null,
+      age: document.getElementById('enAge').value ? Number(document.getElementById('enAge').value) : null,
+      group_tag: document.getElementById('enGroup').value.trim() || null,
+      note: document.getElementById('enNote').value.trim() || null,
+    };
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/patient',
+        { method: 'POST', headers: headers(true), body: JSON.stringify(body) });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); toast('已建档：' + patientNo);
+      await Promise.all([loadPatients(), loadCandidates()]);
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '建档'; toast('建档失败：' + e.message, 4000);
+    }
+  };
+}
+document.getElementById('newPatientBtn').onclick = () => quickEnroll('');
+
+/* 患者详情: 体征日聚合 + 佩戴率 + 该患者报警 */
+async function openPatient(no) {
+  openDrawer('患者详情', '门诊号 ' + no, '<div class="loading">加载中…</div>', '');
+  try {
+    const [v, c, a] = await Promise.all([
+      getJSON('/api/platform/patient/vitals?patientNo=' + encodeURIComponent(no) + '&days=30').catch(() => null),
+      getJSON('/api/platform/compliance?patientNo=' + encodeURIComponent(no) + '&days=14').catch(() => null),
+      getJSON('/api/platform/alarms?patientNo=' + encodeURIComponent(no) + '&status=&limit=20').catch(() => null),
+    ]);
+    const p = S.patients.find(x => x.patient_no === no) || { patient_no: no };
+    let h = '<div class="detail-card"><h4>基本信息</h4>'+
+      '<div class="detail-row"><span>姓名</span><b>'+esc(p.name || '(未命名)')+'</b></div>'+
+      '<div class="detail-row"><span>门诊号</span><b class="mono">'+esc(no)+'</b></div>'+
+      '<div class="detail-row"><span>性别 / 年龄</span><b>'+gender(p.gender)+' · '+(p.age != null ? p.age+' 岁' : '--')+'</b></div>'+
+      '<div class="detail-row"><span>分组</span><b>'+esc(p.group_tag || '未分组')+'</b></div></div>';
+
+    const daily = (v && v.s101 && v.s101.daily) || (v && v.daily) || [];
+    h += '<div class="detail-card"><h4>体征回溯（近 30 天）</h4>';
+    if (!daily.length) {
+      h += '<div style="color:#9ca3af;font-size:13px">该门诊号在窗口内没有体征数据。'+
+           '注意：步数与日综合不算体征，M7 的阈值/趋势判定只吃心率、血氧、血压、体温、睡眠。</div>';
+    } else {
+      h += sparkRows(daily);
+    }
+    h += '</div>';
+
+    const cdaily = (c && c.daily) || [];
+    h += '<div class="detail-card"><h4>佩戴依从性（近 14 天）</h4>';
+    h += cdaily.length
+      ? '<div class="detail-row"><span>有佩戴数据的天数</span><b>'+cdaily.length+' 天</b></div>'+
+        '<div class="detail-row"><span>平均佩戴率</span><b>'+
+        Math.round(cdaily.reduce((s, x) => s + (x.wear_rate || 0), 0) / cdaily.length * 100)+'%</b></div>'
+      : '<div style="color:#9ca3af;font-size:13px">未绑定 iwown 设备，或窗口内无佩戴数据。</div>';
+    h += '</div>';
+
+    const alarms = (a && a.alarms) || [];
+    h += '<div class="detail-card"><h4>报警记录（最近 20 条）</h4>';
+    h += alarms.length
+      ? alarms.map(x => '<div class="detail-row"><span>'+esc(alarmLabel(x.alarm_type))+chainBadge(x.source_chain)+
+          '</span><b>'+esc(fmtTime(x.occurred_at))+'</b></div>').join('')
+      : '<div style="color:#9ca3af;font-size:13px">暂无报警。</div>';
+    h += '</div>';
+
+    openDrawer(p.name || '(未命名)', '门诊号 ' + no, h,
+      '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+      '<button class="primary" onclick="newPlanFor(\''+esc(no)+'\')">＋ 新建随访计划</button>');
+  } catch (e) {
+    openDrawer('患者详情', '门诊号 ' + no, errBox(e), '<button class="secondary" onclick="closeDrawer()">关闭</button>');
+  }
+}
+/* 极简折线: 只画有值的指标, 没有的不画空图占位 */
+function sparkRows(daily) {
+  const metrics = [
+    { k: 'hr_avg', label: '心率', unit: 'bpm' },
+    { k: 'spo2_avg', label: '血氧', unit: '%' },
+    { k: 'sbp', label: '收缩压', unit: 'mmHg' },
+    { k: 'dbp', label: '舒张压', unit: 'mmHg' },
+    { k: 'temperature', label: '体温', unit: '℃' },
+    { k: 'step', label: '步数', unit: '步' },
+  ];
+  let out = '';
+  metrics.forEach(m => {
+    const pts = daily.map(d => d[m.k]).filter(x => x != null);
+    if (!pts.length) return;
+    const min = Math.min(...pts), max = Math.max(...pts), span = (max - min) || 1;
+    const path = pts.map((y, i) =>
+      (i ? 'L' : 'M') + (pts.length > 1 ? (i / (pts.length - 1) * 100) : 50).toFixed(2) + ' ' +
+      (52 - (y - min) / span * 44).toFixed(2)).join(' ');
+    out += '<div style="margin-bottom:10px"><div class="detail-row" style="border:0;padding-bottom:2px">'+
+      '<span>'+m.label+'</span><b>'+min+' ~ '+max+' '+m.unit+'（'+pts.length+' 天）</b></div>'+
+      '<svg class="spark" viewBox="0 0 100 58" preserveAspectRatio="none">'+
+      '<path d="'+path+'" fill="none" stroke="#16a085" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg></div>';
+  });
+  return out || '<div style="color:#9ca3af;font-size:13px">窗口内没有可绘制的体征序列。</div>';
+}
+
+/* ================================================================ 报警 (M2 + M7) */
+async function loadAlarms() {
+  const wrap = document.getElementById('alarmWrap');
+  try {
+    const d = await getJSON('/api/platform/alarms?limit=200&status=' + encodeURIComponent(S.alarmStatus));
+    S.alarms = d.alarms || [];
+    document.getElementById('tabAlarmN').textContent = S.alarms.length;
+    renderAlarms();
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+async function loadOpenAlarmCount() {
+  try {
+    const d = await getJSON('/api/platform/alarms?limit=500&status=open');
+    const n = d.count || 0;
+    document.getElementById('kpiAlarms').textContent = n;
+    const b = document.getElementById('navAlarmBadge');
+    b.textContent = n; b.style.display = n ? '' : 'none';
+    renderDashAlerts((d.alarms || []).slice(0, 6));
+  } catch (e) {
+    document.getElementById('kpiAlarms').textContent = '--';
+    document.getElementById('dashAlerts').innerHTML = errBox(e);
+  }
+}
+function renderAlarms() {
+  const wrap = document.getElementById('alarmWrap');
+  if (!S.alarms.length) { wrap.innerHTML = emptyBox('✅', '当前筛选条件下没有报警'); return; }
+  wrap.innerHTML = S.alarms.map(a =>
+    '<div class="row-card row-alarm" onclick="openAlarm('+a.id+')">'+
+      '<span class="sev '+esc(a.severity || 'info')+'"></span>'+
+      '<div><span class="strong">'+esc(alarmLabel(a.alarm_type))+'</span>'+
+        '<span class="pill '+esc(a.status)+'">'+esc(STATUS_LABELS[a.status] || a.status)+'</span>'+
+        chainBadge(a.source_chain)+
+        '<span class="sub">'+(a.followup_count || 0)+' 条回访记录</span></div>'+
+      '<div>'+esc(a.patient_name || '(未建档)')+'<span class="sub">门诊号 '+esc(a.patient_no || '--')+'</span></div>'+
+      '<div>'+esc(fmtTime(a.occurred_at))+'<span class="sub">设备 '+esc(a.device_id || '--')+'</span></div>'+
+      '<div>'+alarmSummary(a)+'</div>'+
+    '</div>').join('');
+}
+function renderDashAlerts(list) {
+  const el = document.getElementById('dashAlerts');
+  if (!list.length) { el.innerHTML = emptyBox('✅', '没有未处理的预警'); return; }
+  el.innerHTML = list.map(a =>
+    '<div class="row-card row-alarm" style="grid-template-columns:12px 1fr auto" onclick="goto(\'execute\')">'+
+      '<span class="sev '+esc(a.severity || 'info')+'"></span>'+
+      '<div><span class="strong">'+esc(a.patient_name || a.patient_no || '(未建档)')+' · '+esc(alarmLabel(a.alarm_type))+'</span>'+
+        '<span class="sub">'+alarmSummary(a)+'</span></div>'+
+      '<div style="text-align:right"><span class="tag '+(a.severity === 'crit' ? 'red' : a.severity === 'warn' ? 'orange' : 'grey')+'">'+
+        esc(a.severity || 'info')+'</span><span class="sub">'+esc(fmtTime(a.occurred_at))+'</span></div>'+
+    '</div>').join('');
+}
+function openAlarm(id) {
+  const a = S.alarms.find(x => x.id === id);
+  if (!a) return;
+  const h = '<div class="detail-card"><h4>'+esc(alarmLabel(a.alarm_type))+'</h4>'+
+    '<div class="detail-row"><span>患者</span><b>'+esc(a.patient_name || '(未建档)')+' / '+esc(a.patient_no || '--')+'</b></div>'+
+    '<div class="detail-row"><span>来源链路</span><b>'+chainBadge(a.source_chain)+'</b></div>'+
+    '<div class="detail-row"><span>设备</span><b class="mono">'+esc(a.device_id || '--')+'</b></div>'+
+    '<div class="detail-row"><span>发生时间</span><b>'+esc(fmtTime(a.occurred_at))+'</b></div>'+
+    '<div class="detail-row"><span>结论</span><b>'+alarmSummary(a)+'</b></div>'+
+    alarmBasis(a)+'</div>'+
+    '<div class="detail-card"><h4>处理记录（'+(a.followups || []).length+' 条）</h4>'+
+    ((a.followups || []).length
+      ? a.followups.map(f => '<div class="detail-row"><span>'+esc(f.action)+' · '+esc(f.operator || '匿名')+
+          '</span><b>'+esc(f.created_at)+'</b></div>'+
+          (f.result_text ? '<div style="font-size:12px;color:#687781;padding:2px 0 8px">'+esc(f.result_text)+'</div>' : '')).join('')
+      : '<div style="color:#9ca3af;font-size:13px">暂无处理记录。</div>')+'</div>'+
+    '<div class="field"><label>处理说明</label><textarea id="alText" placeholder="记录沟通结果与处置建议…"></textarea></div>';
+
+  const btn = (act, label, on) => '<button class="'+(act === 'close' ? 'secondary' : 'primary')+'"'+
+    (on ? '' : ' disabled')+' onclick="transition('+a.id+',\''+act+'\')">'+label+'</button>';
+  openDrawer(alarmLabel(a.alarm_type), esc(a.patient_name || a.patient_no || ''), h,
+    btn('ack', '知晓', a.status === 'new') +
+    btn('call', '记录回访', a.status === 'acked' || a.status === 'followed') +
+    btn('close', '关闭', a.status !== 'closed'));
+}
+async function transition(id, action) {
+  const text = (document.getElementById('alText') || {}).value || '';
+  const op = localStorage.getItem(LS_OP) || '';
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/alarm/transition', {
+      method: 'POST', headers: headers(true),
+      body: JSON.stringify({ alarm_id: id, action, result_text: text || null, operator: op || null }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    closeDrawer(); toast('已' + (action === 'ack' ? '标记知晓' : action === 'close' ? '关闭' : '记录回访'));
+    await Promise.all([loadAlarms(), loadOpenAlarmCount()]);
+  } catch (e) { toast('操作失败：' + e.message, 4000); }
+}
+
+/* M7 手动补判: 后台线程只判当天(days=1), 补历史要用大 days */
+document.getElementById('vitalIngestBtn').onclick = async () => {
+  const days = prompt('对最近多少天的 S101 体征做阈值 + 趋势判定？（1–365）', '30');
+  if (days === null) return;
+  const n = parseInt(days, 10);
+  if (!(n >= 1 && n <= 365)) { toast('days 必须是 1–365 的整数'); return; }
+  toast('判定中…（窗口越大扫得越久）', 8000);
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/alarm/vital-ingest',
+      { method: 'POST', headers: headers(true), body: JSON.stringify({ days: n }) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast('判定完成：候选 ' + d.candidates + ' 条，新增 ' + d.inserted +
+      '（阈值 ' + d.detail.s101_threshold + ' / 趋势 ' + d.detail.s101_trend + ' / 脉诊 ' + d.detail.zhenmaiyi + '）', 6000);
+    await Promise.all([loadAlarms(), loadOpenAlarmCount()]);
+  } catch (e) { toast('判定失败：' + e.message, 4000); }
+};
+
+/* ================================================================ 任务 (M5) */
+async function loadTasks() {
+  const wrap = document.getElementById('taskWrap');
+  try {
+    const d = await getJSON('/api/platform/tasks');
+    S.tasks = d.tasks || [];
+    document.getElementById('tabTaskN').textContent = S.tasks.length;
+    document.getElementById('kpiTasks').textContent = S.tasks.length;
+    wrap.innerHTML = S.tasks.length ? S.tasks.map(t =>
+      '<div class="row-card row-task">'+
+        '<div><span class="strong">'+esc(t.patient_name || '(未命名)')+'</span><span class="sub">门诊号 '+esc(t.patient_no)+'</span></div>'+
+        '<div>'+esc(t.name)+'<span class="sub">'+(t.frequency_days ? '每 '+t.frequency_days+' 天' : '一次性')+'</span></div>'+
+        '<div>'+esc(t.next_due)+'<span class="sub">'+(t.overdue_days > 0 ? '已逾期 '+t.overdue_days+' 天' : '今日到期')+'</span></div>'+
+        '<div><button class="primary" onclick="completeTask('+t.plan_id+',\''+esc(t.name)+'\')">完成</button></div>'+
+      '</div>').join('') : emptyBox('✅', '今天没有到期的随访任务');
+  } catch (e) { wrap.innerHTML = errBox(e); document.getElementById('kpiTasks').textContent = '--'; }
+}
+function completeTask(planId, name) {
+  openModal('完成随访任务', name,
+    '<div class="field"><label>随访方式</label><select id="tkMethod">'+
+      '<option value="call">电话随访</option><option value="visit">门诊访视</option><option value="note">仅记录</option></select></div>'+
+    '<div class="field"><label>随访结果</label><textarea id="tkText" placeholder="记录本次随访内容…"></textarea></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="tkSave">提交</button>');
+  document.getElementById('tkSave').onclick = async () => {
+    const btn = document.getElementById('tkSave'); btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/task/complete', {
+        method: 'POST', headers: headers(true),
+        body: JSON.stringify({
+          plan_id: planId, method: document.getElementById('tkMethod').value,
+          result_text: document.getElementById('tkText').value.trim() || null,
+          operator: localStorage.getItem(LS_OP) || null,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); toast('任务已完成'); await Promise.all([loadTasks(), loadPlans()]);
+    } catch (e) { btn.disabled = false; btn.textContent = '提交'; toast('提交失败：' + e.message, 4000); }
+  };
+}
+
+/* ================================================================ 计划 (M5) */
+async function loadPlans() {
+  const wrap = document.getElementById('planWrap');
+  try {
+    const d = await getJSON('/api/platform/plans');
+    S.plans = d.plans || [];
+    wrap.innerHTML = S.plans.length ? S.plans.map(p =>
+      '<div class="row-card row-plan">'+
+        '<div><span class="strong">'+esc(p.patient_name || '(未命名)')+'</span><span class="sub">门诊号 '+esc(p.patient_no)+'</span></div>'+
+        '<div>'+esc(p.name)+'<span class="sub">'+esc(p.note || '')+'</span></div>'+
+        '<div>'+(p.frequency_days ? '每 '+p.frequency_days+' 天' : '一次性')+'<span class="sub">频次</span></div>'+
+        '<div>'+esc(p.next_due)+'<span class="sub">下次到期</span></div>'+
+        '<div>'+(p.active ? '<span class="status">进行中</span>' : '<span class="tag grey">已停用</span>')+'</div>'+
+      '</div>').join('')
+      : emptyBox('📋', '还没有任何随访计划', '先在「患者管理」里建档，再为患者建立随访计划。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+function newPlanFor(patientNo) {
+  closeDrawer();
+  const opts = S.patients.map(p =>
+    '<option value="'+esc(p.patient_no)+'"'+(p.patient_no === patientNo ? ' selected' : '')+'>'+
+    esc(p.name || '(未命名)')+' / '+esc(p.patient_no)+'</option>').join('');
+  if (!opts) { toast('请先建档至少一位患者'); goto('patients'); return; }
+  const today = new Date();
+  const due = new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10);
+  openModal('新建随访计划', '',
+    '<div class="field"><label>患者</label><select id="plPatient">'+opts+'</select></div>'+
+    '<div class="field"><label>计划名称</label><input id="plName" placeholder="如 术后 1 月电话随访"></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>频次（天）<span class="sub">留空 = 一次性</span></label><input id="plFreq" type="number" min="1" placeholder="如 30"></div>'+
+      '<div class="field"><label>下次到期</label><input id="plDue" type="date" value="'+due+'"></div>'+
+    '</div>'+
+    '<div class="field"><label>备注</label><textarea id="plNote" placeholder="选填"></textarea></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="plSave">创建</button>');
+  document.getElementById('plSave').onclick = async () => {
+    const name = document.getElementById('plName').value.trim();
+    if (!name) { toast('请填写计划名称'); return; }
+    const btn = document.getElementById('plSave'); btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const freq = document.getElementById('plFreq').value;
+      const res = await apiFetch(API_BASE + '/api/platform/plan', {
+        method: 'POST', headers: headers(true),
+        body: JSON.stringify({
+          patient_no: document.getElementById('plPatient').value, name,
+          frequency_days: freq ? Number(freq) : null,
+          next_due: document.getElementById('plDue').value,
+          note: document.getElementById('plNote').value.trim() || null,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); toast('计划已创建'); await Promise.all([loadPlans(), loadTasks()]);
+      goto('plans');
+    } catch (e) { btn.disabled = false; btn.textContent = '创建'; toast('创建失败：' + e.message, 4000); }
+  };
+}
+document.getElementById('newPlanBtn').onclick = () => newPlanFor('');
+
+/* ================================================================ 导出 (M6) */
+function loadAnalytics() {
+  document.getElementById('anaStats').innerHTML =
+    '<div class="card stat" style="color:var(--green)"><div class="stat-head"><span>已建档患者</span></div><strong>'+S.patients.length+'</strong><span class="trend">可导出</span></div>'+
+    '<div class="card stat" style="color:var(--red)"><div class="stat-head"><span>报警事件</span></div><strong>'+(document.getElementById('kpiAlarms').textContent)+'</strong><span class="trend">未关闭</span></div>'+
+    '<div class="card stat" style="color:var(--blue)"><div class="stat-head"><span>随访计划</span></div><strong>'+S.plans.length+'</strong><span class="trend">全部</span></div>'+
+    '<div class="card stat" style="color:var(--orange)"><div class="stat-head"><span>待建档门诊号</span></div><strong>'+S.candidates.length+'</strong><span class="trend">未纳入导出</span></div>';
+}
+document.getElementById('exportBtn').onclick = () => {
+  openModal('导出队列数据', 'CSV 打包 ZIP · UTF-8 BOM，Excel 直接可读',
+    '<div class="field"><label>数据集</label><select id="exKind">'+
+      '<option value="all">全部（打包 ZIP）</option><option value="patients">患者档案</option>'+
+      '<option value="vitals">体征日聚合</option><option value="alarms">报警事件</option>'+
+      '<option value="followups">随访记录</option><option value="plans">随访计划</option></select></div>'+
+    '<div class="field"><label>门诊号<span class="sub">留空 = 全部患者</span></label><input id="exNo" placeholder="选填"></div>'+
+    '<div class="field"><label>体征回溯天数</label><input id="exDays" type="number" min="1" max="365" value="90"></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="exGo">导出</button>');
+  document.getElementById('exGo').onclick = async () => {
+    const btn = document.getElementById('exGo'); btn.disabled = true; btn.textContent = '导出中…';
+    try {
+      let url = API_BASE + '/api/platform/export?kind=' + encodeURIComponent(document.getElementById('exKind').value) +
+        '&days=' + encodeURIComponent(document.getElementById('exDays').value || 90);
+      const no = document.getElementById('exNo').value.trim();
+      if (no) url += '&patientNo=' + encodeURIComponent(no);
+      const res = await apiFetch(url, { headers: headers(false) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const blob = await res.blob();
+      const name = filenameFrom(res.headers.get('Content-Disposition')) || '随访导出';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = name; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      closeModal(); toast('导出完成：' + name);
+    } catch (e) { btn.disabled = false; btn.textContent = '导出'; toast('导出失败：' + e.message, 4000); }
+  };
+};
+/* 中文文件名走 RFC 5987 的 filename*=UTF-8''<百分号编码>, 裸中文放 filename= 会被按
+   latin-1 解成乱码。服务端两种都发, 这里优先取 filename*。 */
+function filenameFrom(cd) {
+  if (!cd) return null;
+  const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  if (star) { try { return decodeURIComponent(star[1]); } catch (e) { /* 落到下面 */ } }
+  const plain = cd.match(/filename="?([^";]+)"?/i);
+  return plain ? plain[1] : null;
+}
+
+/* ================================================================ 驾驶舱补充块 */
+function renderDashRecent() {
+  const tb = document.getElementById('dashRecent');
+  const rows = S.candidates.slice(0, 6);
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" style="color:#9ca3af">没有待建档的门诊号</td></tr>'; return; }
+  tb.innerHTML = rows.map(c =>
+    '<tr><td class="mono">'+esc(c.patient_no)+'</td><td>'+c.s101_count+'</td>'+
+    '<td style="font-size:12px">'+esc(typesText(c.s101_types))+'</td>'+
+    '<td style="font-size:12px">'+esc(fmtTime(c.s101_latest))+'</td>'+
+    '<td><span class="tag orange">待建档</span></td></tr>').join('');
+}
+async function renderDashChains() {
+  const el = document.getElementById('dashChains');
+  try {
+    const st = await getJSON('/api/status');
+    el.innerHTML =
+      '<div class="detail-row"><span>MySQL</span><b>'+esc(st.mysql)+'</b></div>'+
+      '<div class="detail-row"><span>已登记设备</span><b>'+esc(String(st.total_devices))+'</b></div>'+
+      '<div class="detail-row"><span>服务器时间</span><b>'+esc(st.server_time)+'</b></div>'+
+      '<div class="detail-row"><span>S101 手环</span><b><span class="chain s101">阈值+趋势预警</span></b></div>'+
+      '<div class="detail-row"><span>iwown 4G</span><b><span class="chain iwown">设备侧报警帧</span></b></div>'+
+      '<div class="detail-row"><span>脉诊仪</span><b><span class="chain zhenmaiyi">四诊报告事件</span></b></div>';
+  } catch (e) { el.innerHTML = errBox(e); }
+}
+
+/* ================================================================ 系统管理 */
+function fillSettings() {
+  document.getElementById('cfgApi').value = API_BASE;
+  document.getElementById('cfgToken').value = localStorage.getItem(LS_TOKEN) || '';
+  document.getElementById('cfgOperator').value = localStorage.getItem(LS_OP) || '';
+}
+document.getElementById('cfgSaveBtn').onclick = () => {
+  const api = document.getElementById('cfgApi').value.trim();
+  if (api) localStorage.setItem(LS_API, api);
+  localStorage.setItem(LS_TOKEN, document.getElementById('cfgToken').value.trim());
+  localStorage.setItem(LS_OP, document.getElementById('cfgOperator').value.trim());
+  toast('已保存，正在重新加载…'); setTimeout(() => location.reload(), 700);
+};
+document.getElementById('selfCheckBtn').onclick = selfCheck;
+async function selfCheck() {
+  const el = document.getElementById('selfCheck');
+  const eps = [
+    ['GET /api/status', '/api/status'],
+    ['GET /api/platform/patients', '/api/platform/patients'],
+    ['GET /api/platform/discover', '/api/platform/discover'],
+    ['GET /api/platform/alarms', '/api/platform/alarms?limit=1&status='],
+    ['GET /api/platform/plans', '/api/platform/plans'],
+    ['GET /api/platform/tasks', '/api/platform/tasks'],
+  ];
+  el.innerHTML = '<div class="loading">检测中…</div>';
+  const out = [];
+  for (const [label, path] of eps) {
+    const t0 = performance.now();
+    try {
+      await getJSON(path);
+      out.push('<div class="detail-row"><span class="mono">'+esc(label)+'</span><b style="color:#16a085">✓ '+
+        Math.round(performance.now() - t0)+' ms</b></div>');
+    } catch (e) {
+      out.push('<div class="detail-row"><span class="mono">'+esc(label)+'</span><b style="color:#d04848">✕ '+esc(e.message)+'</b></div>');
+    }
+  }
+  el.innerHTML = out.join('');
+}
+
+/* ================================================================ tabs */
+document.querySelectorAll('[data-ptab]').forEach(b => b.onclick = () => {
+  S.ptab = b.dataset.ptab;
+  document.querySelectorAll('[data-ptab]').forEach(x => x.classList.toggle('active', x === b));
+  document.getElementById('ptabKnown').style.display = S.ptab === 'known' ? '' : 'none';
+  document.getElementById('ptabCand').style.display = S.ptab === 'cand' ? '' : 'none';
+});
+document.querySelectorAll('[data-etab]').forEach(b => b.onclick = () => {
+  S.etab = b.dataset.etab;
+  document.querySelectorAll('[data-etab]').forEach(x => x.classList.toggle('active', x === b));
+  document.getElementById('etabAlarms').style.display = S.etab === 'alarms' ? '' : 'none';
+  document.getElementById('etabTasks').style.display = S.etab === 'tasks' ? '' : 'none';
+});
+document.querySelectorAll('[data-astatus]').forEach(b => b.onclick = () => {
+  S.alarmStatus = b.dataset.astatus;
+  document.querySelectorAll('[data-astatus]').forEach(x => x.classList.toggle('active', x === b));
+  loadAlarms();
+});
+
+/* ================================================================ 启动 */
+function fillOperator() {
+  const op = localStorage.getItem(LS_OP) || '';
+  document.getElementById('opName').textContent = op || '未署名';
+  document.getElementById('opSub').textContent = op ? '操作人（写入随访记录）' : '到「系统管理」里设置';
+  document.getElementById('opAvatar').textContent = op ? op.slice(0, 1) : '医';
+}
+async function loadAll() {
+  fillOperator();
+  document.getElementById('siteName').textContent = '智能随访平台';
+  await loadStatus();
+  await Promise.all([
+    loadPatients(), loadCandidates(), loadOpenAlarmCount(), loadTasks(),
+    loadPlans(), renderDashChains(),
+  ]);
+  const n = new Date();
+  const hh = n.getHours();
+  document.getElementById('greet').textContent =
+    (hh < 12 ? '早上好' : hh < 18 ? '下午好' : '晚上好') + '，欢迎回到燕名医随';
+  document.getElementById('dashSub').textContent =
+    '数据截至 ' + n.toLocaleString('zh-CN') + ' · 全部数字来自后端实时接口，无演示数据';
+}
+loadAll();
+</script>
+</body>
+</html>

@@ -1823,6 +1823,81 @@ def platform_vital_alarm_ingest(days=7):
         conn.close()
 
 
+# ============ 随访平台 1.2 M8 (待建档门诊号发现) ============
+def platform_discover_patients():
+    """列出在设备数据里出现过、但 platform_patient 里还没有档案的门诊号。
+
+    为什么需要这个: 患者标识是 5.06-v9 定的"写在大 JSON 每条记录的 '门诊号' 字段里",
+    小程序端患者自己输门诊号就能上传数据 —— 也就是说**数据先到, 档案后建**。
+    /api/platform/patients 只读 platform_patient, 所以在有人手工建档之前, 平台上一个
+    患者都看不到, 而设备数据里其实已经躺了几十个门诊号 (2026-08-02 实测: 设备数据 40 个
+    门诊号, platform_patient 0 行)。这个端点把这段落差显式暴露出来, 让医护一键建档,
+    而不是要求他们凭空知道有哪些号。
+
+    对应设计方案 §4.1(2)"智能批量入组与筛查"的最小可用形态: 先解决"有哪些人可入组",
+    纳排规则匹配是后面的事。
+
+    返回 [{patient_no, s101_count, s101_latest, s101_types, iwown_devices, zhenmaiyi_cases}],
+    按最近上传时间倒序 (最近有数据的排前面, 建档优先级天然就高)。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT patient_no FROM platform_patient')
+        known = {r[0] for r in cur.fetchall()}
+
+        found = {}
+
+        def entry(p_no):
+            return found.setdefault(p_no, {
+                'patient_no': p_no, 's101_count': 0, 's101_latest': None,
+                's101_types': {}, 'iwown_devices': [], 'zhenmaiyi_cases': [],
+            })
+
+        # --- S101/R04: 门诊号藏在每设备一行的大 JSON 里, 只能整扫 ---
+        cur.execute('SELECT data FROM wearable_device_data')
+        for (data_raw,) in cur.fetchall():
+            try:
+                big_json = json.loads(data_raw) if data_raw else {}
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(big_json, dict):
+                continue
+            for type_key, arr in big_json.items():
+                if not isinstance(arr, list):
+                    continue
+                for rec in arr:
+                    if not isinstance(rec, dict):
+                        continue
+                    p_no = rec.get('门诊号')
+                    if not p_no or p_no in known:
+                        continue
+                    e = entry(p_no)
+                    e['s101_count'] += 1
+                    e['s101_types'][type_key] = e['s101_types'].get(type_key, 0) + 1
+                    ts = rec.get('采集时间') or rec.get('recordedAt') or rec.get('uploadedAt')
+                    if ts and (e['s101_latest'] is None or ts > e['s101_latest']):
+                        e['s101_latest'] = ts
+
+        # --- iwown: 名册表里直接有 patient_no 列 ---
+        try:
+            cur.execute('SELECT device_id, patient_no FROM iwown_device WHERE patient_no IS NOT NULL')
+            for device_id, p_no in cur.fetchall():
+                if p_no and p_no not in known:
+                    entry(p_no)['iwown_devices'].append(device_id)
+        except Exception as e:
+            print('[M8] iwown_device 跳过:', e)
+
+        cur.close()
+        rows = sorted(found.values(), key=lambda x: (x['s101_latest'] or ''), reverse=True)
+        return {'ok': True, 'count': len(rows), 'known_count': len(known), 'candidates': rows}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -2900,6 +2975,13 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send_json(500, {'ok': False, 'error': str(e)})
 
+        elif pathname == '/api/platform/discover':
+            result, err = platform_discover_patients()
+            if err:
+                self._send_json(500, {'ok': False, 'error': err})
+            else:
+                self._send_json(200, result)
+
         elif pathname == '/api/platform/patient/vitals':
             # 随访平台 M1: 单患者跨链路体征日聚合 (iwown 日聚合 + S101 门诊号解析 + 诊脉仪最新一条)
             patient_no = (query.get('patientNo') or [None])[0]
@@ -3089,6 +3171,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                     'POST /api/zhenmaiyi/upload': 'v10 patch: 浏览器解析诊脉仪 zip 后批量入库 (zhenmaiyi 表, UPSERT by case_id)',
                     'GET  /api/zhenmaiyi/list': 'v10 patch: 列全部诊脉仪记录 (不含 base64 附件)',
+                    'GET  /api/platform/discover': '随访平台 M8: 设备数据里出现过但未建档的门诊号 (供一键建档; 只读, 无需 token)',
                     'GET  /api/platform/patients': '随访平台 M1/M4/M5: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数 + wear_rate_7d + task_due_count',
                     'POST /api/platform/patient': '随访平台 M1: UPSERT platform_patient (建档/改档)',
                     'POST /api/platform/bind': "随访平台 M1: 绑定/解绑 {patient_no, chain:'iwown'|'zhenmaiyi', key, unbind}",
@@ -3377,6 +3460,7 @@ if __name__ == '__main__':
     print('[端点] GET  /api/status            服务状态')
     print('[端点] GET  /api/data              查询所有设备 (?patientNo= 过滤大 JSON 内的记录)')
     print('[端点] GET  /api/platform/patients              随访平台 M1: 患者列表 + 绑定态')
+    print('[端点] GET  /api/platform/discover              随访平台 M8: 待建档门诊号发现')
     print('[端点] POST /api/platform/patient                随访平台 M1: UPSERT 患者建档')
     print('[端点] POST /api/platform/bind                   随访平台 M1: 绑定/解绑 iwown|zhenmaiyi')
     print('[端点] GET  /api/platform/patient/vitals         随访平台 M1: 单患者跨链路体征日聚合')
