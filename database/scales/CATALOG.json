@@ -1,0 +1,211 @@
+{
+  "_readme": [
+    "量表选型清单 —— 回答「量表内容除了临床方, 可否有一些基本设定?」",
+    "",
+    "可以, 但能预置的只有 license=free 这一类。量表不是一段可以随便抄的文字:",
+    "题目措辞、选项档位、计分方式、划界值是一个整体, 改一个字信效度就不再成立,",
+    "而绝大多数成熟量表由出版商持有版权, 商用要买授权。",
+    "",
+    "所以这份清单的用法是: free 的直接做进产品; restricted 的先谈授权再做;",
+    "unknown 的必须由法务/临床方逐个确认后才能落地 —— 我给的状态是检索结论,",
+    "不是法律意见, 任何一条在上线前都要有书面依据。",
+    "",
+    "字段说明:",
+    "  license  free       = 版权方明示可自由复制使用(通常要求保留出处)",
+    "           restricted = 需要购买授权 / 注册 / 培训认证",
+    "           unknown    = 年代久远或来源分散, 未查到明确授权声明, 需确认",
+    "  built    该量表是否已经做进 database/scales/ 可直接导入",
+    "  note     授权依据或限制条件"
+  ],
+  "updated": "2026-08-02",
+  "scales": [
+    {
+      "code": "PHQ-9", "name": "病人健康问卷抑郁量表", "en": "Patient Health Questionnaire-9",
+      "category": "抑郁", "items": 9, "rater": "self",
+      "license": "free", "built": true,
+      "note": "Pfizer 明示 No permission required to reproduce, translate, display or distribute。已做进 PHQ-9.json"
+    },
+    {
+      "code": "GAD-7", "name": "广泛性焦虑量表", "en": "Generalized Anxiety Disorder-7",
+      "category": "焦虑", "items": 7, "rater": "self",
+      "license": "free", "built": true,
+      "note": "同 PHQ 系列, Pfizer 授权免费使用。已做进 GAD-7.json"
+    },
+    {
+      "code": "PHQ-2", "name": "抑郁两问筛查", "en": "PHQ-2",
+      "category": "抑郁", "items": 2, "rater": "self",
+      "license": "free", "built": false,
+      "note": "PHQ-9 前两题, 同一授权。适合做随访第一道快筛, 阳性再上 PHQ-9"
+    },
+    {
+      "code": "GAD-2", "name": "焦虑两问筛查", "en": "GAD-2",
+      "category": "焦虑", "items": 2, "rater": "self",
+      "license": "free", "built": false,
+      "note": "GAD-7 前两题, 同一授权"
+    },
+    {
+      "code": "PHQ-15", "name": "躯体症状量表", "en": "PHQ-15",
+      "category": "躯体化", "items": 15, "rater": "self",
+      "license": "free", "built": false,
+      "note": "PHQ 系列同一授权"
+    },
+    {
+      "code": "AUDIT", "name": "酒精使用障碍筛查量表", "en": "Alcohol Use Disorders Identification Test",
+      "category": "物质使用", "items": 10, "rater": "self",
+      "license": "free", "built": false,
+      "note": "WHO 出版物, 允许复制使用, 需标注出处"
+    },
+    {
+      "code": "ASSIST", "name": "酒精烟草与物质使用筛查", "en": "ASSIST v3.0",
+      "category": "物质使用", "items": 8, "rater": "clinician",
+      "license": "free", "built": false,
+      "note": "WHO 出版物, 同上"
+    },
+    {
+      "code": "WHODAS-2.0", "name": "世卫组织残疾评定量表", "en": "WHODAS 2.0 (12-item)",
+      "category": "功能", "items": 12, "rater": "both",
+      "license": "free", "built": false,
+      "note": "WHO 允许非商业使用, 商业用途需向 WHO 申请。用前确认本项目属性"
+    },
+    {
+      "code": "ASRS-v1.1", "name": "成人ADHD自评量表筛查版", "en": "Adult ADHD Self-Report Scale",
+      "category": "注意缺陷", "items": 6, "rater": "self",
+      "license": "free", "built": false,
+      "note": "WHO 与工作组共同开发, 筛查版公开可用"
+    },
+    {
+      "code": "CAGE", "name": "CAGE 饮酒问卷", "en": "CAGE Questionnaire",
+      "category": "物质使用", "items": 4, "rater": "clinician",
+      "license": "free", "built": false,
+      "note": "1974 年发表, 长期作为公共领域工具广泛使用"
+    },
+    {
+      "code": "CES-D", "name": "流调中心抑郁量表", "en": "Center for Epidemiologic Studies Depression Scale",
+      "category": "抑郁", "items": 20, "rater": "self",
+      "license": "free", "built": false,
+      "note": "美国 NIMH 开发的公共卫生工具, 通常按公共领域使用"
+    },
+    {
+      "code": "MDQ", "name": "心境障碍问卷", "en": "Mood Disorder Questionnaire",
+      "category": "双相", "items": 13, "rater": "self",
+      "license": "free", "built": false,
+      "note": "作者方公开发布用于双相筛查"
+    },
+    {
+      "code": "Barthel", "name": "Barthel 日常生活活动指数", "en": "Barthel Index",
+      "category": "功能", "items": 10, "rater": "clinician",
+      "license": "free", "built": false,
+      "note": "1965 年发表, 长期公开使用。慢病/康复随访常用"
+    },
+    {
+      "code": "IADL", "name": "工具性日常生活活动量表", "en": "Lawton IADL Scale",
+      "category": "功能", "items": 8, "rater": "clinician",
+      "license": "unknown", "built": false,
+      "note": "作者方对非商业用途通常放行, 商用需确认"
+    },
+    {
+      "code": "PSQI", "name": "匹兹堡睡眠质量指数", "en": "Pittsburgh Sleep Quality Index",
+      "category": "睡眠", "items": 19, "rater": "self",
+      "license": "restricted", "built": false,
+      "note": "匹兹堡大学持有版权, 非商业研究一般免费、商业使用需授权。本项目属商业交付, 必须先谈"
+    },
+    {
+      "code": "ISI", "name": "失眠严重程度指数", "en": "Insomnia Severity Index",
+      "category": "睡眠", "items": 7, "rater": "self",
+      "license": "restricted", "built": false,
+      "note": "作者方通过代理机构授权, 商用需付费"
+    },
+    {
+      "code": "MMSE", "name": "简易智力状态检查", "en": "Mini-Mental State Examination",
+      "category": "认知", "items": 11, "rater": "clinician",
+      "license": "restricted", "built": false,
+      "note": "版权已由 PAR 商业化, 需按份购买。国内很多系统在无授权情况下内置, 是合规风险点"
+    },
+    {
+      "code": "MoCA", "name": "蒙特利尔认知评估", "en": "Montreal Cognitive Assessment",
+      "category": "认知", "items": 30, "rater": "clinician",
+      "license": "restricted", "built": false,
+      "note": "需在官方平台注册, 使用者要完成培训认证"
+    },
+    {
+      "code": "BDI-II", "name": "贝克抑郁量表第二版", "en": "Beck Depression Inventory-II",
+      "category": "抑郁", "items": 21, "rater": "self",
+      "license": "restricted", "built": false,
+      "note": "Pearson 商业发行, 按份计费"
+    },
+    {
+      "code": "SCL-90-R", "name": "症状自评量表", "en": "Symptom Checklist-90-Revised",
+      "category": "综合", "items": 90, "rater": "self",
+      "license": "restricted", "built": false,
+      "note": "商业发行, 需授权。注意: 网上流传的 SCL-90 版本不等于有授权"
+    },
+    {
+      "code": "PANSS", "name": "阳性与阴性症状量表", "en": "Positive and Negative Syndrome Scale",
+      "category": "精神病性", "items": 30, "rater": "clinician",
+      "license": "restricted", "built": false,
+      "note": "MHS 商业发行"
+    },
+    {
+      "code": "SF-36", "name": "健康调查简表", "en": "36-Item Short Form Survey",
+      "category": "生活质量", "items": 36, "rater": "self",
+      "license": "restricted", "built": false,
+      "note": "由 Optum/QualityMetric 授权。SF-12 同"
+    },
+    {
+      "code": "EQ-5D-5L", "name": "欧洲五维健康量表", "en": "EQ-5D-5L",
+      "category": "生活质量", "items": 5, "rater": "self",
+      "license": "restricted", "built": false,
+      "note": "EuroQol 基金会持有, 需在其网站登记申请; 非商业常获免费许可, 商业收费"
+    },
+    {
+      "code": "HAMD-17", "name": "汉密尔顿抑郁量表", "en": "Hamilton Depression Rating Scale",
+      "category": "抑郁", "items": 17, "rater": "clinician",
+      "license": "unknown", "built": false,
+      "note": "1960 年发表, 国内外普遍按公开工具使用, 但未见版权方正式声明。他评量表, 需评定员一致性培训"
+    },
+    {
+      "code": "HAMA", "name": "汉密尔顿焦虑量表", "en": "Hamilton Anxiety Rating Scale",
+      "category": "焦虑", "items": 14, "rater": "clinician",
+      "license": "unknown", "built": false,
+      "note": "同 HAMD"
+    },
+    {
+      "code": "BPRS", "name": "简明精神病量表", "en": "Brief Psychiatric Rating Scale",
+      "category": "精神病性", "items": 18, "rater": "clinician",
+      "license": "unknown", "built": false,
+      "note": "1962 年发表, 长期公开使用, 版权方无正式声明"
+    },
+    {
+      "code": "SDS", "name": "抑郁自评量表", "en": "Zung Self-Rating Depression Scale",
+      "category": "抑郁", "items": 20, "rater": "self",
+      "license": "unknown", "built": false,
+      "note": "国内使用极广, 但版权状态未见明确声明, 上线前须确认"
+    },
+    {
+      "code": "SAS", "name": "焦虑自评量表", "en": "Zung Self-Rating Anxiety Scale",
+      "category": "焦虑", "items": 20, "rater": "self",
+      "license": "unknown", "built": false,
+      "note": "同 SDS"
+    },
+    {
+      "code": "EPDS", "name": "爱丁堡产后抑郁量表", "en": "Edinburgh Postnatal Depression Scale",
+      "category": "抑郁", "items": 10, "rater": "self",
+      "license": "unknown", "built": false,
+      "note": "通常允许注明出处后复制, 但正式授权条款需向版权方确认"
+    },
+    {
+      "code": "C-SSRS", "name": "哥伦比亚自杀严重程度评定量表", "en": "Columbia-Suicide Severity Rating Scale",
+      "category": "自杀风险", "items": 6, "rater": "clinician",
+      "license": "restricted", "built": false,
+      "note": "需在官方渠道申请授权并完成培训。自杀风险评估涉及处置责任, 不建议做成纯自评线上填报"
+    }
+  ],
+  "_gap": [
+    "招标里 ★1.6.2 要求 ≥200 个精神科量表。这份清单只有 30 个, 差距不是靠找更多量表补的:",
+    "  - free 类里能凑出的成熟量表, 总量本身就远不到 200",
+    "  - 剩下的要么要买授权(逐个谈, 有成本), 要么状态不明(有合规风险)",
+    "所以 200 这个数只有三条路: 买打包授权、由院方提供其自有量表、或用自建量表凑数。",
+    "第三条最省事也最危险 —— 自建量表没有信效度, 算出来的分数不能支撑临床结论。",
+    "这件事要在投标交付前跟院方对齐口径, 不能等验收时才提。"
+  ]
+}

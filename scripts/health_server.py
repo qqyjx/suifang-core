@@ -2260,6 +2260,554 @@ def score_scale(definition, answers):
     }, errors
 
 
+# ---------------------------------------------------------------------------
+# M11: 把一份量表文档(PDF/纯文本)结构化成量表草稿 —— 设计方案 §2.2(3)
+#
+# 定位必须先说清楚: 这是**草稿生成器, 不是自动导入器**。产出一律先进人工审核界面, 由临床
+# 方逐题确认后才入库。理由不是技术保守 —— 量表的题干措辞、选项分值、划界值直接决定评估
+# 结论, 解析器把"0-4分 无焦虑"错认成"0-4题"这种事一旦静默入库, 后面每一份填报都是错的,
+# 而且错得看不出来。所以每个识别结果都带 confidence 和 source_line, 让人能对着原文核。
+#
+# 分工: PDF 取文字交给 pdf-inspector(纯 Rust, 本地跑, 不联网不要 key, 对中文 PDF 实测
+# 3.2 万汉字零乱码), 这里只负责"文字 -> 结构"。扫描件/图片它读不了(它只能告诉你这是扫描
+# 件), 那部分要真 OCR 引擎, 尚未接入。
+# ---------------------------------------------------------------------------
+
+# 题号: "1." "1、" "1)" "1．" "(1)" "第1题"
+_RE_ITEM = re.compile(r'^\s*(?:第)?\s*[(（]?(\d{1,3})[)）]?\s*[.、．)）]\s*(.+?)\s*$')
+# 选项标记: "0=" "0．" "(0)" "0分:" —— 只认标记本身, 标签由 _parse_option_line 按标记
+# 位置切出来 (真实标签里常带数字, 用字符集匹配会截断)
+_RE_OPT_MARK = re.compile(r'[(（]?(\d{1,2})[)）]?\s*(?:分)?\s*[=＝:：.．、]')
+# 无分值的勾选项: "□ 完全不会" "○完全不会" "( ) 完全不会" "[ ]完全不会"
+_RE_OPT_BOX = re.compile(r'(?:□|☐|○|●|◯|\[\s*\]|[(（]\s*[)）])\s*([^\s□☐○●◯\[\](（)）]{1,20})')
+# 分级有两种书写顺序, 都得认, 否则标签会解析成"分）"这种碎片:
+#   区间在前: "0-4 分 无焦虑"   "5~9分：轻度焦虑"   "总分 10-14 为中度"
+_RE_LEVEL = re.compile(
+    r'(\d{1,3})\s*[-~—–至]\s*(\d{1,3})\s*(?:分)?\s*(?:分?为|:|：|,|，|\s)\s*'
+    r'([^\s0-9;；,，。.（()）]{2,16})')
+# 单位词/量词不是分级名。不拦的话 "正常（0-4 分）" 会被正向模式切出 "分）" 这个碎片,
+# 而且因为它"匹配上了", 标签在前的反向模式根本轮不到试。
+_LEVEL_LABEL_STOP = {'分', '分数', '总分', '得分', '级', '档', '分档', '区间', '以上', '以下'}
+
+
+def _looks_like_level_line(s):
+    """两种书写顺序一起判 —— 只查正向模式会漏掉 "1、正常（1-4 分）" 这种标签在前的写法,
+    那正是最容易被误当成题目的形态。"""
+    return bool(_RE_LEVEL.search(s) or _RE_LEVEL_REV.search(s))
+#   标签在前: "正常（1-4 分）"  "轻度 5-9 分"  "重度抑郁(20~27)"
+_RE_LEVEL_REV = re.compile(
+    r'([^\s0-9;；,，。.、：:（()）]{2,16})\s*[（(]?\s*(\d{1,3})\s*[-~—–至]\s*(\d{1,3})\s*(?:分)?\s*[）)]?')
+
+
+def _clean_line(s):
+    return re.sub(r'\s+', ' ', (s or '').replace('　', ' ')).strip()
+
+
+def _parse_option_line(s):
+    """从一行里解析出 [{label, value}] 选项序列。
+
+    按**标记位置切分**, 而不是用字符集去匹配标签 —— 真实量表的选项标签里常带数字
+    ("每周少于1次" "每周1-2次" "3次或以上")。字符集排掉数字会把标签截成 "每周少于";
+    不排数字又会把下一个选项的值吃进来。按 "数字+分隔符" 的位置切, 两个问题都没有。
+
+    切出来不像标签(空的、或长得离谱)就整行放弃 —— 给不出选项好过给一组错的。
+    """
+    marks = list(_RE_OPT_MARK.finditer(s))
+    if len(marks) < 2:
+        return []
+    out = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(s)
+        label = s[m.end():end].strip(' \t　，,、;；。．.')
+        if not label or len(label) > 24:
+            return []
+        out.append({'label': label, 'value': int(m.group(1))})
+    return out
+
+
+def parse_scale_text(text, code=None, name=None):
+    """把一份量表文档的文字解析成量表定义草稿。返回 (draft, report)。
+
+    report 里带每一步的依据和置信度, 前端据此提示人重点核对哪几处。
+    识别不出的东西一律留空, 绝不猜 —— 让人补, 好过给一个看着像对的错值。
+    """
+    lines = [_clean_line(l) for l in (text or '').replace('\r', '').split('\n')]
+    lines = [l for l in lines if l]
+    notes = []
+    option_line_idx = set()    # 被当作选项行消费掉的行, 不参与分级解析
+    extra_level_text = []      # 从题干行尾部切下来的分级片段
+
+    # ---- 标题 ----
+    title = name
+    if not title:
+        for l in lines[:12]:
+            if _RE_ITEM.match(l):
+                break
+            t = re.sub(r'^#+\s*', '', l)
+            # 排掉选项行: "0=无 1=有" 这种既短又没冒号, 不设防就会被当成量表名
+            if _parse_option_line(t) or _RE_OPT_BOX.findall(t) or '=' in t or '＝' in t:
+                continue
+            if 3 <= len(t) <= 40 and not re.search(r'[:：]', t):
+                title = t
+                notes.append({'step': 'title', 'confidence': 'medium',
+                              'detail': '取首个短行作为量表名', 'source_line': l})
+                break
+
+    # ---- 指导语 ----
+    instruction = ''
+    for l in lines[:20]:
+        if _RE_ITEM.match(l):
+            break
+        if re.search(r'(说明|指导语|指导说明|请根据|在过去|下列|以下问题)', l) and len(l) >= 8:
+            # PDF 常把"说明：…"和"选项：0=…"挤成一行, 只取选项标记之前那段当指导语
+            cut = _RE_OPT_MARK.search(l)
+            seg = l[:cut.start()] if cut else l
+            seg = re.sub(r'(选项|评分)\s*[:：]\s*$', '', seg).strip()
+            instruction = re.sub(r'^(说明|指导语|指导说明)\s*[:：]?\s*', '', seg)
+            notes.append({'step': 'instruction', 'confidence': 'medium',
+                          'detail': '命中指导语关键词', 'source_line': l})
+            break
+
+    # ---- 全局共享选项集 ----
+    shared_opts = []
+    for idx, l in enumerate(lines[:25]):
+        if _RE_ITEM.match(l):
+            break
+        found = _parse_option_line(l)
+        if len(found) >= 2:
+            shared_opts = found
+            option_line_idx.add(idx)
+            notes.append({'step': 'shared_options', 'confidence': 'high',
+                          'detail': '解析到 {} 个共享选项: {}'.format(
+                              len(found), ' / '.join(o['label'] for o in found)),
+                          'source_line': l})
+            break
+
+    # ---- 题目 ----
+    items = []
+    item_line_idx = set()
+    last_num = 0
+    for idx, l in enumerate(lines):
+        m = _RE_ITEM.match(l)
+        if not m:
+            continue
+        num, body = int(m.group(1)), m.group(2)
+        # 题号必须递增且不跳太远, 否则多半撞上了 "87." 这种页脚数字, 或是评分标准里
+        # "1、正常（1-4分） 2、轻度（5-9分）" 这类自带序号的分级说明
+        if not (last_num < num <= last_num + 3):
+            if _looks_like_level_line(l):
+                notes.append({'step': 'item_skip', 'confidence': 'high',
+                              'detail': '该行带序号但同时像分级说明(题号也不连续), 未当作题目',
+                              'source_line': l})
+            continue
+
+        # PDF 抽文字常把相邻行挤成一行, 典型是最后一题和评分标准粘在一起:
+        #   "9. 疼痛不适 评分标准：0-5 分 睡眠质量好；…"
+        # 整行丢掉会平白少一道题, 所以在分级说明起点处切开, 尾巴留给分级解析。
+        if _looks_like_level_line(body):
+            mk = _RE_LEVEL.search(body) or _RE_LEVEL_REV.search(body)
+            head = body[:mk.start()].strip(' ，,、；;：:') if mk else ''
+            head = re.sub(r'(评分标准|评分|分级|判定)\s*$', '', head).strip(' ，,、；;：:')
+            if len(head) >= 2:
+                extra_level_text.append(body[mk.start():])
+                notes.append({'step': 'item_split', 'confidence': 'medium',
+                              'detail': '第 {} 题与分级说明被挤在同一行, 已切开; 请核对题干是否完整'.format(num),
+                              'source_line': l})
+                body = head
+            else:
+                notes.append({'step': 'item_skip', 'confidence': 'high',
+                              'detail': '该行同时像分级说明, 未当作题目', 'source_line': l})
+                continue
+
+        # 题干自带选项 ("1. 头痛程度 0=无 1=轻度")
+        own = _parse_option_line(body)
+        if len(own) >= 2:
+            cut = _RE_OPT_MARK.search(body)
+            body = body[:cut.start()].strip(' ，,、:：') or body
+            opts = own
+        else:
+            opts = []
+            for off, nxt in enumerate(lines[idx + 1: idx + 3], start=idx + 1):
+                if _RE_ITEM.match(nxt):
+                    break
+                f = _parse_option_line(nxt)
+                if len(f) >= 2:
+                    opts = f
+                    option_line_idx.add(off)
+                    break
+                b = _RE_OPT_BOX.findall(nxt)
+                if len(b) >= 2:
+                    # 勾选框没有分值, 按出现顺序给 0,1,2... 并标出来让人确认
+                    opts = [{'label': lab, 'value': i} for i, lab in enumerate(b)]
+                    option_line_idx.add(off)
+                    notes.append({'step': 'option_value_guess', 'confidence': 'low',
+                                  'detail': '第 {} 题的选项没有分值, 按顺序暂定 0..{}, 需人工确认'.format(
+                                      num, len(b) - 1),
+                                  'source_line': nxt})
+                    break
+        if not opts:
+            opts = list(shared_opts)
+        last_num = num
+        item_line_idx.add(idx)
+        items.append({
+            'id': 'q{}'.format(num), 'text': body, 'type': 'single' if opts else 'text',
+            'required': True, 'options': opts or None,
+        })
+
+    # ---- 分级 (划界值) ----
+    levels = []
+
+    def _add_level(lo, hi, label):
+        lo, hi = int(lo), int(hi)
+        label = label.strip(' 、，,：:（()）').lstrip('分')
+        if (lo > hi or not label or label in _LEVEL_LABEL_STOP
+                or any(x['min'] == lo and x['max'] == hi for x in levels)):
+            return False
+        levels.append({'min': lo, 'max': hi, 'label': label})
+        return True
+
+    # 排除**真正被接受为题目**的行, 以及被当作选项消费掉的行。后者尤其重要:
+    # "2=每周1-2次" 这种选项标签里的 1-2 会被分级正则当成一个区间, 凭空造出一档假分级。
+    for idx, l in enumerate(lines):
+        if idx in item_line_idx or idx in option_line_idx:
+            continue
+        got = False
+        for lo, hi, label in _RE_LEVEL.findall(l):
+            got = _add_level(lo, hi, label) or got
+        if not got:
+            for label, lo, hi in _RE_LEVEL_REV.findall(l):
+                _add_level(lo, hi, label)
+    for frag in extra_level_text:
+        got = False
+        for lo, hi, label in _RE_LEVEL.findall(frag):
+            got = _add_level(lo, hi, label) or got
+        if not got:
+            for label, lo, hi in _RE_LEVEL_REV.findall(frag):
+                _add_level(lo, hi, label)
+
+    levels.sort(key=lambda x: x['min'])
+    if levels:
+        notes.append({'step': 'levels', 'confidence': 'medium',
+                      'detail': '解析到 {} 档分级, 区间与名称务必对照原文核'.format(len(levels))})
+
+    max_total = sum(max([o['value'] for o in (it['options'] or [{'value': 0}])])
+                    for it in items) if items else 0
+    if levels and items:
+        top = max(x['max'] for x in levels)
+        if not max_total:
+            notes.append({'step': 'levels_check', 'confidence': 'low',
+                          'detail': '解析到 {} 档分级, 但没有一道题识别出带分值的选项 —— '
+                                    '无从核对分级区间是否合理, 请人工确认'.format(len(levels))})
+        elif top > max_total:
+            notes.append({'step': 'levels_check', 'confidence': 'low',
+                          'detail': '分级上限 {} 超过按选项算出的理论最高分 {} —— '
+                                    '很可能把别的数字当成了分级'.format(top, max_total)})
+
+    m_code = re.search(r'[A-Z][A-Z0-9\-]{2,15}', title or '')
+    draft = {
+        'code': code or (m_code.group(0) if m_code else ''),
+        'name': title or '',
+        'category': '',
+        'rater': 'both',
+        'source': 'import',
+        'definition': {
+            'instruction': instruction,
+            'items': [{k: v for k, v in it.items() if v is not None} for it in items],
+            'scoring': {'total': {'method': 'sum', 'items': 'all'},
+                        'subscales': [], 'levels': levels},
+            'consistency': [],
+        },
+    }
+    report = {
+        'item_count': len(items),
+        'items_without_options': sum(1 for it in items if not it['options']),
+        'level_count': len(levels),
+        'max_total_by_options': max_total,
+        'notes': notes,
+        'validation': validate_scale_definition(draft['definition']),
+        'needs_review': True,
+    }
+    return draft, report
+
+
+
+def extract_pdf_text(pdf_bytes):
+    """PDF -> 文字。返回 (text, meta, error)。
+
+    用 pdf-inspector (纯 Rust, 本地跑, 无网络无 key)。它明确**不做 OCR**: 扫描件只能被
+    识别出"是扫描件", 读不出字。这里如实把分类回给前端, 而不是返回空文本让人以为解析失败。
+    未安装时不让整个服务起不来 —— 只有用到这个端点才报错。
+    """
+    try:
+        import pdf_inspector
+    except ImportError:
+        return None, None, ('未安装 pdf-inspector, 无法解析 PDF。'
+                            '在服务器上执行: /root/miniconda3/bin/pip install pdf-inspector')
+    try:
+        r = pdf_inspector.process_pdf_bytes(pdf_bytes)
+        kind = getattr(r, 'pdf_type', None)
+        md = getattr(r, 'markdown', None) or ''
+        meta = {'pdf_type': kind, 'chars': len(md)}
+        if not md.strip():
+            if kind in ('scanned', 'image_based'):
+                return None, meta, ('这份 PDF 是{}, 里面没有可提取的文字层。'
+                                    'pdf-inspector 不做 OCR, 需要先用 OCR 引擎转成文字再粘贴进来。'
+                                    .format('扫描件' if kind == 'scanned' else '纯图片'))
+            return None, meta, 'PDF 里没有提取到文字 (分类: {})'.format(kind)
+        return md, meta, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, None, 'PDF 解析失败: {}'.format(e)
+
+
+# ---------------------------------------------------------------------------
+# M12: AI 量表生成 —— 设计方案 §2.2(2)
+#
+# 两条铁律, 都体现在代码里而不是文档里:
+#
+# 1) 生成出来的量表**永远不带划界值分级**。分级(0-4 无 / 5-9 轻度 / ...)是把总分翻译成
+#    临床结论的那一步, 它来自特定人群上的信效度研究, 不是能从题目推导出来的东西。
+#    让模型编一组阈值出来, 产出的每一份评估报告都会给出错误的临床结论, 而且看起来完全正常。
+#    所以 _sanitize_generated 会把模型吐出的 levels 一律删掉并记账 —— 宁可让人工去补,
+#    也不给一个像模像样的假阈值。生成的量表只有原始总分, 没有"重度抑郁"这种判定。
+#
+# 2) 默认后端是模板, 不联网、不需要 key。医院内网服务器把内容发给外部 LLM 是数据治理
+#    决策, 不该由这段代码替人做主。要启用 Claude 后端必须显式配置
+#    SCALE_LLM_PROVIDER=claude + ANTHROPIC_API_KEY, 且服务器上要装 anthropic SDK。
+#    注意即便启用, 送出去的也只是**评估规格**(评估目标/人群/维度), 绝不含任何患者数据。
+
+SCALE_RESPONSE_SETS = {
+    'freq4': ('四级频率', [{'label': '完全不会', 'value': 0}, {'label': '好几天', 'value': 1},
+                          {'label': '一半以上时间', 'value': 2}, {'label': '几乎天天', 'value': 3}]),
+    'likert5': ('五级李克特', [{'label': '完全不符合', 'value': 0}, {'label': '比较不符合', 'value': 1},
+                              {'label': '不确定', 'value': 2}, {'label': '比较符合', 'value': 3},
+                              {'label': '完全符合', 'value': 4}]),
+    'severity4': ('四级严重度', [{'label': '无', 'value': 0}, {'label': '轻度', 'value': 1},
+                                {'label': '中度', 'value': 2}, {'label': '重度', 'value': 3}]),
+    'yesno': ('二分是否', [{'label': '否', 'value': 0}, {'label': '是', 'value': 1}]),
+}
+
+# 生成结果的结构约束。JSON Schema 里 additionalProperties 必须显式 false, 且不放
+# minLength/maximum 这类数值约束 —— 结构化输出不支持它们, 写了会被静默丢掉。
+# 注意这份 schema **没有 levels 字段**: 不给模型留下产出划界值的位置, 比事后删更干净。
+SCALE_GEN_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'name': {'type': 'string'},
+        'instruction': {'type': 'string'},
+        'items': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'id': {'type': 'string'},
+                    'text': {'type': 'string'},
+                    'dimension': {'type': 'string'},
+                    'reverse': {'type': 'boolean'},
+                },
+                'required': ['id', 'text', 'dimension', 'reverse'],
+                'additionalProperties': False,
+            },
+        },
+    },
+    'required': ['name', 'instruction', 'items'],
+    'additionalProperties': False,
+}
+
+SCALE_GEN_DISCLAIMER = (
+    'AI 生成草稿, 未经信效度验证。只有原始总分, 没有划界值分级 —— 分级阈值必须来自'
+    '目标人群上的实证研究, 不能由模型推导。临床使用前须由专业人员逐题审核并补充常模。'
+)
+
+
+def _sanitize_generated(draft, notes):
+    """把生成结果拉回安全边界。返回处理后的 draft。
+
+    删 levels 是这里最重要的一件事, 理由见本节顶部注释。即使 schema 里没给位置,
+    也仍然做一次兜底删除 —— 换后端、换模型、有人手改 schema, 任何一种情况下这道闸门都还在。
+    """
+    d = draft.setdefault('definition', {})
+    sc = d.setdefault('scoring', {})
+    if sc.get('levels'):
+        notes.append({'step': 'levels_stripped', 'confidence': 'high',
+                      'detail': '已删除模型产出的 {} 档划界值 —— 分级阈值来自实证研究, '
+                                '不能由模型推导, 必须由临床方补充'.format(len(sc['levels']))})
+    sc['levels'] = []
+    sc.setdefault('total', {'method': 'sum', 'items': 'all'})
+    sc.setdefault('subscales', [])
+    d.setdefault('consistency', [])
+    d['disclaimer'] = SCALE_GEN_DISCLAIMER
+    draft['source'] = 'ai'
+    draft.setdefault('rater', 'both')
+    return draft
+
+
+def _build_scale_from_items(spec, name, instruction, raw_items, notes):
+    """把 (题干, 维度, 是否反向) 三元组组装成量表定义, 挂上选项与分量表。
+
+    选项由 spec.response_scale 统一决定而不是让模型自己发挥 —— 一份量表内选项不一致会让
+    总分失去意义, 而这恰好是模型很容易出错的地方。
+    """
+    key = spec.get('response_scale') or 'freq4'
+    label, options = SCALE_RESPONSE_SETS.get(key, SCALE_RESPONSE_SETS['freq4'])
+    items, dims = [], {}
+    for i, it in enumerate(raw_items, 1):
+        iid = 'q{}'.format(i)
+        dim = (it.get('dimension') or '').strip() or '总体'
+        items.append({
+            'id': iid, 'text': (it.get('text') or '').strip(), 'type': 'single',
+            'required': True, 'reverse': bool(it.get('reverse')),
+            'dimension': dim, 'options': list(options),
+        })
+        dims.setdefault(dim, []).append(iid)
+    subscales = [{'name': k, 'items': v} for k, v in dims.items()] if len(dims) > 1 else []
+    notes.append({'step': 'response_scale', 'confidence': 'high',
+                  'detail': '全部题目统一使用「{}」选项 —— 同一份量表内选项不一致会让总分失去意义'
+                            .format(label)})
+    draft = {
+        'code': (spec.get('code') or '').strip(),
+        'name': name,
+        'category': (spec.get('category') or '').strip(),
+        'source': 'ai',
+        'definition': {
+            'instruction': instruction,
+            'items': items,
+            'scoring': {'total': {'method': 'sum', 'items': 'all'},
+                        'subscales': subscales, 'levels': []},
+            'consistency': [],
+        },
+    }
+    return _sanitize_generated(draft, notes)
+
+
+def _generate_via_template(spec, notes):
+    """模板后端: 不联网、不需要 key、结果完全可预期。
+
+    产出的是**骨架**: 维度、题号、选项、分量表分组都排好, 题干留成待填占位。
+    这不是降级方案 —— 一份需要临床方逐题审核的量表, 题干本来就该由他们写;
+    骨架把结构性的活干完, 剩下的是他们无法外包的那部分。
+    """
+    dims = [d.strip() for d in (spec.get('dimensions') or []) if str(d).strip()]
+    if not dims:
+        dims = ['总体']
+    per = spec.get('items_per_dimension')
+    try:
+        per = max(1, min(int(per or 3), 20))
+    except (TypeError, ValueError):
+        per = 3
+    raw = []
+    for dim in dims:
+        for k in range(1, per + 1):
+            raw.append({'text': '【待填写】{} · 第 {} 题'.format(dim, k), 'dimension': dim,
+                        'reverse': False})
+    notes.append({'step': 'backend', 'confidence': 'high',
+                  'detail': '模板后端: 生成 {} 个维度 × {} 题的骨架, 题干需人工填写'
+                            .format(len(dims), per)})
+    goal = (spec.get('goal') or '').strip()
+    name = (spec.get('name') or '').strip() or (goal[:30] if goal else '未命名量表')
+    instruction = (spec.get('instruction') or '').strip() or (
+        '请根据{}的实际情况作答。'.format(spec.get('population') or '您最近一段时间'))
+    return _build_scale_from_items(spec, name, instruction, raw, notes)
+
+
+def _generate_via_claude(spec, notes):
+    """Claude 后端。返回 (draft, error)。
+
+    默认不启用。启用需要三件事同时具备:
+      1. 服务器装了 anthropic SDK
+      2. 环境变量 SCALE_LLM_PROVIDER=claude
+      3. ANTHROPIC_API_KEY (或 ANTHROPIC_AUTH_TOKEN) 已配置
+    任何一件缺失都回退到模板后端并说明原因, 不静默失败也不硬报错。
+
+    送出去的只有评估规格(目标/人群/维度), 不含任何患者数据 —— 生成量表这件事本身
+    不需要接触患者信息, 所以这条边界是天然的, 代码里也不给传患者字段的口子。
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return None, ('服务器未安装 anthropic SDK。启用 Claude 后端需要: '
+                      '/root/miniconda3/bin/pip install anthropic')
+    if not (os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('ANTHROPIC_AUTH_TOKEN')):
+        return None, '未配置 ANTHROPIC_API_KEY, Claude 后端不可用'
+
+    dims = [d.strip() for d in (spec.get('dimensions') or []) if str(d).strip()]
+    per = spec.get('items_per_dimension') or 3
+    prompt = (
+        '你在为临床随访平台起草一份评估量表的**题目草稿**, 产出会交给临床专业人员逐题审核后才使用。\n\n'
+        '评估目标: {goal}\n目标人群: {pop}\n评估维度: {dims}\n每个维度题目数: {per}\n\n'
+        '要求:\n'
+        '- 每道题只问一件事, 用被评估者能直接判断的具体表现, 不要用专业术语\n'
+        '- dimension 字段必须取自上面给定的维度列表\n'
+        '- reverse 表示该题是否反向计分(表述方向与其余题目相反)\n'
+        '- 不要给出任何评分阈值、分级或临床判定 —— 那部分由临床方依据实证研究补充\n'
+    ).format(goal=spec.get('goal') or '(未说明)', pop=spec.get('population') or '(未说明)',
+             dims=' / '.join(dims) or '(未指定)', per=per)
+
+    try:
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model='claude-opus-5',
+            max_tokens=16000,
+            output_config={'format': {'type': 'json_schema', 'schema': SCALE_GEN_SCHEMA}},
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+        # 安全分类器可能拒答, 此时是 HTTP 200 + stop_reason='refusal', content 为空。
+        # 不先查这个就直接读 content[0] 会抛 IndexError。
+        if getattr(resp, 'stop_reason', None) == 'refusal':
+            return None, '模型拒绝了该生成请求 (stop_reason=refusal)'
+        text = next((b.text for b in resp.content if b.type == 'text'), None)
+        if not text:
+            return None, '模型未返回文本内容'
+        data = json.loads(text)
+    except Exception as e:
+        traceback.print_exc()
+        return None, 'Claude 生成失败: {}'.format(e)
+
+    raw = data.get('items') or []
+    if not raw:
+        return None, '模型返回的题目为空'
+    notes.append({'step': 'backend', 'confidence': 'medium',
+                  'detail': 'Claude 后端 (claude-opus-5) 生成 {} 道题, 题干与维度归属均需人工审核'
+                            .format(len(raw))})
+    return _build_scale_from_items(spec, (data.get('name') or '').strip() or '未命名量表',
+                                   (data.get('instruction') or '').strip(), raw, notes), None
+
+
+def generate_scale_draft(spec):
+    """AI 量表生成入口。返回 (draft, report)。
+
+    产出与 M11 的文档解析走**同一个审核界面**: 都是草稿, 都要人逐条确认后才入库。
+    """
+    notes = []
+    backend = (spec.get('backend') or os.environ.get('SCALE_LLM_PROVIDER') or 'template').lower()
+    draft = None
+    if backend == 'claude':
+        draft, err = _generate_via_claude(spec, notes)
+        if err:
+            notes.append({'step': 'backend_fallback', 'confidence': 'high',
+                          'detail': 'Claude 后端不可用, 已回退到模板后端: {}'.format(err)})
+    if draft is None:
+        draft = _generate_via_template(spec, notes)
+
+    notes.append({'step': 'no_levels', 'confidence': 'high',
+                  'detail': '生成的量表刻意不含划界值分级。总分能算, 但"轻度/中度/重度"这类结论'
+                            '必须由临床方依据目标人群的实证研究补充 —— 编出来的阈值会让每一份'
+                            '评估报告都给出看似正常的错误结论'})
+    d = draft['definition']
+    report = {
+        'item_count': len(d['items']),
+        'items_without_options': sum(1 for i in d['items'] if not i.get('options')),
+        'level_count': 0,
+        'max_total_by_options': sum(max(o['value'] for o in i['options']) for i in d['items']
+                                    if i.get('options')),
+        'backend': backend,
+        'notes': notes,
+        'validation': validate_scale_definition(d),
+        'needs_review': True,
+    }
+    return draft, report
+
+
 def ensure_platform_scale_tables():
     """M10: 量表定义表 + 填报记录表 (idempotent)。"""
     conn = get_connection()
@@ -3850,6 +4398,13 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/zhenmaiyi/list': 'v10 patch: 列全部诊脉仪记录 (不含 base64 附件)',
                     'POST /api/platform/patients/batch': '随访平台 M9: 批量建档 {patients:[{patient_no,...}]}, 单条失败不影响其余',
                     'POST /api/platform/screening': "随访平台 M9: 筛查排除/撤销 {patient_no, action:'exclude'|'restore', reason, operator}",
+                    'GET  /api/platform/scales': '随访平台 M10: 量表列表/单份定义 (?code=&category=&withDefinition=1)',
+                    'POST /api/platform/scale': '随访平台 M10: 导入/改版量表 (定义结构校验不过则拒收)',
+                    'POST /api/platform/scale/score': '随访平台 M10: 试评分 (只算不落库, 供填报页实时出分与预览)',
+                    'POST /api/platform/scale/response': '随访平台 M10: 提交填报 (评分+校验+落库; revision_of 走修订留痕)',
+                    'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
+                    'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
+                    'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
                     'GET  /api/platform/discover': '随访平台 M8/M9: 未建档门诊号 + 纳排筛选 (?minRecords=&minVitals=&since=&requireVitals=1&include=pending|excluded|all; 只读, 无需 token)',
                     'GET  /api/platform/patients': '随访平台 M1/M4/M5: 患者列表 + 绑定态 + 最近上传时间 + 未关闭报警数 + wear_rate_7d + task_due_count',
                     'POST /api/platform/patient': '随访平台 M1: UPSERT platform_patient (建档/改档)',
@@ -4014,6 +4569,42 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/scale/generate':
+                # 只生成不落库, 产出交人工审核 —— 与 /scale/parse 同样不走写接口门禁
+                spec = body if isinstance(body, dict) else {}
+                if not (spec.get('goal') or spec.get('dimensions')):
+                    self._send_json(400, {'ok': False,
+                                          'error': '至少要给 goal(评估目标) 或 dimensions(评估维度)'})
+                    return
+                dims = spec.get('dimensions')
+                if dims is not None and not isinstance(dims, list):
+                    self._send_json(400, {'ok': False, 'error': 'dimensions 必须是数组'}); return
+                if isinstance(dims, list) and len(dims) > 20:
+                    self._send_json(400, {'ok': False, 'error': 'dimensions 最多 20 个'}); return
+                draft, report = generate_scale_draft(spec)
+                self._send_json(200, {'ok': True, 'draft': draft, 'report': report})
+
+            elif pathname == '/api/platform/scale/parse':
+                # 只解析不落库, 产出交人工审核 —— 因此不走写接口门禁
+                text = body.get('text')
+                meta = None
+                if not text and body.get('pdf_base64'):
+                    try:
+                        import base64 as _b64
+                        pdf_bytes = _b64.b64decode(body['pdf_base64'])
+                    except Exception:
+                        self._send_json(400, {'ok': False, 'error': 'pdf_base64 不是合法 base64'}); return
+                    if len(pdf_bytes) > 20 * 1024 * 1024:
+                        self._send_json(400, {'ok': False, 'error': 'PDF 超过 20MB'}); return
+                    text, meta, err = extract_pdf_text(pdf_bytes)
+                    if err:
+                        self._send_json(400, {'ok': False, 'error': err, 'meta': meta}); return
+                if not text or not str(text).strip():
+                    self._send_json(400, {'ok': False, 'error': '需要 text 或 pdf_base64'}); return
+                draft, report = parse_scale_text(str(text), body.get('code'), body.get('name'))
+                self._send_json(200, {'ok': True, 'draft': draft, 'report': report,
+                                      'pdf': meta, 'source_text': str(text)[:20000]})
 
             elif pathname == '/api/platform/scale/response':
                 if not check_platform_token(self):
@@ -4187,6 +4778,13 @@ if __name__ == '__main__':
     print('[端点] GET  /api/data              查询所有设备 (?patientNo= 过滤大 JSON 内的记录)')
     print('[端点] GET  /api/platform/patients              随访平台 M1: 患者列表 + 绑定态')
     print('[端点] GET  /api/platform/discover              随访平台 M8/M9: 待建档门诊号 + 纳排筛选')
+    print('[端点] GET  /api/platform/scales                 随访平台 M10: 量表库')
+    print('[端点] POST /api/platform/scale                  随访平台 M10: 导入量表')
+    print('[端点] POST /api/platform/scale/score            随访平台 M10: 试评分(不落库)')
+    print('[端点] POST /api/platform/scale/response         随访平台 M10: 提交填报')
+    print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
+    print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
+    print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
     print('[端点] POST /api/platform/patients/batch        随访平台 M9: 批量建档')
     print('[端点] POST /api/platform/screening             随访平台 M9: 筛查排除/撤销')
     print('[端点] POST /api/platform/patient                随访平台 M1: UPSERT 患者建档')

@@ -60,7 +60,10 @@ button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:g
 .status{padding:3px 9px;border-radius:11px;font-size:11px;color:#18866f;background:#eaf7f4}
 .quick-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.quick{border:1px solid var(--line);border-radius:11px;background:#fff;padding:15px 8px;text-align:center;color:#43535e;transition:.2s}.quick:hover{border-color:#9ed9cc;background:#f4fbf9;transform:translateY(-2px)}.quick i{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--mint);color:var(--green);font-style:normal;font-size:18px;margin:0 auto 8px}
 .module-page{display:none}.module-page.active{display:block}
-.module-hero{background:linear-gradient(115deg,#123d38,#1b7665);color:#fff;padding:24px 26px;border-radius:15px;margin-bottom:17px;display:flex;justify-content:space-between;align-items:center;overflow:hidden;position:relative;gap:14px;flex-wrap:wrap}.module-hero:after{content:"AI";position:absolute;right:210px;top:-35px;font-size:130px;font-weight:800;opacity:.04}.module-hero h2{margin:0 0 5px}.module-hero p{margin:0;color:#b7ddd5}
+.module-hero{background:linear-gradient(115deg,#123d38,#1b7665);color:#fff;padding:24px 26px;border-radius:15px;margin-bottom:17px;display:flex;justify-content:space-between;align-items:center;overflow:hidden;position:relative;gap:14px;flex-wrap:wrap}/* pointer-events:none 是必须的, 不是优化: 这个 130px 的 "AI" 水印是绝对定位伪元素,
+   盖在 hero 右侧按钮上方, 不关掉命中测试就会把「手工建档」「补判体征预警」「新建计划」
+   「导出数据」「从文档解析量表」全部点不动 —— 肉眼完全看不出来(它 opacity 只有 .04)。 */
+.module-hero:after{content:"AI";position:absolute;right:210px;top:-35px;font-size:130px;font-weight:800;opacity:.04;pointer-events:none}.module-hero h2{margin:0 0 5px}.module-hero p{margin:0;color:#b7ddd5}
 .white-btn{border:0;background:#fff;color:#147b69;border-radius:9px;padding:10px 16px}
 .asset-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:15px}.asset{padding:20px}.asset .big-icon{width:46px;height:46px;border-radius:13px;background:var(--mint);display:grid;place-items:center;font-size:23px}.asset h3{margin:15px 0 5px;font-size:15px}.asset p{color:var(--muted);min-height:42px;margin:0 0 16px;font-size:13px}.asset-foot{border-top:1px solid var(--line);padding-top:13px;display:flex;justify-content:space-between;align-items:center}
 .field{margin-bottom:14px}.field label{display:block;margin-bottom:6px;color:#657580;font-size:13px}.field input,.field select,.field textarea{width:100%;border:1px solid #dfe5e7;border-radius:9px;padding:10px;background:#fff}.field textarea{height:78px;resize:vertical}
@@ -320,7 +323,11 @@ button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:g
       <section class="module-page" id="assets">
         <div class="module-hero">
           <div><h2>随访资料准备</h2><p>方案阶段一：CRF 表单 · 量表体系 · 宣教材料 · 知情同意</p></div>
-          <button class="white-btn" id="scaleImportBtn">⬆ 导入量表 (JSON)</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="white-btn" id="scaleGenBtn">✦ AI 生成量表</button>
+            <button class="white-btn" id="scaleParseBtn">⇱ 从文档解析量表</button>
+            <button class="white-btn" id="scaleImportBtn">⬆ 导入量表 (JSON)</button>
+          </div>
         </div>
         <div class="asset-grid">
           <div class="card asset"><div class="big-icon">▤</div><h3>智能 CRF 表单</h3><p>全题型覆盖、高级逻辑校验与临床数据元映射</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.1 · 4 个功能点</small></div></div>
@@ -346,6 +353,7 @@ button,input,select,textarea{font:inherit} button{cursor:pointer} .app{display:g
           <div class="rows" id="respWrap"><div class="loading">加载中…</div></div>
         </div>
         <input type="file" id="scaleFile" accept=".json" style="display:none">
+        <input type="file" id="scalePdfFile" accept=".pdf,.txt,.md" style="display:none">
       </section>
 
       <!-- ===================== 数据质控 (未建设) ===================== -->
@@ -558,6 +566,7 @@ const S = {
   alarmStatus: 'open', page: 'dashboard', ptab: 'known', etab: 'alarms',
   ctab: 'pending', candSel: new Set(),
   scales: [], responses: [], scaleCache: {}, fillCode: null, fillRevision: null,
+  parseFile: null, draft: null,
 };
 
 /* ================================================================ 导航 */
@@ -1557,6 +1566,216 @@ async function reviseResponse(id) {
     toast('已打开修订表单，请重新作答；原记录会完整保留为历史版本', 5000);
     openFill(r.scale_code, id, null);
   } catch (e) { toast('打开修订失败：' + e.message, 4000); }
+}
+
+/* ---- M11: 从文档解析量表 (方案 §2.2(3)) ----
+   这是**草稿生成器不是自动导入器**。产出一律先进这个审核界面, 每条识别结果都带置信度和
+   原文出处, 由人逐项核对后才入库。量表的题干措辞、选项分值、划界值直接决定评估结论,
+   静默的错值比明显的漏识别危险得多。 */
+const CONF_TAG = { high: '<span class="tag blue">高</span>', medium: '<span class="tag orange">中</span>',
+                   low: '<span class="tag red">需人工确认</span>' };
+
+/* ---- M12: AI 生成量表 (方案 §2.2(2)) ----
+   产出走的是和文档解析同一个审核界面 —— 都是草稿, 都要人逐条确认后才入库。
+   生成结果刻意**不含划界值分级**: 分级阈值来自目标人群上的实证研究, 模型推导不出来,
+   编一组出来会让每一份评估报告都给出看似正常的错误结论。 */
+document.getElementById('scaleGenBtn').onclick = () => {
+  openModal('AI 生成量表', '产出是草稿, 需人工逐题审核后才能导入',
+    '<div class="field"><label>评估目标<span class="sub">要评估什么、用来做什么决定</span></label>'+
+      '<textarea id="gnGoal" style="height:70px" placeholder="例如：评估慢病随访患者的服药依从性与生活方式，用于识别需要强化干预的对象"></textarea></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>目标人群</label><input id="gnPop" placeholder="例如：门诊慢病随访患者"></div>'+
+      '<div class="field"><label>作答选项</label><select id="gnScale">'+
+        '<option value="freq4">四级频率（完全不会…几乎天天）</option>'+
+        '<option value="severity4">四级严重度（无…重度）</option>'+
+        '<option value="likert5">五级李克特（完全不符合…完全符合）</option>'+
+        '<option value="yesno">二分是否</option></select></div>'+
+    '</div>'+
+    '<div class="field"><label>评估维度<span class="sub">一行一个，会成为分量表</span></label>'+
+      '<textarea id="gnDims" style="height:80px" placeholder="服药依从性&#10;饮食控制&#10;运动习惯"></textarea></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>每个维度题目数</label><input id="gnPer" type="number" min="1" max="20" value="3"></div>'+
+      '<div class="field"><label>生成后端</label><select id="gnBackend">'+
+        '<option value="template">模板（本地，不联网）</option>'+
+        '<option value="claude">Claude（需服务器另行配置）</option></select></div>'+
+    '</div>'+
+    '<div class="err" style="margin-top:4px">生成的量表<b>不会包含划界值分级</b>。'+
+      '「轻度／中度／重度」这类判定必须来自目标人群上的实证研究，模型推导不出来——'+
+      '编出来的阈值会让每一份评估报告都给出看似正常的错误结论。总分能算，分级要临床方补。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="gnGo">生成草稿</button>');
+  document.getElementById('gnGo').onclick = async () => {
+    const btn = document.getElementById('gnGo');
+    const goal = document.getElementById('gnGoal').value.trim();
+    const dims = document.getElementById('gnDims').value.split('\n').map(x => x.trim()).filter(Boolean);
+    if (!goal && !dims.length) { toast('至少填写评估目标或评估维度'); return; }
+    btn.disabled = true; btn.textContent = '生成中…';
+    try {
+      const res = await fetch(API_BASE + '/api/platform/scale/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          goal, dimensions: dims,
+          population: document.getElementById('gnPop').value.trim(),
+          response_scale: document.getElementById('gnScale').value,
+          items_per_dimension: Number(document.getElementById('gnPer').value) || 3,
+          backend: document.getElementById('gnBackend').value,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      reviewDraft(d.draft, d.report, null);
+    } catch (e) { btn.disabled = false; btn.textContent = '生成草稿'; toast('生成失败：' + e.message, 5000); }
+  };
+};
+
+document.getElementById('scaleParseBtn').onclick = () => {
+  openModal('从文档解析量表', '支持文字型 PDF、纯文本；扫描件需先做 OCR',
+    '<div class="field"><label>方式一：上传文件<span class="sub">文字型 PDF / .txt / .md</span></label>'+
+      '<button class="secondary" id="spPick" style="width:100%">选择文件…</button>'+
+      '<div class="sub" id="spName"></div></div>'+
+    '<div class="field"><label>方式二：直接粘贴量表文字</label>'+
+      '<textarea id="spText" style="height:180px" placeholder="把量表的题目、选项、评分标准粘贴到这里…&#10;&#10;例如：&#10;广泛性焦虑障碍量表 (GAD-7)&#10;选项：0=完全不会 1=好几天 2=一半以上时间 3=几乎天天&#10;1. 感觉紧张、焦虑或急切&#10;2. 不能够停止或控制担忧&#10;…&#10;评分标准：0-4 分 无焦虑；5-9 分 轻度焦虑"></textarea></div>'+
+    '<div style="color:var(--muted);font-size:12px">解析结果是<b>草稿</b>，会逐项标出置信度供你核对，确认后才入库。'+
+      '扫描件和图片这里读不了——pdf-inspector 只提取已有文字层，不做 OCR。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="spGo">开始解析</button>');
+  document.getElementById('spPick').onclick = () => document.getElementById('scalePdfFile').click();
+  document.getElementById('spGo').onclick = () => runParse(null);
+};
+document.getElementById('scalePdfFile').onchange = async e => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  const nameEl = document.getElementById('spName');
+  if (nameEl) nameEl.textContent = '已选：' + f.name + '（' + Math.round(f.size / 1024) + ' KB）';
+  S.parseFile = f;
+};
+async function runParse() {
+  const btn = document.getElementById('spGo');
+  btn.disabled = true; btn.textContent = '解析中…';
+  try {
+    const payload = {};
+    const txt = (document.getElementById('spText') || {}).value || '';
+    if (txt.trim()) {
+      payload.text = txt;
+    } else if (S.parseFile) {
+      const f = S.parseFile;
+      if (/\.(txt|md)$/i.test(f.name)) {
+        payload.text = await f.text();
+      } else {
+        const buf = new Uint8Array(await f.arrayBuffer());
+        let bin = '';
+        for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+        payload.pdf_base64 = btoa(bin);
+      }
+    } else {
+      toast('请先选择文件或粘贴文字'); btn.disabled = false; btn.textContent = '开始解析'; return;
+    }
+    const res = await fetch(API_BASE + '/api/platform/scale/parse',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    closeModal();
+    S.parseFile = null;
+    reviewDraft(d.draft, d.report, d.pdf);
+  } catch (e) {
+    btn.disabled = false; btn.textContent = '开始解析';
+    toast('解析失败：' + e.message, 6000);
+  }
+}
+function reviewDraft(draft, report, pdfMeta) {
+  S.draft = draft;
+  const d = draft.definition || {};
+  const lows = (report.notes || []).filter(n => n.confidence === 'low');
+  let h = '';
+  if (lows.length) {
+    h += '<div class="err" style="margin-bottom:12px"><b>有 '+lows.length+' 处需要你人工确认</b>，'+
+      '这些是解析器猜的，猜错了后面每一份填报都会算错分。</div>';
+  }
+  h += '<div class="detail-card"><h4>'+(report.backend ? 'AI 生成结果概览' : '解析结果概览')+'</h4>'+
+    (report.backend ? '<div class="detail-row"><span>生成后端</span><b>'+esc(report.backend)+'</b></div>' : '')+
+    (pdfMeta ? '<div class="detail-row"><span>PDF 类型</span><b>'+esc(pdfMeta.pdf_type || '--')+'</b></div>' : '')+
+    '<div class="detail-row"><span>识别题目</span><b>'+report.item_count+' 道</b></div>'+
+    '<div class="detail-row"><span>无选项的题</span><b'+(report.items_without_options ? ' style="color:#d04848"' : '')+
+      '>'+report.items_without_options+' 道</b></div>'+
+    '<div class="detail-row"><span>分级档数</span><b>'+report.level_count+'</b></div>'+
+    '<div class="detail-row"><span>按选项算出的理论最高分</span><b>'+report.max_total_by_options+'</b></div>'+
+    '</div>';
+
+  h += '<div class="detail-card"><h4>解析依据（逐条核对）</h4>'+
+    ((report.notes || []).length
+      ? report.notes.map(n => '<div style="padding:7px 0;border-bottom:1px dashed #edf0f1">'+
+          (CONF_TAG[n.confidence] || '')+' <b>'+esc(n.step)+'</b><div class="sub">'+esc(n.detail)+'</div>'+
+          (n.source_line ? '<div class="sub mono" style="color:#9ca3af">原文：'+esc(n.source_line)+'</div>' : '')+
+          '</div>').join('')
+      : '<div class="sub">无</div>')+'</div>';
+
+  if ((report.validation || []).length) {
+    h += '<div class="detail-card"><h4 style="color:#d04848">结构校验未通过（必须先修）</h4>'+
+      report.validation.map(v => '<div class="detail-row"><span>'+esc(v)+'</span></div>').join('')+'</div>';
+  }
+
+  h += '<div class="detail-card"><h4>量表元信息（可改）</h4>'+
+    '<div class="field"><label>编码 code</label><input id="dfCode" value="'+esc(draft.code || '')+'" placeholder="如 GAD-7"></div>'+
+    '<div class="field"><label>名称</label><input id="dfName" value="'+esc(draft.name || '')+'"></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>分类</label><input id="dfCat" value="'+esc(draft.category || '')+'" placeholder="抑郁/焦虑/睡眠…"></div>'+
+      '<div class="field"><label>填报方式</label><select id="dfRater">'+
+        '<option value="both">皆可</option><option value="clinician">医护填报</option><option value="self">患者自评</option></select></div>'+
+    '</div></div>';
+
+  h += '<div class="detail-card"><h4>题目（'+(d.items || []).length+' 道）</h4>'+
+    (d.items || []).map((it, i) => '<div style="padding:7px 0;border-bottom:1px dashed #edf0f1">'+
+      '<b>'+(i+1)+'. '+esc(it.text)+'</b> <span class="tag grey">'+esc(TYPE_LABEL[it.type] || it.type)+'</span>'+
+      (it.type === 'text' ? '<span class="tag red">没识别到选项</span>' : '')+
+      (it.options ? '<div class="sub">'+it.options.map(o => esc(o.label)+'='+esc(String(o.value))).join(' · ')+'</div>' : '')+
+      '</div>').join('')+'</div>';
+
+  if (((d.scoring || {}).levels || []).length) {
+    h += '<div class="detail-card"><h4>分级</h4>'+
+      d.scoring.levels.map(lv => '<div class="detail-row"><span>'+lv.min+' ~ '+lv.max+'</span><b>'+esc(lv.label)+'</b></div>').join('')+
+      '</div>';
+  }
+
+  const blocked = (report.validation || []).length > 0;
+  openDrawer((report.backend ? 'AI 生成草稿' : '解析草稿') + ' · 待人工确认', (draft.name || '') + ' · ' + report.item_count + ' 题', h,
+    '<button class="secondary" onclick="closeDrawer()">放弃</button>'+
+    '<button class="secondary" onclick="downloadDraft()">下载 JSON 手工修</button>'+
+    '<button class="primary" id="dfImport"'+(blocked ? ' disabled title="结构校验未通过"' : '')+'>确认并导入</button>');
+  if (!blocked) document.getElementById('dfImport').onclick = importDraft;
+}
+function downloadDraft() {
+  const d = JSON.parse(JSON.stringify(S.draft));
+  d.code = document.getElementById('dfCode').value.trim();
+  d.name = document.getElementById('dfName').value.trim();
+  d.category = document.getElementById('dfCat').value.trim();
+  d.rater = document.getElementById('dfRater').value;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' }));
+  a.download = (d.code || 'scale') + '.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('已下载草稿，改好后用「导入量表 (JSON)」传回来');
+}
+async function importDraft() {
+  const btn = document.getElementById('dfImport');
+  const code = document.getElementById('dfCode').value.trim();
+  const name = document.getElementById('dfName').value.trim();
+  if (!code || !name) { toast('编码和名称必填'); return; }
+  btn.disabled = true; btn.textContent = '导入中…';
+  try {
+    const payload = Object.assign({}, S.draft, {
+      code, name, category: document.getElementById('dfCat').value.trim(),
+      rater: document.getElementById('dfRater').value, source: 'import',
+    });
+    const res = await apiFetch(API_BASE + '/api/platform/scale',
+      { method: 'POST', headers: headers(true), body: JSON.stringify(payload) });
+    const dd = await res.json();
+    if (!res.ok || dd.ok === false) throw new Error(dd.error || ('HTTP ' + res.status));
+    closeDrawer();
+    toast('已导入：' + dd.code + ' v' + dd.version + '（' + dd.items + ' 题）', 5000);
+    S.scaleCache = {};
+    await loadScales();
+  } catch (e) { btn.disabled = false; btn.textContent = '确认并导入'; toast('导入失败：' + e.message, 6000); }
 }
 
 document.getElementById('scaleImportBtn').onclick = () => document.getElementById('scaleFile').click();
