@@ -223,6 +223,13 @@ canvas.trend { width: 100%; height: 150px; display: block; }
 .sev-dot.crit { background: #d04848; } .sev-dot.warn { background: #f59e0b; } .sev-dot.info { background: #9ca3af; }
 .alarm-type-label { font-weight: 600; color: #1f2937; }
 .alarm-type-label .sub { font-size: 11px; color: #9ca3af; font-weight: 400; display: block; }
+/* 来源链徽标: 做成 type-label 格子里的行内 pill, 不另开一列 —— alarm-row 的 5 列栅格
+   和 900px 以下的单列回退都不用动。 */
+.chain-badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px;
+  border-radius: 8px; margin-left: 6px; vertical-align: 1px; }
+.chain-badge.iwown { background: #eef2ff; color: #4f46e5; }
+.chain-badge.s101 { background: #e0f2fe; color: #0369a1; }
+.chain-badge.zhenmaiyi { background: #fef3c7; color: #b45309; }
 .alarm-patient { color: #374151; }
 .alarm-patient .sub { font-size: 11px; color: #9ca3af; display: block; }
 .alarm-time { color: #6b7280; font-size: 12px; }
@@ -302,6 +309,7 @@ canvas.trend { width: 100%; height: 150px; display: block; }
         <div class="btn" id="refreshBtn">⟳ 刷新</div>
         <div class="btn alarm-nav" id="alarmNavBtn">🚨 报警工作台<span class="nav-badge" id="alarmNavBadge" style="display:none;">0</span></div>
         <div class="btn tasks-nav" id="tasksNavBtn">📋 随访任务<span class="nav-badge" id="tasksNavBadge" style="display:none;">0</span></div>
+        <div class="btn" id="exportBtn">⬇ 导出</div>
         <div class="btn primary" id="addPatientBtn">＋ 建档</div>
       </div>
     </div>
@@ -643,6 +651,46 @@ canvas.trend { width: 100%; height: 150px; display: block; }
       <div class="form-actions">
         <button id="planFormCancel">取消</button>
         <button class="primary" id="planFormSave">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 导出 modal (M6) -->
+<div class="modal-mask" id="exportModal">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3>导出队列数据</h3>
+      <button class="modal-close" id="exportClose">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>数据集</label>
+        <select id="exportKind">
+          <option value="all">全部 (zip, 含下列 5 个 CSV)</option>
+          <option value="patients">患者档案</option>
+          <option value="vitals">体征日聚合 (跨链路长表)</option>
+          <option value="alarms">报警事件</option>
+          <option value="followups">随访记录</option>
+          <option value="plans">随访计划</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>门诊号 (留空 = 全部患者)</label>
+        <input type="text" id="exportPatientNo" placeholder="例: DEV0001">
+      </div>
+      <div class="form-row">
+        <label>体征回溯天数 (仅影响体征日聚合)</label>
+        <input type="number" id="exportDays" min="1" max="3650" value="90">
+      </div>
+      <div class="form-hint">
+        CSV 为 UTF-8 带 BOM, Excel 直接双击打开不乱码。导出属于批量患者数据拉取,
+        需要写接口同款 X-Platform-Token; 未记住 token 时会弹窗要一次。
+      </div>
+      <div class="form-msg" id="exportMsg"></div>
+      <div class="form-actions">
+        <button id="exportCancel">取消</button>
+        <button class="primary" id="exportGo">⬇ 下载</button>
       </div>
     </div>
   </div>
@@ -1142,6 +1190,64 @@ document.getElementById('planFormSave').addEventListener('click', async () => {
   }
 });
 
+/* ================= 导出 (M6) =================
+   导出端点走 X-Platform-Token 门禁, 所以不能用 <a href download> 直接下 —— 那样发不出
+   自定义 header。改成 fetch 带 header 拿 blob 再触发下载; 复用 platformFetch 的 403 ->
+   弹窗要 token -> 重试分支, 与建档/绑定等写操作同一套鉴权体验。 */
+function openExportModal() {
+  document.getElementById('exportMsg').textContent = '';
+  document.getElementById('exportModal').classList.add('open');
+}
+document.getElementById('exportBtn').addEventListener('click', openExportModal);
+document.getElementById('exportClose').addEventListener('click', () => document.getElementById('exportModal').classList.remove('open'));
+document.getElementById('exportCancel').addEventListener('click', () => document.getElementById('exportModal').classList.remove('open'));
+
+/* 从 Content-Disposition 取文件名: 优先 RFC 5987 的 filename*=UTF-8''<percent-encoded>
+   (服务端中文文件名走的是这个), 取不到再退回 ASCII 的 filename="..."。跨域下这个响应头
+   要靠服务端 Access-Control-Expose-Headers 放行才读得到, 读不到就用兜底名。 */
+function filenameFromDisposition(cd, fallback) {
+  if (!cd) return fallback;
+  const star = cd.match(/filename\*=UTF-8''([^;]+)/i);
+  if (star) { try { return decodeURIComponent(star[1]); } catch (e) { /* 落到下面 */ } }
+  const plain = cd.match(/filename="([^"]+)"/i);
+  return plain ? plain[1] : fallback;
+}
+
+document.getElementById('exportGo').addEventListener('click', async () => {
+  const msg = document.getElementById('exportMsg');
+  const btn = document.getElementById('exportGo');
+  const kind = document.getElementById('exportKind').value;
+  const patientNo = document.getElementById('exportPatientNo').value.trim();
+  const days = document.getElementById('exportDays').value || '90';
+  let url = API_BASE + '/api/platform/export?kind=' + encodeURIComponent(kind) + '&days=' + encodeURIComponent(days);
+  if (patientNo) url += '&patientNo=' + encodeURIComponent(patientNo);
+
+  msg.textContent = '生成中…'; msg.className = 'form-msg';
+  btn.disabled = true;
+  try {
+    const res = await platformFetch(url, { headers: platformHeaders(false) });
+    if (!res.ok) {
+      let detail = 'HTTP ' + res.status;
+      try { const j = await res.json(); if (j && j.error) detail = j.error; } catch (e) { /* 非 JSON 错误体 */ }
+      throw new Error(detail);
+    }
+    const blob = await res.blob();
+    const name = filenameFromDisposition(res.headers.get('Content-Disposition'),
+      kind === 'all' ? '随访平台队列导出.zip' : ('随访平台-' + kind + '.csv'));
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl; a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+    msg.textContent = '已下载 ' + name + ' (' + Math.max(1, Math.round(blob.size / 1024)) + ' KB)';
+    msg.className = 'form-msg ok';
+  } catch (e) {
+    msg.textContent = '导出失败: ' + e.message; msg.className = 'form-msg err';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 /* 佩戴依从性明细条 (M4): 每日一根柱, 柱高 = wear_hours/24, 有 not_worn 报警的那天柱顶标 ⚠N。
    跟随患者详情页现有的 7/14/30 天 toggle (renderDetail 每次都重新调这个函数)。 */
 async function fetchCompliance(patientNo, days) {
@@ -1319,19 +1425,36 @@ document.getElementById('amApiFooterShow').textContent = API_BASE;
 const ALARM_TYPE_LABELS = {
   fall: '跌倒', sos: 'SOS', hr: '心率越限', spo2: '血氧越限', bp: '血压越限',
   temp: '体温越限', sedentary: '久坐', not_worn: '未佩戴', low_battery: '低电量', unknown: '未分类',
+  /* M7: 服务端判定的两类新事件。趋势类和越限类刻意分成两个标签 ——
+     "心率越限" 是绝对阈值, "心率趋势异常" 是相对该患者自己的基线, 医生看到的处置动作不同。 */
+  sleep: '睡眠时长越限',
+  hr_trend: '心率趋势异常', spo2_trend: '血氧趋势异常', bp_trend: '血压趋势异常',
+  temp_trend: '体温趋势异常', sleep_trend: '睡眠趋势异常', pulse_report: '脉诊新报告',
 };
 const STATUS_LABELS = { new: '待处理', acked: '已知晓', followed: '已回访', closed: '已关闭' };
+/* 来源链: iwown 是设备侧推的报警帧, s101/zhenmaiyi 是 M7 服务端判定出来的 */
+const CHAIN_LABELS = { iwown: 'iwown 4G', s101: 'S101 手环', zhenmaiyi: '脉诊仪' };
 
 const alarmsState = { status: 'new', patientNo: null, alarms: [] };
 let amCurrentAlarm = null;
 
 function alarmTypeLabel(t) { return ALARM_TYPE_LABELS[t] || ALARM_TYPE_LABELS.unknown; }
 
+function chainBadgeHtml(chain) {
+  const c = chain || 'iwown';
+  if (!CHAIN_LABELS[c]) return '';
+  return '<span class="chain-badge ' + escapeHtml(c) + '">' + escapeHtml(CHAIN_LABELS[c]) + '</span>';
+}
+
 /* payload_json 摘要: 按 alarm_type 抽关键字段, 与 health_server.py classify_iwown_alarm() 的
    分类字段对应 (见该函数注释里的映射表)。 */
 function summarizeAlarmPayload(a) {
   const p = a.payload_json;
   if (!p || typeof p !== 'object') return '--';
+  /* M7 的三类事件 (threshold/trend/report) 在服务端落库时就把判定结论写成了人话存进
+     payload_json.text, 这里直接用 —— 阈值表改在服务端一处, 页面上跟着变, 不在前端
+     再抄一遍判定逻辑。text 里可能含诊脉仪上传的 conclusion/pulse_label, 要转义。 */
+  if (p.rule && p.text) return escapeHtml(p.text);
   const alarm = p.alarm || {};
   const info = p.Alarminfo || {};
   try {
@@ -1345,6 +1468,31 @@ function summarizeAlarmPayload(a) {
     if (a.alarm_type === 'sos') return 'SOS 求助' + (a.lat != null ? ' (含定位)' : '');
   } catch (e) { /* 忽略, 走下面 fallback */ }
   return JSON.stringify(p).slice(0, 60) + '…';
+}
+
+/* M7 判定依据。第三方检测机构要能当场回答"这一条为什么会报" —— 阈值类给出实测值 / 阈值线 /
+   原始采样时刻(UTC 原样, 不折时区, 便于和 wearable_device_data 里的记录逐条对上);
+   趋势类给出当日均值 / 基线均值±标准差 / 基线样本天数 / 偏移量。
+   iwown 的设备侧报警帧判定发生在手表固件里, 服务端拿不到判定参数, 这里不显示。 */
+function alarmBasisHtml(a) {
+  const p = a.payload_json;
+  if (!p || typeof p !== 'object') return '';
+  const u = escapeHtml(p.unit || '');
+  if (p.rule === 'threshold') {
+    return '<br>判定依据: 实测 ' + escapeHtml(String(p.value)) + u +
+      ' · 阈值线 ' + escapeHtml(String(p.bound)) + u +
+      ' · 采样时刻(UTC) ' + escapeHtml(p.sample_ts_utc || '--');
+  }
+  if (p.rule === 'trend') {
+    return '<br>判定依据: 当日均值 ' + escapeHtml(String(p.value)) + u +
+      ' · 基线 ' + escapeHtml(String(p.baseline_mean)) + u + ' ± ' + escapeHtml(String(p.baseline_sigma)) +
+      ' (' + escapeHtml(String(p.baseline_days)) + ' 天样本)' +
+      ' · 偏移 ' + escapeHtml(String(p.delta)) + u;
+  }
+  if (p.rule === 'report') {
+    return '<br>报告编号: ' + escapeHtml(p.case_id || '--');
+  }
+  return '';
 }
 
 function mapLinkHtml(lat, lng) {
@@ -1372,11 +1520,14 @@ function renderAlarmRows(wrap, alarms, opts) {
       '<span class="sev-dot ' + escapeHtml(a.severity || 'info') + '"></span>' +
       '<div class="alarm-type-label">' + escapeHtml(alarmTypeLabel(a.alarm_type)) +
         '<span class="status-pill ' + escapeHtml(a.status) + '">' + escapeHtml(STATUS_LABELS[a.status] || a.status) + '</span>' +
+        chainBadgeHtml(a.source_chain) +
         '<span class="sub">' + (a.followup_count || 0) + ' 条回访记录</span></div>' +
       '<div class="alarm-patient">' + escapeHtml(a.patient_name || '(未命名)') +
         '<span class="sub">门诊号 ' + escapeHtml(a.patient_no || '--') + '</span></div>' +
       '<div class="alarm-time">' + escapeHtml(a.occurred_at || a.created_at || '--') + '</div>' +
-      '<div class="alarm-payload">' + summarizeAlarmPayload(a) + ' · ' + mapLinkHtml(a.lat, a.lng) + '</div>' +
+      /* 定位只有 iwown 的 SOS 帧带, M7 的体征判定没有经纬度 —— 没有就不要拼一个 " · --" 出来 */
+      '<div class="alarm-payload">' + summarizeAlarmPayload(a) +
+        (a.lat != null && a.lng != null ? ' · ' + mapLinkHtml(a.lat, a.lng) : '') + '</div>' +
     '</div>';
   }).join('');
 }
@@ -1435,8 +1586,11 @@ function openAlarmModal(alarmId) {
   document.getElementById('amTitle').textContent = alarmTypeLabel(a.alarm_type) + ' · ' + (a.patient_name || a.patient_no || '');
   document.getElementById('amDetailBox').innerHTML =
     '患者: ' + escapeHtml(a.patient_name || '--') + ' (门诊号 ' + escapeHtml(a.patient_no || '--') + ')<br>' +
-    '设备: ' + escapeHtml(a.device_id || '--') + ' · 发生时间: ' + escapeHtml(a.occurred_at || '--') + '<br>' +
-    '摘要: ' + summarizeAlarmPayload(a) + ' · 定位: ' + mapLinkHtml(a.lat, a.lng) + '<br>' +
+    '设备: ' + escapeHtml(a.device_id || '--') + ' · 来源: ' + chainBadgeHtml(a.source_chain) +
+      ' · 发生时间: ' + escapeHtml(a.occurred_at || '--') + '<br>' +
+    '摘要: ' + summarizeAlarmPayload(a) +
+      (a.lat != null && a.lng != null ? ' · 定位: ' + mapLinkHtml(a.lat, a.lng) : '') +
+    alarmBasisHtml(a) + '<br>' +
     '当前状态: <span class="status-pill ' + escapeHtml(a.status) + '">' + escapeHtml(STATUS_LABELS[a.status] || a.status) + '</span>';
 
   const hist = (a.followups || []);
@@ -1643,7 +1797,8 @@ document.getElementById('resetBtn').addEventListener('click', () => {
 });
 document.getElementById('searchInput').addEventListener('input', e => { listState.search = e.target.value; renderPatients(); });
 [document.getElementById('patientFormModal'), document.getElementById('bindModal'), document.getElementById('alarmModal'),
- document.getElementById('taskCompleteModal'), document.getElementById('planFormModal')].forEach(mask => {
+ document.getElementById('taskCompleteModal'), document.getElementById('planFormModal'),
+ document.getElementById('exportModal')].forEach(mask => {
   mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
 });
 

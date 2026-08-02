@@ -93,8 +93,9 @@
     <a href="#s3">③ 建档与设备绑定</a>
     <a href="#s4">④ 看患者数据</a>
     <a href="#s5">⑤ 报警处理</a>
-    <a href="#s6">⑥ 常见问题</a>
-    <a href="#s7">⑦ 求助</a>
+    <a href="#s6">⑥ 导出数据</a>
+    <a href="#s7">⑦ 常见问题</a>
+    <a href="#s8">⑧ 求助</a>
   </div>
 </nav>
 
@@ -225,7 +226,41 @@
 </section>
 
 <section id="s6">
-  <h2><span class="num">⑥</span>常见问题</h2>
+  <h2><span class="num">⑥</span>导出数据</h2>
+  <p class="lead">一句话讲清楚:把平台里的数据取成 Excel 能打开的表格,拿去做统计。</p>
+
+  <div class="card">
+    <p><b>入口</b>:患者列表右上角点 <span class="ui-btn">⬇ 导出</span>。平台上看到的数据都能导出,导出的是文件,下载到你自己电脑上,不会改动平台里的任何东西。</p>
+  </div>
+
+  <h3>6.1 能导出什么</h3>
+  <div class="table-scroll"><table>
+    <tr><th>数据集</th><th>一行是什么</th><th>主要字段</th></tr>
+    <tr><td><b>全部</b></td><td>下面 5 个表打成一个压缩包</td><td>做统计通常直接选这个</td></tr>
+    <tr><td><b>患者档案</b></td><td>一个患者</td><td>门诊号、姓名、性别、年龄、队列分组、三条链路绑定情况、建档时间</td></tr>
+    <tr><td><b>体征日聚合</b></td><td>一个患者 × 一天 × 一条链路</td><td>心率/血氧的均值最低最高、收缩压舒张压、体温、步数</td></tr>
+    <tr><td><b>报警事件</b></td><td>一条报警</td><td>报警类型、严重度、当前状态、发生时间、被处理过几次</td></tr>
+    <tr><td><b>随访记录</b></td><td>一次处理/回访</td><td>动作、结果文本、操作人、关联的报警或随访计划</td></tr>
+    <tr><td><b>随访计划</b></td><td>一条计划</td><td>计划名、周期天数、下次到期、是否启用</td></tr>
+  </table></div>
+
+  <h3>6.2 三个选项</h3>
+  <div class="card">
+    <ol class="steps">
+      <li><b>数据集</b> — 选上面表里的一种,或选"全部"一次拿走</li>
+      <li><b>门诊号</b> — 留空是全部患者;填一个门诊号就只导这个人的数据</li>
+      <li><b>体征回溯天数</b> — 默认 90 天,只影响"体征日聚合",其余数据集导全量不受它影响</li>
+    </ol>
+    <p>点 <span class="ui-btn">⬇ 下载</span> 后浏览器会直接下载文件,文件名带数据集名称和导出时间,不会覆盖之前导过的。</p>
+  </div>
+
+  <div class="note">导出的表格是 <b>CSV</b> 格式,<b>Excel 双击直接打开,中文不会乱码</b>;用 SPSS、R、Python 做统计也能直接读。选"全部"时下载到的是一个 zip 压缩包,解压后里面是 5 个 CSV。</div>
+
+  <div class="warn-box"><b>会问你要口令</b>:导出一次能带走整个队列的患者数据,所以和建档、绑定这类写操作一样需要访问令牌。第一次导出会弹框要口令,填过浏览器会记住。口令向平台管理员肖逸凡索取。</div>
+</section>
+
+<section id="s7">
+  <h2><span class="num">⑦</span>常见问题</h2>
   <p class="lead">遇到问题先翻这里,答案都对照系统实际行为写的。</p>
 
   <dl class="faq">
@@ -252,8 +287,8 @@
   </dl>
 </section>
 
-<section id="s7">
-  <h2><span class="num">⑦</span>求助</h2>
+<section id="s8">
+  <h2><span class="num">⑧</span>求助</h2>
   <div class="card">
     <p>遇到解决不了的问题(口令、平台报错、数据对不上等),联系平台管理员<b>肖逸凡</b>。</p>
     <p style="margin-top:10px">更多文档(设计方案、FAQ、设备接入手册等)见文档中心:<a class="inline" href="https://qqyjx.github.io/suifang/docs/">https://qqyjx.github.io/suifang/docs/</a></p>

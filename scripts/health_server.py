@@ -71,9 +71,12 @@ active=1 的计划 + next_due 现算, 从不落地存储:
 部署：scp 本文件到 192.168.4.104:/opt/suifang/health_server.py，systemd 启动
 """
 import os
+import io
+import csv
 import json
 import re
 import gzip
+import zipfile
 import time
 import datetime
 import threading
@@ -267,16 +270,19 @@ def ensure_platform_tables():
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 patient_no VARCHAR(64) DEFAULT NULL,
                 device_id VARCHAR(32) DEFAULT NULL,
-                alarm_type VARCHAR(24) DEFAULT NULL COMMENT 'fall/sos/hr/spo2/bp/temp/sedentary/not_worn/low_battery',
+                alarm_type VARCHAR(24) DEFAULT NULL COMMENT 'fall/sos/hr/spo2/bp/temp/sedentary/not_worn/low_battery + M7 的 *_trend/pulse_report',
                 severity ENUM('crit','warn','info') DEFAULT NULL,
                 lat DECIMAL(10,6) DEFAULT NULL,
                 lng DECIMAL(10,6) DEFAULT NULL,
                 payload_json JSON DEFAULT NULL,
                 source_data_id BIGINT DEFAULT NULL COMMENT '→iwown_data.id, 解析重跑幂等去重',
+                source_chain VARCHAR(16) NOT NULL DEFAULT 'iwown' COMMENT 'M7: iwown/s101/zhenmaiyi',
+                dedup_key VARCHAR(191) DEFAULT NULL COMMENT 'M7: 非 iwown 链的幂等键, 见 ensure_platform_alarm_m7_columns',
                 status ENUM('new','acked','followed','closed') DEFAULT 'new',
                 occurred_at DATETIME DEFAULT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE KEY uk_source_data_id (source_data_id),
+                UNIQUE KEY uk_dedup_key (dedup_key),
                 INDEX idx_patient_no (patient_no),
                 INDEX idx_status (status)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台报警事件 (M2 起写入, M1 只建表)'
@@ -590,6 +596,63 @@ def ensure_followup_log_plan_index():
         print('[启动] ensure_followup_log_plan_index 失败:', e)
     finally:
         conn.close()
+
+
+def ensure_platform_alarm_m7_columns():
+    """M7: 给 platform_alarm 补 source_chain / dedup_key 两列 + uk_dedup_key 唯一索引 (idempotent).
+
+    生产库该表在 M2 就建好了, CREATE TABLE IF NOT EXISTS 不会给已存在的表补列,
+    所以走和 ensure_mac_column()/ensure_followup_log_plan_index() 同一惯例的 ALTER-if-missing。
+
+    为什么不复用现成的 uk_source_data_id 做新链的幂等:
+      那一列的语义是 iwown_data.id —— 一个整数外键。而 S101 的体征存在
+      wearable_device_data 的"每设备一行大 JSON"里, 单条采样点根本没有行 id 可引用。
+      所以新链改用自造的字符串幂等键 dedup_key:
+        S101 阈值越限   s101:th:{门诊号}:{metric}:{采集时间}
+        S101 趋势异常   s101:tr:{门诊号}:{metric}:{日期}
+        脉诊仪新报告    zmy:{case_id}
+      存量 iwown 行 dedup_key 留 NULL —— MySQL 的 UNIQUE 允许多个 NULL, 两套幂等键
+      各走各的索引, 互不干扰, 也不需要回填历史数据。
+      191 字符 × 4 字节 = 764B, 在 InnoDB 单列索引 3072B 上限内。
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        for col, ddl in (
+            ('source_chain',
+             "ALTER TABLE platform_alarm ADD COLUMN source_chain VARCHAR(16) NOT NULL DEFAULT 'iwown' "
+             "COMMENT 'M7: iwown/s101/zhenmaiyi'"),
+            ('dedup_key',
+             "ALTER TABLE platform_alarm ADD COLUMN dedup_key VARCHAR(191) DEFAULT NULL "
+             "COMMENT 'M7: 非 iwown 链的幂等键'"),
+        ):
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'platform_alarm' AND COLUMN_NAME = %s",
+                (DB_CONFIG['database'], col)
+            )
+            if cur.fetchone()[0] == 0:
+                print('[启动] platform_alarm.{} 不存在, 添加中...'.format(col))
+                cur.execute(ddl)
+                print('[启动] platform_alarm.{} 列添加完成'.format(col))
+
+        cur.execute(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS "
+            "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'platform_alarm' AND INDEX_NAME = 'uk_dedup_key'",
+            (DB_CONFIG['database'],)
+        )
+        if cur.fetchone()[0] == 0:
+            print('[启动] platform_alarm.uk_dedup_key 不存在, 添加中...')
+            cur.execute('ALTER TABLE platform_alarm ADD UNIQUE KEY uk_dedup_key (dedup_key)')
+            print('[启动] platform_alarm.uk_dedup_key 索引添加完成')
+        else:
+            print('[启动] platform_alarm M7 列/索引已就绪, 跳过 ALTER')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_alarm_m7_columns 失败:', e)
+    finally:
+        conn.close()
+
 
 # ============ 数据转换 ============
 def classify_bp(systolic, diastolic):
@@ -1232,6 +1295,7 @@ def query_platform_alarms(status=None, patient_no=None, limit=50):
         cur.execute("""
             SELECT a.id, a.patient_no, p.name, a.device_id, a.alarm_type, a.severity,
                    a.lat, a.lng, a.payload_json, a.status, a.occurred_at, a.created_at,
+                   a.source_chain,
                    (SELECT COUNT(*) FROM platform_followup_log f WHERE f.alarm_id = a.id) AS followup_count
             FROM platform_alarm a
             LEFT JOIN platform_patient p ON p.patient_no = a.patient_no
@@ -1240,7 +1304,8 @@ def query_platform_alarms(status=None, patient_no=None, limit=50):
             LIMIT %s
         """.format(' AND '.join(where)), params)
         cols = ['id', 'patient_no', 'patient_name', 'device_id', 'alarm_type', 'severity',
-                'lat', 'lng', 'payload_json', 'status', 'occurred_at', 'created_at', 'followup_count']
+                'lat', 'lng', 'payload_json', 'status', 'occurred_at', 'created_at',
+                'source_chain', 'followup_count']
         alarms = []
         for r in cur.fetchall():
             row = dict(zip(cols, r))
@@ -1328,6 +1393,429 @@ def platform_alarm_transition(body):
         """, (patient_no, alarm_id, action, result_text, operator))
         cur.close()
         return {'alarm_id': alarm_id, 'status': new_status}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+# ============ 随访平台 1.2 M7 (体征阈值预警 + 趋势异常检测) ============
+# 对应北大六院项目 ▲1.8.3 承诺函里第 3、4 条待第三方检测的指标:
+#   3. 趋势分析: 自动分析心率、睡眠、血压等指标的变化趋势, 识别异常波动
+#   4. 异常预警: 当监测指标超出正常阈值、出现异常波动时, 系统自动触发预警
+#
+# 为什么不能复用 M2 的 platform_alarm_ingest:
+#   那一套只吃 iwown 4G 手环**设备侧**推上来的 0x12 报警帧 (classify_iwown_alarm) ——
+#   判定发生在手表固件里, 服务端只做解码归类。而承诺函点名的两款二类械是
+#   「智能手环(小程序扫码绑定 + 门诊号)」= S101/R04 和「脉诊仪」, 这两条链传上来的是
+#   **原始体征**, 设备侧不产报警帧, 服务端在 M7 之前一条判定规则都没有 —— 预警能力
+#   恰好长在唯一不属于承诺范围的那条链上。M7 把服务端判定补齐。
+
+VITAL_THRESHOLDS = {
+    # 成人通用预警线。阈值全部集中在这一张表里, 改这里即改全局判定,
+    # 不要把数字散进判定函数 —— 验收时临床方要逐条核对的就是这张表。
+    #
+    # 待临床校准: 北大六院是精神专科, 抗精神病药(氯氮平/喹硫平等)的窦性心动过速与
+    # 体位性低血压是已知常见不良反应, 用通用成人线会在这类在管患者上持续误报。
+    # 上线前应由临床方按科室实际把 hr / sbp / dbp 三项重新定线。
+    # min_samples = 当天至少要有几个采样点才让这一天参与趋势判定。心率/血氧这类高频量给 3,
+    # 防止清早只测了 1 次就拿这一个点当"今日均值"去和 7 天基线比 —— 自动摄入线程每 10 分钟
+    # 跑一次, 不设这道门槛的话每天上午都会刷一批假的趋势异常。睡眠是一晚一条, 只能给 1。
+    'hr':    {'type': 'hr',    'label': '心率',       'unit': 'bpm',    'min_samples': 3,
+              'crit_low': 40,   'warn_low': 50,   'warn_high': 120,  'crit_high': 150},
+    'spo2':  {'type': 'spo2',  'label': '血氧饱和度', 'unit': '%',      'min_samples': 3,
+              'crit_low': 85,   'warn_low': 90,   'warn_high': None, 'crit_high': None},
+    'sbp':   {'type': 'bp',    'label': '收缩压',     'unit': 'mmHg',   'min_samples': 2,
+              'crit_low': 80,   'warn_low': 90,   'warn_high': 160,  'crit_high': 180},
+    'dbp':   {'type': 'bp',    'label': '舒张压',     'unit': 'mmHg',   'min_samples': 2,
+              'crit_low': 50,   'warn_low': 60,   'warn_high': 100,  'crit_high': 110},
+    'temp':  {'type': 'temp',  'label': '体温',       'unit': '℃',     'min_samples': 2,
+              'crit_low': 35.0, 'warn_low': 36.0, 'warn_high': 37.5, 'crit_high': 39.0},
+    # 睡眠: 承诺函第 3 条把"睡眠"和心率、血压并列写进了要做趋势分析的指标, 必须有。
+    # 对精神专科它还不只是陪跑指标 —— 入睡困难/早醒/嗜睡是抑郁与躁狂发作的核心症状,
+    # 个体基线偏离(平时睡 7 小时的人连着两晚睡 3 小时)比绝对阈值更有临床意义。
+    'sleep': {'type': 'sleep', 'label': '睡眠时长',   'unit': '分钟',   'min_samples': 1,
+              'crit_low': 180,  'warn_low': 300,  'warn_high': 660,  'crit_high': 840},
+}
+
+# S101 大 JSON 的类型键 -> [(记录内取值字段, 内部 metric 名)]。
+# metric 名与 _s101_patient_vitals 的日聚合分桶键保持一致, 两处要改必须同时改。
+# '睡眠' 的值是"深睡+浅睡"两个字段相加的派生量, 不是直取, 所以这里映射为空列表,
+# 由 _s101_scan_for_alarms 单独算 (见那里的注释)。
+S101_METRIC_FIELDS = {
+    '心率': [('心率值', 'hr')],
+    '血氧': [('血氧饱和度', 'spo2')],
+    '血压': [('高压', 'sbp'), ('低压', 'dbp')],
+    '体温': [('体温', 'temp')],
+    '睡眠': [],
+}
+
+TREND_BASELINE_DAYS = 7       # 基线窗口: 判定日往前 7 个自然日
+TREND_MIN_BASELINE_DAYS = 4   # 基线里至少要有 4 天有数据, 不足则本日不判(样本不够宁可漏报)
+TREND_SIGMA_WARN = 2.0        # 偏离 ≥2σ -> info
+TREND_SIGMA_HIGH = 3.0        # 偏离 ≥3σ -> warn
+TREND_MIN_DELTA = {           # 且绝对偏移要同时过这条线, 见 detect_trend_anomalies 的双门槛说明
+    'hr': 8.0, 'spo2': 3.0, 'sbp': 12.0, 'dbp': 8.0, 'temp': 0.4, 'sleep': 90.0,
+}
+# σ 低于这个值一律当"基线完全平坦"处理。基线各天数值相同时, sum((x-mu)**2) 得到的不是精确 0
+# 而是 1e-15 量级的浮点残差, 直接拿去做除数会让报警文案里出现 "(4222124650659840σ)" 这种
+# 数字 —— 验收演示时这一条足以毁掉整页的可信度。
+TREND_SIGMA_EPS = 1e-6
+
+
+def _fmt_num(v):
+    """40.0 -> '40', 37.5 -> '37.5'。报警文案里不出现无意义的 .0 小数尾巴。"""
+    f = float(v)
+    return str(int(f)) if f == int(f) else str(round(f, 1))
+
+
+def _s101_ts_to_local(ts):
+    """S101 采集时间 (ISO-8601 UTC, 形如 2026-07-26T10:00:00.000Z) -> 北京时间 datetime。
+
+    upsert_device_data 落库时写的是 datetime.utcnow() 的 ISO Z 串 (见 record['采集时间']),
+    而 platform_alarm.occurred_at 这一列上已有的 iwown 行来自 iwown_data.recorded_at ——
+    那是"帧内测量时间", 国内部署的 4G 手表报的是设备本地时间即北京时间。同一列混两种时区
+    会让报警工作台的时间线错 8 小时, 所以这里统一折成北京时间再入库。
+    原始 UTC 串完整保留在 payload_json.sample_ts_utc 里, 需要时可回溯。
+
+    没有 Z 后缀的老记录按"已是本地时间"处理, 不再加 8 小时。
+    """
+    if not ts:
+        return None
+    s = str(ts).strip()
+    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})', s)
+    if not m:
+        return None
+    try:
+        dt = datetime.datetime(*[int(x) for x in m.groups()])
+    except ValueError:
+        return None
+    return dt + datetime.timedelta(hours=8) if s.endswith('Z') else dt
+
+
+def classify_vital_threshold(metric, value):
+    """单个采样点的越限判定。返回 (alarm_type, severity, detail) 或 None(在正常区间内)。
+
+    crit 判在 warn 前面: 一个 185mmHg 的收缩压同时越过 warn_high(160) 和 crit_high(180),
+    只出 crit 一条, 不出两条。
+    """
+    rule = VITAL_THRESHOLDS.get(metric)
+    if rule is None or value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    hit = None
+    if rule['crit_high'] is not None and v >= rule['crit_high']:
+        hit = ('crit', 'high', rule['crit_high'])
+    elif rule['crit_low'] is not None and v <= rule['crit_low']:
+        hit = ('crit', 'low', rule['crit_low'])
+    elif rule['warn_high'] is not None and v >= rule['warn_high']:
+        hit = ('warn', 'high', rule['warn_high'])
+    elif rule['warn_low'] is not None and v <= rule['warn_low']:
+        hit = ('warn', 'low', rule['warn_low'])
+    if hit is None:
+        return None
+
+    severity, direction, bound = hit
+    text = '{} {}{} {}{} {}{}'.format(
+        rule['label'], _fmt_num(v), rule['unit'],
+        '高于' if direction == 'high' else '低于',
+        '危急阈值' if severity == 'crit' else '预警阈值',
+        _fmt_num(bound), rule['unit'])
+    return rule['type'], severity, {
+        'rule': 'threshold',
+        'metric': metric,
+        'label': rule['label'],
+        'value': v,
+        'unit': rule['unit'],
+        'direction': direction,
+        'bound': bound,
+        'text': text,
+    }
+
+
+def detect_trend_anomalies(series, metric, judge_from_date):
+    """个体基线偏离法识别"异常波动"。返回 [(date_str, severity, detail)]。
+
+    series: {date_str: 当日均值}
+    judge_from_date: 只对 >= 这个日期的天出结论, 更早的天只作基线用。
+
+    为什么不用"连续 N 天超阈值"那类规则: 那本质还是阈值判定, 抓不到"这个人平时 58bpm,
+    这两天变 88bpm"—— 88 不越任何绝对阈值, 但相对他自己的基线是显著异常。承诺函写的
+    "识别异常波动"指的正是这种个体内偏离; 绝对阈值那条线已经由 classify_vital_threshold 管了,
+    两者互补, 不互相替代。
+
+    σ 倍数和最小绝对幅度这两道门槛缺一不可: 只看 σ, 基线极稳的患者(σ→0)会被 1bpm 的
+    正常抖动刷屏; 只看绝对幅度, 基线本来就飘的患者会天天报。
+    """
+    out = []
+    if not series:
+        return out
+    rule = VITAL_THRESHOLDS.get(metric)
+    if rule is None:
+        return out
+    min_delta = TREND_MIN_DELTA.get(metric, 0.0)
+    all_dates = sorted(series)
+
+    for date_str in all_dates:
+        if date_str < judge_from_date:
+            continue
+        try:
+            day = datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            continue
+        lo = (day - datetime.timedelta(days=TREND_BASELINE_DAYS)).strftime('%Y-%m-%d')
+        base = [series[d] for d in all_dates if lo <= d < date_str]
+        if len(base) < TREND_MIN_BASELINE_DAYS:
+            continue
+
+        mu = sum(base) / len(base)
+        sigma = (sum((x - mu) ** 2 for x in base) / len(base)) ** 0.5
+        v = series[date_str]
+        delta = v - mu
+        if abs(delta) < min_delta:
+            continue
+        flat = sigma < TREND_SIGMA_EPS
+        if not flat and abs(delta) < TREND_SIGMA_WARN * sigma:
+            continue
+        # 基线完全平坦时 σ 倍数没有意义(除数是浮点残差), 判定只由 min_delta 那道门槛决定;
+        # 一个稳定在 58bpm 的人突然 88bpm, 按 warn 报是对的。
+        severity = 'warn' if flat or abs(delta) >= TREND_SIGMA_HIGH * sigma else 'info'
+
+        text = '{}日均 {}{} 较前 {} 天基线 {}{} {} {}{} ({})'.format(
+            rule['label'], _fmt_num(v), rule['unit'], len(base),
+            _fmt_num(mu), rule['unit'],
+            '上升' if delta > 0 else '下降', _fmt_num(abs(delta)), rule['unit'],
+            '基线无波动' if flat else _fmt_num(abs(delta) / sigma) + 'σ')
+        out.append((date_str, severity, {
+            'rule': 'trend',
+            'metric': metric,
+            'label': rule['label'],
+            'value': round(v, 1),
+            'unit': rule['unit'],
+            'baseline_mean': round(mu, 1),
+            'baseline_sigma': round(sigma, 2),
+            'baseline_days': len(base),
+            'delta': round(delta, 1),
+            'text': text,
+        }))
+    return out
+
+
+def _s101_scan_for_alarms(scan_from_date):
+    """单趟扫 wearable_device_data, 一次产出阈值判定和趋势判定两份原料。
+
+    返回 (breaches, daily):
+      breaches: [{patient_no, device_id, metric, value, ts_utc, occurred_at, alarm_type,
+                  severity, detail}]  —— 越限的原始采样点
+      daily:    {patient_no: {metric: {date: {'sum','n','device_id'}}}} —— 日均值序列原料
+
+    为什么合成一趟扫: _s101_patient_vitals 是"每调用一次全表扫一遍"的写法, 后台 ingest 要
+    对全部患者跑判定, 沿用它就会把整张 wearable_device_data 扫 N 遍 (M6 的 _export_vitals
+    踩过同一个坑, 见那里的注释)。这里一趟扫完按 (患者, 指标, 日期) 分桶。
+
+    scan_from_date 'YYYY-MM-DD': 早于此日期的采样点直接丢。调用方要把趋势基线需要的历史
+    天数一并算进去(见 platform_vital_alarm_ingest)。
+    """
+    breaches = []
+    daily = {}
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        # createTime 是 upsert_device_data 每次写入时用 datetime.now() 重置的(见那里的 now_str),
+        # 所以一行只要在 scan_from 之后没被写过, 它的大 JSON 里就不可能有 scan_from 之后的记录 ——
+        # 直接在 SQL 层跳掉, 不用把那几 MB 的 LONGTEXT 拉回来做无用的 json.loads。
+        # 这个循环每 PLATFORM_INGEST_INTERVAL_MIN 分钟跑一次, 久不上传的设备不该次次陪跑。
+        # createTime 为 NULL 的历史行无从判断, 一律扫。
+        cur.execute('SELECT deviceId, data FROM wearable_device_data '
+                    'WHERE createTime IS NULL OR createTime >= %s', (scan_from_date,))
+        for dev_id, data_raw in cur.fetchall():
+            try:
+                big_json = json.loads(data_raw) if data_raw else {}
+            except json.JSONDecodeError:
+                big_json = {}
+            if not isinstance(big_json, dict):
+                continue
+            for type_key, arr in big_json.items():
+                if type_key not in S101_METRIC_FIELDS or not isinstance(arr, list):
+                    continue
+                fields = S101_METRIC_FIELDS[type_key]
+                for rec in arr:
+                    if not isinstance(rec, dict):
+                        continue
+                    p_no = rec.get('门诊号')
+                    if not p_no:
+                        continue
+                    ts = rec.get('采集时间') or rec.get('recordedAt') or rec.get('uploadedAt') or ''
+                    date_str = str(ts)[:10]
+                    if not date_str or date_str < scan_from_date:
+                        continue
+                    occurred_at = _s101_ts_to_local(ts)
+                    if type_key == '睡眠':
+                        # 睡眠是派生量: 一晚一条记录, 总时长 = 深睡 + 浅睡 (to_chinese_record 就是
+                        # 按这两个字段落的库)。两个字段都缺才跳过, 缺一个按 0 计。
+                        deep, light = rec.get('深睡_分钟'), rec.get('浅睡_分钟')
+                        pairs = ([('sleep', (deep or 0) + (light or 0))]
+                                 if (deep is not None or light is not None) else [])
+                    else:
+                        pairs = [(m, rec[f]) for f, m in fields if rec.get(f) is not None]
+                    for metric, raw in pairs:
+                        try:
+                            v = float(raw)
+                        except (TypeError, ValueError):
+                            continue
+                        bucket = daily.setdefault(p_no, {}).setdefault(metric, {}).setdefault(
+                            date_str, {'sum': 0.0, 'n': 0, 'device_id': dev_id})
+                        bucket['sum'] += v
+                        bucket['n'] += 1
+                        hit = classify_vital_threshold(metric, v)
+                        if hit:
+                            alarm_type, severity, detail = hit
+                            detail['sample_ts_utc'] = ts
+                            breaches.append({
+                                'patient_no': p_no, 'device_id': dev_id, 'metric': metric,
+                                'value': v, 'ts_utc': ts, 'occurred_at': occurred_at,
+                                'alarm_type': alarm_type, 'severity': severity, 'detail': detail,
+                            })
+        cur.close()
+        return breaches, daily
+    finally:
+        conn.close()
+
+
+def _zhenmaiyi_report_events(cur, since_date):
+    """脉诊仪: 每份新四诊报告落一条 info 级事件。返回待插入行的列表。
+
+    为什么这条链不做阈值预警: 脉诊仪采的是一次性四诊评估(体质 9 得分 + 脉诊 42 参数 + 答题
+    记录), 不是连续生理量, "超出正常阈值"在它身上没有现成的临床判定标准 —— 中医体质辨识的
+    分级得由临床方给, 我们不能自己编一套塞进验收件。所以这条链只做"新报告到达 + 结论透出":
+    工作台上能看到"X 患者出了新的四诊报告, 体质结论 Y, 主脉象 Z", 由医生判读。
+    若六院验收要求脉诊仪也出预警, 需要他们提供判定规则再补。
+
+    患者归属走 platform_patient.zhenmaiyi_case_id 映射; 没建映射的报告 patient_no 留空,
+    工作台上仍看得见(与 iwown 未绑定设备的报警同样处理)。
+    """
+    cur.execute("""
+        SELECT z.case_id, z.patient_name, z.detect_time, z.conclusion, z.pulse_label, p.patient_no
+        FROM zhenmaiyi z
+        LEFT JOIN platform_patient p ON p.zhenmaiyi_case_id = z.case_id
+        WHERE z.detect_time IS NOT NULL AND DATE(z.detect_time) >= %s
+        ORDER BY z.detect_time
+    """, (since_date,))
+    rows = []
+    for case_id, pname, detect_time, conclusion, pulse_label, patient_no in cur.fetchall():
+        parts = []
+        if conclusion:
+            parts.append('体质结论 ' + conclusion)
+        if pulse_label:
+            parts.append('主脉象 ' + pulse_label)
+        detail = {
+            'rule': 'report',
+            'case_id': case_id,
+            'patient_name': pname,
+            'conclusion': conclusion,
+            'pulse_label': pulse_label,
+            'text': '脉诊仪新报告' + (': ' + ' / '.join(parts) if parts else ''),
+        }
+        rows.append({
+            'patient_no': patient_no, 'device_id': None, 'alarm_type': 'pulse_report',
+            'severity': 'info', 'occurred_at': detect_time, 'detail': detail,
+            'source_chain': 'zhenmaiyi', 'dedup_key': 'zmy:{}'.format(case_id),
+        })
+    return rows
+
+
+def platform_vital_alarm_ingest(days=7):
+    """M7 主入口: S101 体征阈值判定 + 趋势检测 + 脉诊仪新报告事件, 幂等写 platform_alarm。
+
+    days: 判定窗口, 只对最近 days 天的数据出结论(默认 7)。趋势基线还要再往前多取
+          TREND_BASELINE_DAYS 天, 所以实际扫描窗口 = days + TREND_BASELINE_DAYS 天。
+    幂等: 每条新链报警都带 dedup_key, 唯一索引兜底, 重跑 inserted=0。
+    """
+    today = datetime.date.today()
+    judge_from = (today - datetime.timedelta(days=days)).strftime('%Y-%m-%d')
+    scan_from = (today - datetime.timedelta(days=days + TREND_BASELINE_DAYS)).strftime('%Y-%m-%d')
+
+    try:
+        breaches, daily = _s101_scan_for_alarms(scan_from)
+    except Exception as e:
+        traceback.print_exc()
+        return None, 'S101 扫描失败: {}'.format(e)
+
+    pending = []
+    # --- 1) 阈值越限: 一个采样点一条 ---
+    for b in breaches:
+        if str(b['ts_utc'])[:10] < judge_from:
+            continue      # 基线区间的点只用来算 μ/σ, 不出报警
+        occurred = b['occurred_at']
+        pending.append({
+            'patient_no': b['patient_no'], 'device_id': b['device_id'],
+            'alarm_type': b['alarm_type'], 'severity': b['severity'],
+            'occurred_at': occurred, 'detail': b['detail'], 'source_chain': 's101',
+            'dedup_key': 's101:th:{}:{}:{}'.format(b['patient_no'], b['metric'], b['ts_utc']),
+        })
+
+    # --- 2) 趋势异常: 一个 (患者, 指标, 日) 一条 ---
+    for p_no, metrics in daily.items():
+        for metric, by_date in metrics.items():
+            # 采样点不够的日子整天剔出序列 —— 既不当被判定日(避免拿清早唯一一次测量冒充"今日均值"),
+            # 也不当基线样本(避免一个孤点把基线 μ/σ 带歪)。阈值判定不受这道门槛影响:
+            # 单次 185mmHg 该报就得报, 不能因为"当天只测了一次"就压下去。
+            need = VITAL_THRESHOLDS[metric].get('min_samples', 3)
+            series = {d: agg['sum'] / agg['n'] for d, agg in by_date.items() if agg['n'] >= need}
+            for date_str, severity, detail in detect_trend_anomalies(series, metric, judge_from):
+                pending.append({
+                    'patient_no': p_no, 'device_id': by_date[date_str].get('device_id'),
+                    'alarm_type': '{}_trend'.format(VITAL_THRESHOLDS[metric]['type']),
+                    'severity': severity,
+                    # 趋势是整日汇总判定, 没有"发生时刻"这回事, 统一记在当日 23:59:59,
+                    # 保证工作台按 occurred_at 倒序时它排在当天所有采样点之后
+                    'occurred_at': datetime.datetime.strptime(
+                        date_str + ' 23:59:59', '%Y-%m-%d %H:%M:%S'),
+                    'detail': detail, 'source_chain': 's101',
+                    'dedup_key': 's101:tr:{}:{}:{}'.format(p_no, metric, date_str),
+                })
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        # --- 3) 脉诊仪新报告 ---
+        try:
+            pending.extend(_zhenmaiyi_report_events(cur, judge_from))
+        except Exception as e:
+            # 脉诊仪表可能还没建(独立上传链路), 不能让它拖垮 S101 那两条主线
+            print('[M7] 脉诊仪事件跳过:', e)
+
+        counters = {'s101_threshold': 0, 's101_trend': 0, 'zhenmaiyi': 0}
+        for row in pending:
+            cur.execute("""
+                INSERT IGNORE INTO platform_alarm
+                  (patient_no, device_id, alarm_type, severity, payload_json,
+                   source_chain, dedup_key, status, occurred_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'new', %s)
+            """, (row['patient_no'], row['device_id'], row['alarm_type'], row['severity'],
+                  json.dumps(row['detail'], ensure_ascii=False),
+                  row['source_chain'], row['dedup_key'], row['occurred_at']))
+            if cur.rowcount:
+                if row['source_chain'] == 'zhenmaiyi':
+                    counters['zhenmaiyi'] += 1
+                elif row['detail'].get('rule') == 'trend':
+                    counters['s101_trend'] += 1
+                else:
+                    counters['s101_threshold'] += 1
+        cur.close()
+        return {
+            'ok': True,
+            'window_days': days,
+            'judge_from': judge_from,
+            'candidates': len(pending),
+            'inserted': sum(counters.values()),
+            'detail': counters,
+        }, None
     except Exception as e:
         traceback.print_exc()
         return None, str(e)
@@ -1831,12 +2319,198 @@ def _iwown_compliance_daily(device_id, days=14):
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# 随访平台 M6: 队列数据导出
+#
+# 平台此前 12 个端点全是"看", 没有一个是"拿" —— 研究者无法把队列数据取走做统计,
+# 而平台的立项理由正是"支撑临床随访研究的数据管理"。M6 补这个口子。
+#
+# 只读、不动任何表结构。走 X-Platform-Token 门禁: 与既有只读端点不同, 导出是整队列
+# PHI 的批量拉取, 一个请求就能把全部患者档案+体征+报警+随访记录带走, 因此按写接口
+# 的标准鉴权 (既有 GET 端点的无鉴权现状是另一件事, 见 claude-progress.txt 记录)。
+# ---------------------------------------------------------------------------
+EXPORT_KINDS = ('patients', 'vitals', 'alarms', 'followups', 'plans')
+
+EXPORT_KIND_LABELS = {
+    'patients': '患者档案',
+    'vitals': '体征日聚合',
+    'alarms': '报警事件',
+    'followups': '随访记录',
+    'plans': '随访计划',
+}
+
+
+def _export_fmt(v):
+    """CSV 单元格取值: datetime/date 统一成字符串, None 留空, 其余原样交给 csv 模块。"""
+    if v is None:
+        return ''
+    if hasattr(v, 'strftime'):
+        return v.strftime('%Y-%m-%d %H:%M:%S') if hasattr(v, 'hour') else v.strftime('%Y-%m-%d')
+    return v
+
+
+def _csv_bytes(header, rows):
+    """UTF-8-BOM CSV。
+
+    BOM 是给 Excel 的 —— 没有它, 中文列名在 Excel 里打开是乱码 (LibreOffice / pandas /
+    R 都不受影响, 会把 BOM 当空白跳过)。行结束符固定 \\r\\n, 与 Excel 的期望一致。
+    """
+    buf = io.StringIO(newline='')
+    w = csv.writer(buf, lineterminator='\r\n')
+    w.writerow(header)
+    for r in rows:
+        w.writerow([_export_fmt(v) for v in r])
+    return b'\xef\xbb\xbf' + buf.getvalue().encode('utf-8')
+
+
+def _export_patients(cur, patient_no):
+    where, params = ('WHERE p.patient_no = %s', [patient_no]) if patient_no else ('', [])
+    cur.execute(
+        'SELECT p.patient_no, p.name, p.gender, p.age, p.group_tag, p.zhenmaiyi_case_id, '
+        'p.note, p.created_at, p.updated_at, '
+        '(SELECT d.device_id FROM iwown_device d WHERE d.patient_no = p.patient_no '
+        ' ORDER BY d.last_seen DESC LIMIT 1) AS iwown_device_id '
+        'FROM platform_patient p ' + where + ' ORDER BY p.patient_no', params)
+    header = ['门诊号', '姓名', '性别(M男/F女)', '年龄', '队列分组', '诊脉仪case_id',
+              '备注', '建档时间', '更新时间', 'iwown设备号']
+    return header, [list(r) for r in cur.fetchall()]
+
+
+def _export_alarms(cur, patient_no):
+    where, params = ('WHERE a.patient_no = %s', [patient_no]) if patient_no else ('', [])
+    cur.execute(
+        'SELECT a.id, a.patient_no, p.name, a.device_id, a.alarm_type, a.severity, a.status, '
+        'a.occurred_at, a.created_at, a.lat, a.lng, '
+        '(SELECT COUNT(*) FROM platform_followup_log f WHERE f.alarm_id = a.id) AS followup_count '
+        'FROM platform_alarm a LEFT JOIN platform_patient p ON p.patient_no = a.patient_no '
+        + where + ' ORDER BY a.occurred_at DESC, a.id DESC', params)
+    header = ['报警ID', '门诊号', '姓名', '设备号', '报警类型', '严重度', '状态',
+              '发生时间', '入库时间', '纬度', '经度', '处理次数']
+    return header, [list(r) for r in cur.fetchall()]
+
+
+def _export_followups(cur, patient_no):
+    where, params = ('WHERE f.patient_no = %s', [patient_no]) if patient_no else ('', [])
+    cur.execute(
+        'SELECT f.id, f.patient_no, p.name, f.action, f.result_text, f.operator, '
+        'f.alarm_id, f.plan_id, pl.name, f.created_at '
+        'FROM platform_followup_log f '
+        'LEFT JOIN platform_patient p ON p.patient_no = f.patient_no '
+        'LEFT JOIN platform_plan pl ON pl.id = f.plan_id '
+        + where + ' ORDER BY f.created_at DESC, f.id DESC', params)
+    header = ['记录ID', '门诊号', '姓名', '动作', '结果文本', '操作人',
+              '关联报警ID', '关联计划ID', '计划名', '记录时间']
+    return header, [list(r) for r in cur.fetchall()]
+
+
+def _export_plans(cur, patient_no):
+    where, params = ('WHERE pl.patient_no = %s', [patient_no]) if patient_no else ('', [])
+    cur.execute(
+        'SELECT pl.id, pl.patient_no, p.name, pl.name, pl.frequency_days, pl.next_due, '
+        'pl.active, pl.note, pl.created_at, pl.updated_at '
+        'FROM platform_plan pl LEFT JOIN platform_patient p ON p.patient_no = pl.patient_no '
+        + where + ' ORDER BY pl.active DESC, pl.next_due', params)
+    header = ['计划ID', '门诊号', '姓名', '计划名', '周期天数(空=一次性)', '下次到期',
+              '启用中(1是/0否)', '备注', '创建时间', '更新时间']
+    return header, [list(r) for r in cur.fetchall()]
+
+
+_VITAL_FIELDS = ('hr_avg', 'hr_min', 'hr_max', 'spo2_avg', 'spo2_min', 'spo2_max',
+                 'sbp', 'dbp', 'temperature', 'step')
+
+
+def _export_vitals(cur, patient_no, days):
+    """跨链路体征日聚合摊平成长表: 一行 = 一个患者 × 一天 × 一条链路。
+
+    性能取舍: S101 日聚合 (_s101_patient_vitals) 每调一次就全表扫一遍
+    wearable_device_data 的大 JSON, 所以这里先用 _s101_scan_by_patient() 扫一次拿到
+    "哪些门诊号有 S101 数据", 只对命中的患者调日聚合 —— 生产上多数患者没有 S101 链路,
+    这一步把 N 次全表扫降到 1 + (有 S101 数据的患者数) 次。队列规模上到几十人以后
+    仍需把 S101 聚合改成一次扫描分桶, 那是比本次导出更大的改动, 不在 M6 范围内。
+    """
+    where, params = ('WHERE p.patient_no = %s', [patient_no]) if patient_no else ('', [])
+    cur.execute(
+        'SELECT p.patient_no, p.name, '
+        '(SELECT d.device_id FROM iwown_device d WHERE d.patient_no = p.patient_no '
+        ' ORDER BY d.last_seen DESC LIMIT 1) AS iwown_device_id '
+        'FROM platform_patient p ' + where + ' ORDER BY p.patient_no', params)
+    patients = cur.fetchall()
+
+    s101_present = _s101_scan_by_patient()
+
+    rows = []
+    for (p_no, name, dev) in patients:
+        if dev:
+            for d in (_iwown_daily_vitals(dev, days=days).get('daily') or []):
+                rows.append([p_no, name, 'iwown', d.get('date')] +
+                            [d.get(f) for f in _VITAL_FIELDS])
+        if p_no in s101_present:
+            for d in (_s101_patient_vitals(p_no, days=days).get('daily') or []):
+                rows.append([p_no, name, 'S101/R04', d.get('date')] +
+                            [d.get(f) for f in _VITAL_FIELDS])
+    rows.sort(key=lambda r: (str(r[0]), str(r[3]), str(r[2])))
+    header = ['门诊号', '姓名', '数据链路', '日期', '心率均值', '心率最低', '心率最高',
+              '血氧均值', '血氧最低', '血氧最高', '收缩压', '舒张压', '体温', '步数']
+    return header, rows
+
+
+def platform_export(kind, patient_no=None, days=90):
+    """导出一种(或全部)数据集。
+
+    返回 (body_bytes, filename, mimetype, err)。kind='all' 打成一个 zip, 内含 5 个 CSV ——
+    研究者要的通常是"把整个队列拿走", 分 5 次点按钮不合理。
+    """
+    if kind != 'all' and kind not in EXPORT_KINDS:
+        return None, None, None, 'kind 必须是 {} 或 all'.format('/'.join(EXPORT_KINDS))
+    stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        def build(k):
+            if k == 'patients':
+                return _export_patients(cur, patient_no)
+            if k == 'alarms':
+                return _export_alarms(cur, patient_no)
+            if k == 'followups':
+                return _export_followups(cur, patient_no)
+            if k == 'plans':
+                return _export_plans(cur, patient_no)
+            return _export_vitals(cur, patient_no, days)
+
+        scope = ('-' + re.sub(r'[^0-9A-Za-z_-]', '', str(patient_no))) if patient_no else ''
+        if kind == 'all':
+            zbuf = io.BytesIO()
+            with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for k in EXPORT_KINDS:
+                    header, rows = build(k)
+                    zf.writestr('{}-{}.csv'.format(k, EXPORT_KIND_LABELS[k]),
+                                _csv_bytes(header, rows))
+            cur.close()
+            return (zbuf.getvalue(),
+                    '随访平台队列导出{}-{}.zip'.format(scope, stamp),
+                    'application/zip', None)
+
+        header, rows = build(kind)
+        cur.close()
+        return (_csv_bytes(header, rows),
+                '随访平台-{}{}-{}.csv'.format(EXPORT_KIND_LABELS[kind], scope, stamp),
+                'text/csv; charset=utf-8', None)
+    except Exception as e:
+        traceback.print_exc()
+        return None, None, None, str(e)
+    finally:
+        conn.close()
+
+
 def platform_auto_ingest_loop(interval_min):
     """随访平台 M4: 报警自动摄入后台线程 (design doc §3.4 提到的自动化 ingest, 替代人工点
-    "拉取新报警"按钮)。每 interval_min 分钟调用一次 platform_alarm_ingest() —— 与
-    POST /api/platform/alarm/ingest 端点复用同一份核心函数, 端点仍保留、仍走 token 门禁,
-    这个线程只是定时帮你点一次。只有 inserted>0 或抛异常时才打印一行日志(避免刷屏);
-    任何异常都在本轮内 catch 住继续下一轮, 绝不能让线程挂掉导致自动摄入从此停摆。
+    "拉取新报警"按钮)。每 interval_min 分钟跑两件事 —— 都与各自的 POST 端点复用同一份
+    核心函数, 端点仍保留、仍走 token 门禁, 这个线程只是定时帮你点一次:
+      1) platform_alarm_ingest()      iwown 4G 设备侧报警帧的解码归类 (M2)
+      2) platform_vital_alarm_ingest() S101 体征阈值/趋势 + 脉诊仪新报告 (M7)
+    只有 inserted>0 或抛异常时才打印一行日志(避免刷屏); 两件事各自 catch, 一件出错不影响
+    另一件; 任何异常都在本轮内吞掉继续下一轮, 绝不能让线程挂掉导致自动摄入从此停摆。
     """
     while True:
         time.sleep(max(1, interval_min) * 60)
@@ -1850,6 +2524,18 @@ def platform_auto_ingest_loop(interval_min):
         except Exception as e:
             # catch-all: 任何异常都不能让这个 daemon 线程退出
             print('[自动摄入] 线程内异常(已捕获, 继续下一轮):', e)
+        try:
+            # 判定窗口固定 1 天: 这个循环每 interval_min 分钟就跑一次, 只需要覆盖当天的新数据,
+            # 幂等键保证同一采样点重复判定不会重复入库。补历史要用 POST 端点手动传大 days。
+            result, err = platform_vital_alarm_ingest(days=1)
+            if err:
+                print('[自动摄入] platform_vital_alarm_ingest 出错:', err)
+            elif result and result.get('inserted', 0) > 0:
+                print('[自动摄入] M7 体征判定新增 {} 条 (阈值 {} / 趋势 {} / 脉诊 {})'.format(
+                    result['inserted'], result['detail']['s101_threshold'],
+                    result['detail']['s101_trend'], result['detail']['zhenmaiyi']))
+        except Exception as e:
+            print('[自动摄入] M7 线程内异常(已捕获, 继续下一轮):', e)
 
 
 # ============ HTTP Handler ============
@@ -1870,6 +2556,34 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         self.send_header('Vary', 'Accept-Encoding')
         accept_enc = (self.headers.get('Accept-Encoding') or '').lower()
         if 'gzip' in accept_enc and len(body) > 1024:
+            body = gzip.compress(body, compresslevel=6)
+            self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Content-Length', len(body))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_download(self, body, filename, mimetype):
+        """M6 导出: 附件下载响应。
+
+        文件名是中文, 必须走 RFC 5987 的 filename*=UTF-8''<percent-encoded> —— 裸中文放
+        filename= 会被浏览器按 latin-1 解成乱码。同时保留一个 ASCII 版 filename= 作为
+        老客户端兜底。Content-Disposition 要进 Access-Control-Expose-Headers, 否则跨域
+        (GitHub Pages -> dc.ncrc.org.cn) 的前端 JS 读不到文件名。
+        zip 已经是压缩流, 不再叠 gzip; CSV 走和 _send_json 同一档的 gzip 阈值。
+        """
+        ascii_name = re.sub(r'[^0-9A-Za-z._-]', '_', filename) or 'export'
+        self.send_response(200)
+        self.send_header('Content-Type', mimetype)
+        self.send_header('Content-Disposition',
+                         "attachment; filename=\"{}\"; filename*=UTF-8''{}".format(
+                             ascii_name, urllib.parse.quote(filename, safe='')))
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Platform-Token')
+        self.send_header('Access-Control-Expose-Headers', 'Content-Disposition')
+        self.send_header('Vary', 'Accept-Encoding')
+        accept_enc = (self.headers.get('Accept-Encoding') or '').lower()
+        if mimetype != 'application/zip' and 'gzip' in accept_enc and len(body) > 1024:
             body = gzip.compress(body, compresslevel=6)
             self.send_header('Content-Encoding', 'gzip')
         self.send_header('Content-Length', len(body))
@@ -2342,6 +3056,23 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json(200, result)
 
+        elif pathname == '/api/platform/export':
+            # 随访平台 M6: 队列数据导出 (CSV / 全量 zip)。整队列 PHI 批量拉取, 走写接口同款
+            # token 门禁 —— 这是平台上唯一一个需要鉴权的 GET。
+            if not check_platform_token(self):
+                return
+            kind = (query.get('kind') or ['all'])[0]
+            patient_no = (query.get('patientNo') or [None])[0]
+            try:
+                days = max(1, min(3650, int((query.get('days') or ['90'])[0])))
+            except (ValueError, TypeError):
+                days = 90
+            body, filename, mimetype, err = platform_export(kind, patient_no=patient_no, days=days)
+            if err:
+                self._send_json(400 if 'kind' in err else 500, {'ok': False, 'error': err})
+            else:
+                self._send_download(body, filename, mimetype)
+
         else:
             self._send_json(200, {
                 'service': '智能随访-可穿戴设备数据接收服务',
@@ -2364,12 +3095,14 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/patient/vitals?patientNo=&days=': '随访平台 M1: 单患者跨链路体征日聚合',
                     'GET  /api/platform/alarms?status=&patientNo=&limit=': '随访平台 M2: 报警工作台列表 (status 支持 open meta 值)',
                     'POST /api/platform/alarm/ingest': '随访平台 M2: 扫 iwown_data alarm 行 -> platform_alarm (幂等; 也被自动摄入线程定时调用)',
+                    'POST /api/platform/alarm/vital-ingest': '随访平台 M7: S101 体征阈值/趋势判定 + 脉诊仪新报告 -> platform_alarm (幂等; {days:1..365}, 自动摄入线程按 days=1 定时调用)',
                     'POST /api/platform/alarm/transition': "随访平台 M2: 报警状态流转 {alarm_id, action:'ack'|'call'|'visit'|'note'|'close', result_text, operator}",
                     'GET  /api/platform/compliance?patientNo=&days=': '随访平台 M4: 单患者每日佩戴率 + 未佩戴报警标注',
                     'GET  /api/platform/plans?patientNo=&active=': '随访平台 M5: 随访计划列表',
                     'POST /api/platform/plan': "随访平台 M5: 建/改随访计划 {id?, patient_no, name, frequency_days|null, next_due, active?, note?}",
                     'GET  /api/platform/tasks?horizon_days=7': '随访平台 M5: 今日待办任务 (从计划现算, overdue 在前)',
                     'POST /api/platform/task/complete': "随访平台 M5: 完成任务 {plan_id, method:'call'|'visit'|'note', result_text, operator}",
+                    'GET  /api/platform/export?kind=&patientNo=&days=': '随访平台 M6: 队列数据导出 (kind=patients/vitals/alarms/followups/plans 出 CSV, kind=all 出 zip; 需 X-Platform-Token)',
                 },
             })
 
@@ -2510,6 +3243,26 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json(200, result)
 
+            elif pathname == '/api/platform/alarm/vital-ingest':
+                if not check_platform_token(self):
+                    return
+                # days: 判定窗口。自动摄入线程走 days=1 只判当天; 这个端点给的是补历史/演示的
+                # 手动入口(如首次上线时 days=30 把近一个月的越限与趋势异常一次性判出来)。
+                # 上限 365: 再大就该走离线批处理, 不该占着一个 HTTP 请求全表扫。
+                try:
+                    days = int(body.get('days') or 7)
+                except (TypeError, ValueError):
+                    self._send_json(400, {'ok': False, 'error': 'days 必须是整数'})
+                    return
+                if not 1 <= days <= 365:
+                    self._send_json(400, {'ok': False, 'error': 'days 必须在 1..365 之间'})
+                    return
+                result, err = platform_vital_alarm_ingest(days=days)
+                if err:
+                    self._send_json(500, {'ok': False, 'error': err})
+                else:
+                    self._send_json(200, result)
+
             elif pathname == '/api/platform/alarm/transition':
                 if not check_platform_token(self):
                     return
@@ -2579,6 +3332,8 @@ if __name__ == '__main__':
         ensure_platform_tables()
         # M5 性能修复: 确保 platform_followup_log.idx_plan 索引存在 (idempotent, 老库需要 ALTER 补齐)
         ensure_followup_log_plan_index()
+        # M7: 确保 platform_alarm 有 source_chain/dedup_key 两列 (idempotent, 老库需要 ALTER 补齐)
+        ensure_platform_alarm_m7_columns()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -2626,6 +3381,7 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/bind                   随访平台 M1: 绑定/解绑 iwown|zhenmaiyi')
     print('[端点] GET  /api/platform/patient/vitals         随访平台 M1: 单患者跨链路体征日聚合')
     print('[端点] POST /api/platform/alarm/ingest            随访平台 M2: iwown 报警行 -> platform_alarm (幂等)')
+    print('[端点] POST /api/platform/alarm/vital-ingest      随访平台 M7: S101 阈值/趋势 + 脉诊仪报告 -> platform_alarm (幂等)')
     print('[端点] GET  /api/platform/alarms                  随访平台 M2: 报警工作台列表')
     print('[端点] POST /api/platform/alarm/transition        随访平台 M2: 报警状态流转 (state machine)')
     print('[端点] GET  /api/platform/compliance              随访平台 M4: 单患者每日佩戴率')
