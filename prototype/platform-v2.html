@@ -426,7 +426,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>必填 / 数值范围 / 格式校验</td><td><span class="tag green">已建</span></td><td>身份证走 MOD 11-2 校验位，不只是正则——相邻两位打颠倒能抓出来</td></tr>
               <tr><td>强校验阻断 / 弱校验提示两档</td><td><span class="tag green">已建</span></td><td>规则表 QC_RULES 统一定档，不由各判定点自己拍</td></tr>
               <tr><td>历次随访数据自动对比、差异标红</td><td><span class="tag green">已建</span></td><td>逐题矩阵 + 变化标记；含「逐题完全一致」检测</td></tr>
-              <tr><td>对比结果导出</td><td><span class="tag amber">部分</span></td><td>接口已返回完整对比矩阵，导出成文件的按钮还没做</td></tr>
+              <tr><td>对比结果导出</td><td><span class="tag green">已建</span></td><td>对比抽屉里导出 CSV（UTF-8 BOM，Excel 直读）；变化的格子在文件里缀「←变化」，拿到文件的人不用记得屏幕上哪几格是红的</td></tr>
               <tr><td>质疑—核查—修正闭环，全程留痕</td><td><span class="tag green">已建</span></td><td>raise/answer/close/reopen 四步，每步追一行只增不改的日志</td></tr>
               <tr><td>单位级 / 数据库级两级质控员 + 第三方稽查员</td><td><span class="tag amber">部分</span></td><td><b>角色只记录、不鉴权</b>——平台还没有账号体系，任何人都能写任意角色。要满足 GCP 权责分离必须先做鉴权</td></tr>
               <tr><td>修改留痕：改前改后值、历史版本、回退</td><td><span class="tag amber">部分</span></td><td>量表填报已是「新增一条 + 旧版标 superseded」，历史版查得到；但还没有回退操作，其他数据类型也没接</td></tr>
@@ -628,7 +628,7 @@ const S = {
   ctab: 'pending', candSel: new Set(),
   scales: [], responses: [], scaleCache: {}, fillCode: null, fillRevision: null,
   parseFile: null, draft: null,
-  qcFindings: [], qcQueries: [],
+  qcFindings: [], qcQueries: [], cmpData: null,
 };
 
 /* ================================================================ 导航 */
@@ -1875,11 +1875,52 @@ function renderCompare(d, c) {
       (r.delta > 0 ? '+' : '') + r.delta + '</span>') + '</td>').join('') + '</tr>';
   const chg = '<tr><td style="color:#82909c">本次相对上次有变化的题数</td>' + d.rounds.map((r, i) =>
     '<td style="color:#82909c">' + (i === 0 ? '—' : r.changed_items + ' / ' + d.total_items) + '</td>').join('') + '</tr>';
+  S.cmpData = { d: d, c: c };
   openDrawer('历次对比 · ' + (c.name || c.patient_no), c.scale + '（' + c.code + '）· 共 ' + d.rounds.length + ' 次填报',
     '<div class="note-strip">红色格子 = 该题与上一次不同；灰色 = 该题历次从未变过。'+
       '一份量表整体<b>全灰</b>值得留意——可能是没有真的重新评估，而是沿用了上次结果。</div>'+
     '<div class="table-wrap"><table class="cmp-tbl">'+
-      '<thead>' + head + '</thead><tbody>' + totals + chg + body + '</tbody></table></div>', '');
+      '<thead>' + head + '</thead><tbody>' + totals + chg + body + '</tbody></table></div>',
+    '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+    '<button class="primary" id="cmpExport">导出对比结果 CSV</button>');
+  document.getElementById('cmpExport').onclick = exportCompare;
+}
+
+/* 方案 §4.3(1) 明写"支持对比结果导出"。在浏览器本地拼 CSV, 不再打一次接口 ——
+   屏幕上看到的和导出的必须是同一份数据, 重新取一次就可能对不上(中间有人改了数据,
+   或者筛选条件没带全), 而拿导出文件去核对的人不会知道这件事。 */
+function exportCompare() {
+  const st = S.cmpData;
+  if (!st) return;
+  const d = st.d, c = st.c;
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const rows = [];
+  rows.push(['患者', c.name || '', '门诊号', c.patient_no, '量表', c.scale, '编码', c.code].map(q).join(','));
+  rows.push([]);
+  rows.push(['题目'].concat(d.rounds.map((r, i) => '第 ' + (i + 1) + ' 次 ' + r.at)).map(q).join(','));
+  rows.push(['总分'].concat(d.rounds.map(r =>
+    (r.total == null ? '' : r.total) + (r.delta == null ? '' : ' (' + (r.delta > 0 ? '+' : '') + r.delta + ')')
+  )).map(q).join(','));
+  rows.push(['相对上次变化题数'].concat(d.rounds.map((r, i) =>
+    i === 0 ? '—' : r.changed_items + '/' + d.total_items)).map(q).join(','));
+  rows.push(['填报人'].concat(d.rounds.map(r => r.operator || '')).map(q).join(','));
+  rows.push([]);
+  d.items.forEach(m => {
+    // 变化的格子在 CSV 里没法标红, 改成在值后面缀 ← 标记 —— 导出件要能独立看懂,
+    // 不能默认拿到文件的人还记得屏幕上哪几格是红的。
+    rows.push([m.text || m.item_id].concat(m.values.map((v, i) =>
+      (m.labels[i] == null ? '' : m.labels[i]) + (m.changed[i] ? ' ←变化' : ''))).map(q).join(','));
+  });
+  rows.push([]);
+  rows.push([q('说明：←变化 = 该题与上一次填报不同；空白 = 该次未作答。导出时间 ' + new Date().toLocaleString('zh-CN'))].join(','));
+  // BOM: Excel 不认没有 BOM 的 UTF-8, 中文会变乱码
+  const blob = new Blob(['﻿' + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '历次对比_' + (c.name || c.patient_no) + '_' + c.code + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('已导出 ' + d.items.length + ' 题 × ' + d.rounds.length + ' 次的对比结果');
 }
 
 /* ---- M12: AI 生成量表 (方案 §2.2(2)) ----
