@@ -341,6 +341,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         <div class="module-hero">
           <div><h2>随访资料准备</h2><p>方案阶段一：CRF 表单 · 量表体系 · 宣教材料 · 知情同意</p></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="white-btn" id="eduGenBtn">▧ 生成宣教稿</button>
             <button class="white-btn" id="crfGenBtn">▤ AI 生成 CRF</button>
             <button class="white-btn" id="crfExcelBtn">⇱ Excel 建表</button>
             <button class="white-btn" id="scaleGenBtn">✦ AI 生成量表</button>
@@ -351,13 +352,14 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         <div class="asset-grid">
           <div class="card asset"><div class="big-icon">▤</div><h3>智能 CRF 表单</h3><p>8 种基本题型 + 4 种表格题型 · 逻辑显隐/启禁/自动设值/互斥 · 破坏性改动自动开新版</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="crfCardN">--</small></div></div>
           <div class="card asset"><div class="big-icon">◈</div><h3>专业量表库</h3><p>题型配置 · 评分规则 · 分量表 · 划界值分级 · 字段映射 · 医护填报与患者自评</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="scaleCardN">--</small></div></div>
-          <div class="card asset"><div class="big-icon">▧</div><h3>宣教材料库</h3><p>按病种、病程和人群生成个性化患教内容</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.3 · 2 个功能点</small></div></div>
+          <div class="card asset"><div class="big-icon">▧</div><h3>宣教材料库</h3><p>按病种/病程/主题生成 · 内容体检 · 审核后才能发布给患者</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="eduCardN">--</small></div></div>
           <div class="card asset"><div class="big-icon">✎</div><h3>知情与项目资料</h3><p>电子签署、版本管理、权限管控与全周期留痕</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.4 · 2 个功能点</small></div></div>
         </div>
 
         <div class="tabs" style="margin-top:18px">
           <button class="tab active" data-stab="lib">量表库 <span id="tabScaleN">0</span></button>
           <button class="tab" data-stab="crf">CRF 表单库 <span id="tabCrfN">0</span></button>
+          <button class="tab" data-stab="edu">宣教材料 <span id="tabEduN">0</span></button>
           <button class="tab" data-stab="resp">填报记录 <span id="tabRespN">0</span></button>
         </div>
         <div id="stabLib">
@@ -391,6 +393,34 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>字段与临床数据元映射</td><td><span class="tag grey">未建设</span></td><td>需要一套院内数据元字典做对照，目前没有</td></tr>
               <tr><td>实时备份</td><td><span class="tag grey">未建设</span></td><td>历史版本查得到，但没有定时快照与一键回滚</td></tr>
               <tr><td>附带音视频指导文件</td><td><span class="tag grey">未建设</span></td><td>表结构留了 media 字段，还没有上传与播放</td></tr>
+            </tbody></table></div>
+          </div>
+        </div>
+        <div id="stabEdu" style="display:none">
+          <div class="note-strip">
+            <b>这里的产出是直接推给患者的，所以规矩比别处严。</b>
+            CRF 和量表生成得不好，医护当场就发现不合用；宣教材料患者没有能力判断对错，而且多半会照做。
+            所以：AI 产出<b>一律是草稿</b>，必须有人署名审核发布后才能被随访计划调用；
+            剂量数字、「可自行停药」、「不必就医」这三类会被标成高危，发布时必须逐条确认。
+          </div>
+          <div class="head-tools" style="margin-bottom:12px">
+            <select id="eduStatus" class="mini"><option value="">全部状态</option><option value="reviewing">待审核</option><option value="draft">草稿</option><option value="published">已发布</option><option value="archived">已归档</option></select>
+            <select id="eduTopic" class="mini"><option value="">全部主题</option><option value="disease">疾病知识</option><option value="medication">用药指导</option><option value="rehab">康复训练</option><option value="diet">饮食调理</option><option value="psych">心理调节</option><option value="other">其他</option></select>
+            <input id="eduQ" class="mini" placeholder="按标题/标签搜索" style="min-width:160px">
+            <button class="link" id="eduReload">刷新</button>
+          </div>
+          <div class="rows" id="eduWrap"><div class="loading">加载中…</div></div>
+          <div class="card panel" style="margin-top:16px">
+            <div class="panel-head"><h3>方案 §2.3 逐条对照</h3></div>
+            <div class="table-wrap"><table><thead><tr><th>要求</th><th>状态</th><th>说明</th></tr></thead><tbody>
+              <tr><td>按病种/病程阶段生成宣教内容</td><td><span class="tag amber">部分</span></td><td>本地模板生成结构骨架（含强制的「什么情况下必须联系医生」一节）；医学内容须临床方填写，接大模型需服务器另配</td></tr>
+              <tr><td>文章 / 图文科普 / 视频脚本三种形态</td><td><span class="tag green">已建</span></td><td>视频脚本按镜头分节</td></tr>
+              <tr><td>覆盖疾病知识/用药/康复/饮食/心理五个方向</td><td><span class="tag green">已建</span></td><td>每个方向有各自的章节骨架</td></tr>
+              <tr><td>分类标签化管理、按场景/病种快速调用</td><td><span class="tag green">已建</span></td><td>按状态/主题/病种/关键词检索</td></tr>
+              <tr><td>共享复用与权限控制</td><td><span class="tag amber">部分</span></td><td>私有/院内共享已分，但<b>权限不鉴权</b>——平台还没有账号体系</td></tr>
+              <tr><td>内容安全把关</td><td><span class="tag green">已建</span></td><td>方案没写这一条，是我们加的：剂量/用药调整/劝阻就医三类高危表述在入库时就标出，发布必须逐条确认</td></tr>
+              <tr><td>文本编辑、内容布局调整</td><td><span class="tag amber">部分</span></td><td>纯文本编辑已通；富文本排版与图片上传未建</td></tr>
+              <tr><td>推送给患者</td><td><span class="tag grey">未建设</span></td><td>材料库已通，但还没有接到随访计划的推送动作上</td></tr>
             </tbody></table></div>
           </div>
         </div>
@@ -659,6 +689,7 @@ const S = {
   parseFile: null, draft: null,
   qcFindings: [], qcQueries: [], cmpData: null,
   crfs: [], crfFill: null, crfDraft: null,
+  edu: [], eduDraft: null,
 };
 
 /* ================================================================ 导航 */
@@ -672,7 +703,7 @@ function goto(page) {
   if (page === 'plans') loadPlans();
   if (page === 'analytics') loadAnalytics();
   if (page === 'settings') fillSettings();
-  if (page === 'assets') { loadScales(); loadResponses(); loadCrfs(); }
+  if (page === 'assets') { loadScales(); loadResponses(); loadCrfs(); loadEdu(); }
   if (page === 'quality') loadQuality();
 }
 document.addEventListener('click', e => {
@@ -2178,10 +2209,242 @@ document.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => {
   document.querySelectorAll('[data-stab]').forEach(x => x.classList.toggle('active', x === b));
   document.getElementById('stabLib').style.display = t === 'lib' ? '' : 'none';
   document.getElementById('stabCrf').style.display = t === 'crf' ? '' : 'none';
+  document.getElementById('stabEdu').style.display = t === 'edu' ? '' : 'none';
   document.getElementById('stabResp').style.display = t === 'resp' ? '' : 'none';
   if (t === 'resp') loadResponses();
   if (t === 'crf') loadCrfs();
+  if (t === 'edu') loadEdu();
 });
+
+/* ================================================================ M15 宣教材料库 (方案 §2.3)
+
+   界面上把"内容体检结果"顶在最显眼的位置, 而不是折叠起来 —— 这块的产出会被
+   推给几百个患者, 而他们多半会照做。审核的人必须先看到"这稿里有 3 处剂量数字",
+   再决定要不要发。折起来等于默认没人看。                                        */
+const EDU_STATUS_TAG = { draft: 'tag grey', reviewing: 'tag orange',
+                         published: 'tag green', archived: 'tag grey' };
+const EDU_LEVEL_TAG = { block: 'tag red', warn: 'tag orange' };
+const EDU_ACTION_LABEL = { create: '创建', edit: '修改', submit: '提交审核',
+                           publish: '审核发布', reject: '退回', archive: '归档' };
+
+async function loadEdu() {
+  const wrap = document.getElementById('eduWrap');
+  try {
+    const qs = [];
+    const st = document.getElementById('eduStatus').value;
+    const tp = document.getElementById('eduTopic').value;
+    const kw = document.getElementById('eduQ').value.trim();
+    if (st) qs.push('status=' + st);
+    if (tp) qs.push('topic=' + tp);
+    if (kw) qs.push('q=' + encodeURIComponent(kw));
+    const d = await getJSON('/api/platform/edu?limit=200' + (qs.length ? '&' + qs.join('&') : ''));
+    S.edu = d.materials || [];
+    document.getElementById('tabEduN').textContent = S.edu.length;
+    const card = document.getElementById('eduCardN');
+    if (card) card.textContent = S.edu.length ? S.edu.length + ' 份材料' : '暂无材料';
+    wrap.innerHTML = S.edu.length ? S.edu.map(m =>
+      '<div class="row-card row-plan">'+
+        '<div><span class="strong">'+esc(m.title)+'</span><span class="sub">'+esc(m.code)+' v'+esc(m.version)+'</span></div>'+
+        '<div>'+esc(m.topic_label)+'<span class="sub">'+esc(m.format_label)+
+          (m.category ? ' · '+esc(m.category) : '')+(m.stage ? ' · '+esc(m.stage) : '')+'</span></div>'+
+        '<div><span class="'+(EDU_STATUS_TAG[m.status] || 'tag grey')+'">'+esc(m.status_label)+'</span>'+
+          (m.blocking_findings ? '<span class="tag red" style="margin-left:5px">'+m.blocking_findings+' 处高危</span>' : '')+
+          '<span class="sub">'+(m.source === 'ai' ? 'AI 生成' : '手工撰写')+' · '+esc(m.owner || '未署名')+'</span></div>'+
+        '<div>'+(m.reviewed_by ? '审核：'+esc(m.reviewed_by) : '<span style="color:#9ca3af">未审核</span>')+
+          '<span class="sub">'+esc(m.reviewed_at || m.updated_at || '')+'</span></div>'+
+        '<div><button class="secondary" onclick="viewEdu('+m.id+')">查看 / 审核</button></div>'+
+      '</div>').join('')
+      : emptyBox('▧', '还没有宣教材料', '点右上角「生成宣教稿」，或手工撰写后导入。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+['eduStatus', 'eduTopic'].forEach(id => document.getElementById(id).onchange = loadEdu);
+document.getElementById('eduReload').onclick = loadEdu;
+let eduSearchTimer = null;
+document.getElementById('eduQ').oninput = () => {
+  clearTimeout(eduSearchTimer); eduSearchTimer = setTimeout(loadEdu, 400);
+};
+
+function eduFindingsHtml(fs) {
+  if (!fs || !fs.length) return '<div class="note-strip">内容体检未发现高危表述。仍请通读全文——'+
+    '体检只能抓出已知的几类模式，抓不出"这段医学内容本身是错的"。</div>';
+  const blk = fs.filter(f => f.level === 'block');
+  return '<div class="err" style="margin-bottom:12px"><b>内容体检：'+
+    (blk.length ? blk.length + ' 处高危 + ' : '') + (fs.length - blk.length) + ' 处提示</b><br>'+
+    '这份材料会被推给患者，他们没有能力判断内容对不对，而且多半会照做。请逐条确认：</div>'+
+    '<div class="rows">' + fs.map(f =>
+      '<div class="qc-item '+(f.level === 'block' ? 'block' : 'warn')+'">'+
+        '<div class="qc-head"><span class="'+(EDU_LEVEL_TAG[f.level] || 'tag grey')+'">'+
+          (f.level === 'block' ? '高危' : '提示')+'</span>'+
+          '<b>命中「'+esc(f.matched)+'」</b></div>'+
+        '<div class="qc-detail">'+esc(f.why)+'</div>'+
+        '<div class="qc-basis">原文：'+esc(f.excerpt)+'</div>'+
+      '</div>').join('') + '</div>';
+}
+
+async function viewEdu(id) {
+  try {
+    const d = await getJSON('/api/platform/edu?id=' + id);
+    if (!d.materials.length) { toast('材料不存在'); return; }
+    const m = d.materials[0];
+    let h = '<div class="detail-card">'+
+      '<div class="detail-row"><span>编码 · 版本</span><b>'+esc(m.code)+' v'+esc(m.version)+'</b></div>'+
+      '<div class="detail-row"><span>主题 · 形态</span><b>'+esc(m.topic_label)+' · '+esc(m.format_label)+'</b></div>'+
+      '<div class="detail-row"><span>状态</span><b>'+esc(m.status_label)+'</b></div>'+
+      (m.reviewed_by ? '<div class="detail-row"><span>审核</span><b>'+esc(m.reviewed_by)+' · '+
+        esc(m.reviewed_at || '')+'</b></div>' : '')+
+      (m.review_note ? '<div class="detail-row"><span>审核意见</span><b style="font-weight:400">'+
+        esc(m.review_note)+'</b></div>' : '')+
+      '</div>';
+    h += '<h4 style="margin:16px 0 8px">内容体检</h4>' + eduFindingsHtml(m.content_findings);
+    h += '<h4 style="margin:18px 0 8px">正文</h4>'+
+      '<textarea id="eduBody" style="height:260px;font-family:inherit;line-height:1.8">'+esc(m.body || '')+'</textarea>'+
+      '<div class="qc-meta"><span>改完点「保存改动」会重新体检；已发布的材料改内容会自动开新版，'+
+      '因为患者手里的那一版不能被悄悄替换。</span></div>';
+    if ((m.log || []).length) {
+      h += '<h4 style="margin:18px 0 8px">流转留痕</h4><ul class="qc-log">'+
+        m.log.map(l => '<li><b>'+esc(EDU_ACTION_LABEL[l.action] || l.action)+'</b> · '+
+          esc(l.operator || '未署名')+' · '+esc(l.at)+
+          (l.note ? '<br><span style="color:#82909c">'+esc(l.note)+'</span>' : '')+'</li>').join('')+'</ul>';
+    }
+    const acts = ['<button class="secondary" onclick="saveEduBody('+m.id+',\''+esc(m.code)+'\',\''+esc(m.version)+'\')">保存改动</button>'];
+    if (m.status === 'draft') acts.push('<button class="secondary" onclick="eduGo('+m.id+',\'submit\')">提交审核</button>');
+    if (m.status === 'draft' || m.status === 'reviewing')
+      acts.push('<button class="primary" onclick="eduGo('+m.id+',\'publish\')">审核并发布</button>');
+    if (m.status === 'reviewing') acts.push('<button class="secondary" onclick="eduGo('+m.id+',\'reject\')">退回修改</button>');
+    if (m.status !== 'archived') acts.push('<button class="link" onclick="eduGo('+m.id+',\'archive\')">归档</button>');
+    openDrawer(m.title, esc(m.code) + ' · ' + (m.category || '未分类'), h, acts.join(''));
+  } catch (e) { toast('加载失败：' + e.message, 5000); }
+}
+
+async function saveEduBody(id, code, version) {
+  const m = (S.edu || []).find(x => x.id === id) || {};
+  const body = document.getElementById('eduBody').value;
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/edu/material', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code, version: version, title: m.title, body: body,
+        topic: m.topic, format: m.format, category: m.category, stage: m.stage,
+        tags: m.tags, scope: m.scope, owner: localStorage.getItem(LS_OP) || m.owner }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast('已保存 v' + d.version + (d.version !== version ? '（原版已发布，改动开了新版）' : '') +
+      (d.blocking_findings ? ' · 体检发现 ' + d.blocking_findings + ' 处高危' : ''), 6000);
+    await loadEdu();
+    viewEdu(d.id);
+  } catch (e) { toast('保存失败：' + e.message, 5000); }
+}
+
+async function eduGo(id, action, ack) {
+  const op = localStorage.getItem(LS_OP) || '';
+  if (action === 'publish' && !op) {
+    toast('发布要署名。请先到「系统管理」填写操作人姓名——这份材料要推给患者，得有人对它负责。', 7000);
+    return;
+  }
+  let note = '';
+  if (action === 'publish' || action === 'reject') {
+    note = prompt(action === 'publish' ? '审核意见（选填）：' : '退回原因：', '') || '';
+    if (action === 'reject' && !note.trim()) { toast('退回要写清楚原因'); return; }
+  }
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/edu/transition', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id, action: action, operator: op || null,
+                             note: note || null, ack_findings: ack === true }),
+    });
+    const d = await res.json();
+    if (d.published === false && d.blocking_findings) {
+      // 逐条摆在面前再问, 不做成一句轻飘飘的"确定吗?"
+      const txt = d.blocking_findings.map((f, i) =>
+        (i + 1) + '. 命中「' + f.matched + '」\n   ' + f.why + '\n   原文：' + f.excerpt).join('\n\n');
+      if (confirm(d.hint + '\n\n' + txt + '\n\n以上 ' + d.blocking_findings.length +
+                  ' 处均已逐条确认，仍要发布？')) {
+        return eduGo(id, action, true);
+      }
+      return;
+    }
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    closeDrawer();
+    toast('已从「' + esc(d.from) + '」推进到「' + esc(d.to) + '」' +
+      (d.acked_findings ? '（确认了 ' + d.acked_findings + ' 处高危表述）' : ''), 6000);
+    await loadEdu();
+  } catch (e) { toast(e.message, 6000); }
+}
+
+document.getElementById('eduGenBtn').onclick = () => {
+  openModal('生成宣教稿', '产出是草稿，必须经人工审核发布后才能推给患者',
+    '<div class="form-row">'+
+      '<div class="field"><label>病种</label><input id="egDisease" placeholder="例如：2型糖尿病"></div>'+
+      '<div class="field"><label>病程阶段<span class="sub">选填</span></label><input id="egStage" placeholder="例如：确诊初期"></div>'+
+    '</div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>主题方向</label><select id="egTopic">'+
+        '<option value="disease">疾病知识</option><option value="medication">用药指导</option>'+
+        '<option value="rehab">康复训练</option><option value="diet">饮食调理</option>'+
+        '<option value="psych">心理调节</option><option value="other">其他</option></select></div>'+
+      '<div class="field"><label>形态</label><select id="egFormat">'+
+        '<option value="article">健康宣教文章</option><option value="illustrated">图文科普</option>'+
+        '<option value="video_script">视频脚本</option></select></div>'+
+    '</div>'+
+    '<div class="err" style="margin-top:4px">生成的是<b>结构骨架</b>，医学内容留「待填写」由临床方写。'+
+      '这一节的内容会被患者当成医嘱照做，模板编不出也不该编——它只负责保证不漏掉'+
+      '「什么情况下必须联系医生」这一节。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="egGo">生成草稿</button>');
+  document.getElementById('egGo').onclick = async () => {
+    const btn = document.getElementById('egGo');
+    const disease = document.getElementById('egDisease').value.trim();
+    if (!disease) { toast('请填写病种'); return; }
+    btn.disabled = true; btn.textContent = '生成中…';
+    try {
+      const res = await fetch(API_BASE + '/api/platform/edu/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disease: disease, stage: document.getElementById('egStage').value.trim(),
+          topic: document.getElementById('egTopic').value,
+          format: document.getElementById('egFormat').value }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); reviewEduDraft(d.draft, d.report);
+    } catch (e) { btn.disabled = false; btn.textContent = '生成草稿'; toast('生成失败：' + e.message, 5000); }
+  };
+};
+
+function reviewEduDraft(draft, report) {
+  S.eduDraft = draft;
+  let h = '<div class="detail-card"><h4>生成结果概览</h4>'+
+    '<div class="detail-row"><span>生成后端</span><b>'+esc(report.backend)+'</b></div>'+
+    '<div class="detail-row"><span>章节数</span><b>'+report.section_count+'</b></div>'+
+    '<div class="detail-row"><span>字数</span><b>'+report.char_count+'</b></div>'+
+    '<div class="detail-row"><span>状态</span><b>草稿（不可直接发布）</b></div></div>';
+  h += '<h4 style="margin:16px 0 8px">说明</h4><ul class="qc-log">'+
+    report.notes.map(n => '<li><b>'+(n.confidence === 'high' ? '高' : n.confidence === 'medium' ? '中' : '低')+
+      '</b> '+esc(n.step)+'<br><span style="color:#4a5760">'+esc(n.detail)+'</span></li>').join('')+'</ul>';
+  h += '<h4 style="margin:18px 0 8px">内容体检</h4>' + eduFindingsHtml(report.content_findings);
+  h += '<h4 style="margin:18px 0 8px">标题与正文（请把【待填写】替换成实际内容）</h4>'+
+    '<div class="field"><label>标题</label><input id="edTitle" value="'+esc(draft.title)+'"></div>'+
+    '<textarea id="edBody" style="height:300px;font-family:inherit;line-height:1.8">'+esc(draft.body)+'</textarea>';
+  openDrawer('宣教草稿 · 待人工完善', '保存后仍是草稿，需另行审核发布', h,
+    '<button class="secondary" onclick="closeDrawer()">丢弃</button>'+
+    '<button class="primary" id="edSave">保存为草稿</button>');
+  document.getElementById('edSave').onclick = async () => {
+    const btn = document.getElementById('edSave'); btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/edu/material', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({}, draft, {
+          title: document.getElementById('edTitle').value.trim(),
+          body: document.getElementById('edBody').value,
+          owner: localStorage.getItem(LS_OP) || null })),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeDrawer();
+      toast('已存为草稿 ' + d.code + ' v' + d.version +
+        (d.blocking_findings ? ' · 体检发现 ' + d.blocking_findings + ' 处高危，发布前须逐条确认' : ''), 7000);
+      document.querySelector('[data-stab="edu"]').click();
+    } catch (e) { btn.disabled = false; btn.textContent = '保存为草稿'; toast('保存失败：' + e.message, 6000); }
+  };
+}
 
 /* ================================================================ M14 CRF 表单 (方案 §2.1) */
 const CRF_TYPE_LABEL = {

@@ -5082,6 +5082,450 @@ def query_crf_responses(patient_no=None, code=None, include_superseded=False, li
         conn.close()
 
 
+# ============ 随访平台 1.1 M15 (宣教材料库, 方案 §2.3) ============
+#
+# 这一块和前面几块有个本质区别, 必须先说清楚:
+#
+#   CRF / 量表 / 质控 的产出是给**医护**看的 —— 生成得不好, 医护当场就发现不合用。
+#   宣教材料的产出是直接推给**患者**的 —— 患者没有能力判断内容对不对, 而且他们
+#   多半会照做。一句"血压平稳后可自行减量"送到几百个随访患者手机上, 后果不是
+#   "内容质量差", 是有人真的把药停了。
+#
+# 所以这里的规矩比别处严:
+#   1. AI 产出一律是 draft, **必须**经人工审核置为 published 才能被随访计划调用;
+#      没有"生成即发布"这条路, 接口层面就没有。
+#   2. 生成时和提交审核时都跑一遍内容体检, 把剂量数字、用药指令、绝对化承诺、
+#      "不必就医"这类高危表述标出来, 让审核的人知道该重点看哪几句。
+#   3. 体检只标不删 —— 删了审核的人就看不到模型写了什么, 反而更危险。
+
+EDU_TOPICS = ('disease', 'medication', 'rehab', 'diet', 'psych', 'other')
+EDU_TOPIC_LABELS = {'disease': '疾病知识', 'medication': '用药指导', 'rehab': '康复训练',
+                    'diet': '饮食调理', 'psych': '心理调节', 'other': '其他'}
+EDU_FORMATS = ('article', 'illustrated', 'video_script')
+EDU_FORMAT_LABELS = {'article': '健康宣教文章', 'illustrated': '图文科普', 'video_script': '视频脚本'}
+EDU_STATUSES = ('draft', 'reviewing', 'published', 'archived')
+EDU_STATUS_LABELS = {'draft': '草稿', 'reviewing': '待审核', 'published': '已发布', 'archived': '已归档'}
+
+# 内容体检规则。level:
+#   block = 不该出现在群发给患者的材料里, 审核必须逐句确认
+#   warn  = 未必错, 但要人看一眼
+#
+# 这些不是"敏感词过滤"。判断依据是: 这句话被一个不具备医学判断力的患者照做之后,
+# 最坏会发生什么。剂量数字被照抄、"可自行停药"被当真, 都是能出人命的; 而
+# "多喝水"再啰嗦也不会。
+# 否定前缀。"不要自行调整用药" 是这条规则自己推荐的**正确**写法, 却和
+# "可自行调整用药" 命中同一个模式。不排掉的话, 规则会在它推荐的改法上报警 ——
+# 使用者试一次就学会了忽略这条规则, 那它对真正危险的那句也就不起作用了。
+_EDU_NEG = r'(不要|不可|不能|不得|不应|不宜|切勿|请勿|禁止|避免|严禁|勿|别|无需|不需|禁)\s*$'
+
+# 每条规则: (代码, 级别, 命中模式, 说明, 前置否定则跳过?)
+# 只有"动作类"的规则需要看否定 —— 剂量数字前面加个"不要"也还是剂量数字;
+# 而 no_care 那条本身就以否定词开头("不必就医"), 再排否定会把它自己排没。
+EDU_CONTENT_RULES = [
+    ('dosage', 'block', r'\d+\s*(mg|毫克|μg|微克|g\b|克|ml|毫升|IU|国际单位|片|粒|袋|支)\b',
+     '出现了具体剂量。群发材料里的剂量会被患者当成自己的用法 —— 剂量因人而异, '
+     '应改为"遵医嘱"或"按处方剂量", 具体数字放在一对一医嘱里', False),
+    ('med_change', 'block', r'(自行(停药|减量|加量|调整|换药)|可以?停药|停用|加大剂量|减半服用|加倍服用)',
+     '出现了调整用药的指示。患者据此擅自改药是随访中最常见的严重不良事件来源, '
+     '这类表述必须改成"如有不适请联系随访医生, 不要自行调整"', True),
+    ('no_care', 'block', r'(不必就医|无需就诊|不用去医院|不需要复查|可以不用管|观察即可)',
+     '出现了劝阻就医的表述。它会让本该及时就诊的患者在家里拖延', False),
+    ('absolute', 'warn', r'(一定能|保证|百分之百|百分百|完全根治|彻底治愈|绝对(安全|有效)|无副作用|没有副作用)',
+     '出现了绝对化承诺。医学结论几乎没有绝对, 这类话既不真实, 也会在预期落空时'
+     '摧毁患者对整个随访的信任', False),
+    ('diagnosis', 'warn', r'(您(患有|得了|确诊)|你(患有|得了|确诊)|诊断为|确诊为)',
+     '出现了诊断性断言。宣教材料是群发的, 不该对具体某个人下诊断', True),
+    ('emergency', 'warn', r'(胸痛|呼吸困难|意识不清|昏迷|大出血|抽搐|自杀|轻生)',
+     '提到了急症/危机情形。这类内容本身常常是必要的, 但必须同时给出明确的求助方式'
+     '(急救电话、随访医生联系方式), 只描述症状不给出路等于没写', False),
+]
+
+
+def scan_edu_content(text, title=''):
+    """宣教内容体检。返回 findings 列表, 每条带原文片段供审核者定位。
+
+    只标不删 —— 删掉的话审核的人根本看不到模型写了什么, 比留着更危险。
+    """
+    body = '{}\n{}'.format(title or '', text or '')
+    out = []
+    for code, level, pat, why, skip_negated in EDU_CONTENT_RULES:
+        for m in re.finditer(pat, body):
+            if skip_negated and re.search(_EDU_NEG, body[max(0, m.start() - 6):m.start()]):
+                continue
+            lo = max(0, m.start() - 28)
+            hi = min(len(body), m.end() + 28)
+            out.append({'rule': code, 'level': level, 'matched': m.group(0),
+                        'excerpt': ('…' if lo else '') + body[lo:hi].replace('\n', ' ') + ('…' if hi < len(body) else ''),
+                        'why': why})
+            if sum(1 for x in out if x['rule'] == code) >= 5:
+                break       # 同一类命中太多就不刷屏了, 审核者看几条就明白了
+    return out
+
+
+EDU_DISCLAIMER = ('本材料为健康科普, 不能替代医生的诊疗意见。用药与治疗方案请遵医嘱; '
+                  '若出现不适或病情变化, 请及时联系随访医生或就近就医。')
+
+# 模板骨架。刻意只给**结构和提问**, 不给医学结论 —— 一份宣教稿真正有价值的部分
+# (这个病该注意什么、这个阶段最容易出什么问题) 必须由临床方写, 模板负责保证
+# 它不会漏掉"什么时候该找医生"这一节。
+EDU_TEMPLATE_SECTIONS = {
+    'disease': ['这个病是怎么回事', '为什么要长期随访', '日常需要留意哪些变化', '什么情况下必须联系医生'],
+    'medication': ['为什么要按时用药', '漏服了怎么办', '常见的不舒服有哪些', '什么情况下必须联系医生'],
+    'rehab': ['这个阶段的康复目标', '每天可以做什么', '做到什么程度就该停', '什么情况下必须联系医生'],
+    'diet': ['这个阶段的饮食原则', '推荐多吃什么', '需要控制什么', '什么情况下必须联系医生'],
+    'psych': ['这个阶段常见的情绪反应', '可以自己做的调节', '家人可以怎么帮忙', '什么情况下必须联系医生'],
+    'other': ['背景', '要点', '注意事项', '什么情况下必须联系医生'],
+}
+
+
+def generate_edu_draft(spec):
+    """§2.3(1): 生成宣教材料草稿。返回 (draft, report)。
+
+    产出恒为 status='draft'。这不是默认值, 是硬约束 —— 见本节开头的说明。
+    """
+    notes = []
+    disease = str(spec.get('disease') or '').strip()
+    stage = str(spec.get('stage') or '').strip()
+    topic = spec.get('topic') or 'disease'
+    if topic not in EDU_TOPICS:
+        topic = 'other'
+    fmt = spec.get('format') or 'article'
+    if fmt not in EDU_FORMATS:
+        fmt = 'article'
+    backend = (spec.get('backend') or os.environ.get('SCALE_LLM_PROVIDER') or 'template').lower()
+
+    body_from_llm = None
+    if backend == 'claude':
+        draft, err = _generate_via_claude({
+            'goal': '患者宣教材料: {} {} {}'.format(disease, stage, EDU_TOPIC_LABELS[topic]),
+            'dimensions': EDU_TEMPLATE_SECTIONS[topic]}, notes)
+        if err:
+            notes.append({'step': 'backend_fallback', 'confidence': 'high',
+                          'detail': '大模型后端不可用({}), 已回落本地模板'.format(err)})
+        else:
+            body_from_llm = draft
+
+    title = '{}{}{}'.format(disease or '通用', ('·' + stage) if stage else '',
+                            EDU_TOPIC_LABELS[topic])
+    secs = EDU_TEMPLATE_SECTIONS[topic]
+    lines = []
+    if fmt == 'video_script':
+        lines.append('【视频脚本 · 建议时长 2-3 分钟】')
+        for i, s in enumerate(secs, 1):
+            lines.append('\n镜头 {}｜{}'.format(i, s))
+            lines.append('  画面：【待填写】')
+            lines.append('  旁白：【待填写 —— 由临床方撰写, 不要写具体剂量】')
+    else:
+        for s in secs:
+            lines.append('\n## {}'.format(s))
+            lines.append('【待填写】' + ('（这一节请务必写清楚: 出现哪些情况要立刻联系随访医生或就医, '
+                                        '并留下联系方式）' if s.startswith('什么情况下') else ''))
+    if fmt == 'illustrated':
+        lines.append('\n## 配图建议')
+        lines.append('【待填写 —— 每节配一张图, 图上不要出现具体剂量】')
+    lines.append('\n---\n' + EDU_DISCLAIMER)
+    body = '\n'.join(lines).strip()
+
+    notes.append({'step': 'template', 'confidence': 'high',
+                  'detail': '按「{}」生成 {} 节骨架。模板只给结构和提问, 不给医学结论 —— '
+                            '这个病该注意什么、这个阶段最容易出什么问题, 必须由临床方写。'
+                            '模板负责保证不漏掉"什么时候该找医生"这一节'.format(
+                                EDU_FORMAT_LABELS[fmt], len(secs))})
+    notes.append({'step': 'must_review', 'confidence': 'high',
+                  'detail': '产出为草稿, 必须经人工审核发布后才能被随访计划调用。'
+                            '宣教材料是直接推给患者的, 患者没有能力判断内容对不对, 而且多半会照做'})
+    if body_from_llm:
+        notes.append({'step': 'llm_note', 'confidence': 'low',
+                      'detail': '大模型产出已作为参考, 仍须逐句核对后替换占位文字'})
+
+    findings = scan_edu_content(body, title)
+    draft = {'title': title, 'category': disease or None, 'stage': stage or None,
+             'topic': topic, 'format': fmt, 'body': body, 'source': 'ai',
+             'status': 'draft', 'tags': [x for x in [disease, stage, EDU_TOPIC_LABELS[topic]] if x]}
+    report = {'backend': backend, 'section_count': len(secs), 'char_count': len(body),
+              'notes': notes, 'content_findings': findings,
+              'blocking_findings': sum(1 for f in findings if f['level'] == 'block'),
+              'needs_review': True}
+    return draft, report
+
+
+def ensure_platform_edu_tables():
+    """M15: 宣教材料表 + 审核留痕表 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_edu_material (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(64) NOT NULL,
+                version VARCHAR(32) NOT NULL DEFAULT '1',
+                title VARCHAR(200) NOT NULL,
+                category VARCHAR(64) DEFAULT NULL COMMENT '病种',
+                stage VARCHAR(64) DEFAULT NULL COMMENT '病程阶段',
+                topic VARCHAR(24) DEFAULT 'disease' COMMENT '疾病知识/用药指导/康复训练/饮食调理/心理调节',
+                format VARCHAR(24) DEFAULT 'article' COMMENT '文章/图文科普/视频脚本',
+                tags JSON DEFAULT NULL COMMENT '按随访场景/病种/科室快速调用用的标签',
+                body MEDIUMTEXT NOT NULL,
+                scope ENUM('private','shared') DEFAULT 'private',
+                owner VARCHAR(64) DEFAULT NULL,
+                source VARCHAR(24) DEFAULT 'manual' COMMENT 'manual/ai',
+                status ENUM('draft','reviewing','published','archived') DEFAULT 'draft'
+                    COMMENT 'AI 产出恒为 draft; 只有 published 才允许被随访计划调用',
+                content_findings JSON DEFAULT NULL COMMENT '内容体检结果, 供审核者定位',
+                reviewed_by VARCHAR(64) DEFAULT NULL,
+                reviewed_at DATETIME DEFAULT NULL,
+                review_note VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_edu_code_version (code, version),
+                INDEX idx_status (status),
+                INDEX idx_category (category),
+                INDEX idx_topic (topic)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M15 宣教材料库'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_edu_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                material_id BIGINT NOT NULL,
+                action ENUM('create','submit','publish','reject','archive','edit') NOT NULL,
+                from_status VARCHAR(16) DEFAULT NULL,
+                to_status VARCHAR(16) DEFAULT NULL,
+                operator VARCHAR(64) DEFAULT NULL,
+                note VARCHAR(1000) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_material (material_id, id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M15 宣教材料流转留痕 (只增不改)'
+        """)
+        print('[启动] platform_edu_material / platform_edu_log 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_edu_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def upsert_edu_material(body):
+    """建/改宣教材料。
+
+    **status 不能由调用方直接设成 published** —— 发布必须走 /edu/transition 的
+    审核动作, 那条路才会记留痕、记审核人。允许直接置 published 的话, 前端一个字段
+    就能把未经审核的 AI 稿推给患者, 前面所有约束都白设。
+    """
+    title = str(body.get('title') or '').strip()
+    text = body.get('body')
+    if not title or not str(text or '').strip():
+        return None, 'title 和 body 必填'
+    topic = body.get('topic') or 'disease'
+    if topic not in EDU_TOPICS:
+        return None, 'topic 必须是 {} 之一'.format('/'.join(EDU_TOPICS))
+    fmt = body.get('format') or 'article'
+    if fmt not in EDU_FORMATS:
+        return None, 'format 必须是 {} 之一'.format('/'.join(EDU_FORMATS))
+    scope = body.get('scope') or 'private'
+    if scope not in CRF_SCOPES:
+        return None, 'scope 必须是 private 或 shared'
+    status = body.get('status') or 'draft'
+    if status not in ('draft', 'reviewing'):
+        return None, ('status 只能设为 draft 或 reviewing。发布要走 '
+                      '/api/platform/edu/transition 的 publish 动作 —— 那条路会记下'
+                      '是谁在什么时候审的, 直接置 published 就没有这份留痕了')
+
+    import hashlib
+    code = str(body.get('code') or '').strip() or 'EDU' + hashlib.md5(
+        title.encode('utf-8')).hexdigest()[:6].upper()
+    version = str(body.get('version') or '1').strip()
+    findings = scan_edu_content(str(text), title)
+
+    ensure_platform_edu_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT id, status FROM platform_edu_material WHERE code=%s AND version=%s',
+                    (code, version))
+        row = cur.fetchone()
+        if row and row[1] == 'published':
+            # 已发布的材料改内容 = 患者手里的版本和库里的对不上。开新版, 旧版继续在架。
+            version = _bump_version(version)
+            row = None
+        cur.execute("""
+            INSERT INTO platform_edu_material
+              (code, version, title, category, stage, topic, format, tags, body,
+               scope, owner, source, status, content_findings)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+              title=VALUES(title), category=VALUES(category), stage=VALUES(stage),
+              topic=VALUES(topic), format=VALUES(format), tags=VALUES(tags),
+              body=VALUES(body), scope=VALUES(scope), owner=VALUES(owner),
+              status=VALUES(status), content_findings=VALUES(content_findings)
+        """, (code, version, title, body.get('category') or None, body.get('stage') or None,
+              topic, fmt, json.dumps(body.get('tags') or [], ensure_ascii=False), str(text),
+              scope, body.get('owner') or None, body.get('source') or 'manual', status,
+              json.dumps(findings, ensure_ascii=False)))
+        mid = cur.lastrowid or (row[0] if row else None)
+        if mid is None:
+            cur.execute('SELECT id FROM platform_edu_material WHERE code=%s AND version=%s',
+                        (code, version))
+            mid = (cur.fetchone() or [None])[0]
+        cur.execute("""INSERT INTO platform_edu_log (material_id, action, from_status, to_status, operator, note)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (mid, 'edit' if row else 'create', row[1] if row else None, status,
+                     body.get('owner') or None, body.get('note') or None))
+        cur.close()
+        return {'id': mid, 'code': code, 'version': version, 'status': status,
+                'content_findings': findings,
+                'blocking_findings': sum(1 for f in findings if f['level'] == 'block')}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+EDU_TRANSITIONS = {
+    'submit':  {'from': ('draft',), 'to': 'reviewing'},
+    'publish': {'from': ('draft', 'reviewing'), 'to': 'published'},
+    'reject':  {'from': ('reviewing',), 'to': 'draft'},
+    'archive': {'from': ('published', 'reviewing', 'draft'), 'to': 'archived'},
+}
+
+
+def edu_transition(body):
+    """推进宣教材料状态 {id, action, operator?, note?, ack_findings?}。
+
+    publish 时若内容体检有 block 级发现, 必须显式 ack_findings=true 才放行 ——
+    不是拦死, 是逼审核的人**看见**它。临床方完全可能有正当理由保留某个剂量数字
+    (比如那是"每片含量"而不是"你该吃多少"), 但那必须是他知情之后的决定。
+    """
+    try:
+        mid = int(body.get('id'))
+    except (TypeError, ValueError):
+        return None, 'id 必填且为整数'
+    action = str(body.get('action') or '').strip()
+    tr = EDU_TRANSITIONS.get(action)
+    if not tr:
+        return None, 'action 必须是 {}'.format('/'.join(EDU_TRANSITIONS))
+
+    ensure_platform_edu_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, content_findings, title FROM platform_edu_material WHERE id=%s', (mid,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '材料不存在: {}'.format(mid)
+        cur_status, findings, title = row
+        if isinstance(findings, str):
+            try:
+                findings = json.loads(findings)
+            except ValueError:
+                findings = []
+        findings = findings or []
+        if cur_status not in tr['from']:
+            cur.close()
+            return None, '当前状态 {} 不能执行 {} (允许的前置状态: {})'.format(
+                EDU_STATUS_LABELS.get(cur_status, cur_status), action,
+                '/'.join(EDU_STATUS_LABELS.get(x, x) for x in tr['from']))
+
+        # 参数缺失先报 —— 那是调用方的问题; 内容体检是给审核者的反馈, 排在后面
+        if action == 'publish' and not body.get('operator'):
+            cur.close()
+            return None, '发布必须署名 operator —— 这份材料要推给患者, 得有人对它负责'
+        blocking = [f for f in findings if f.get('level') == 'block']
+        if action == 'publish' and blocking and not body.get('ack_findings'):
+            cur.close()
+            return {'ok': False, 'published': False, 'blocking_findings': blocking,
+                    'hint': ('这份材料有 {} 处高危表述(剂量数字/用药调整指示/劝阻就医)。'
+                             '宣教材料是直接推给患者的, 他们多半会照做。请逐条确认后带 '
+                             'ack_findings=true 再发布, 或先改稿'.format(len(blocking)))}, None
+        new_status = tr['to']
+        if action == 'publish':
+            cur.execute("""UPDATE platform_edu_material SET status=%s, reviewed_by=%s,
+                           reviewed_at=NOW(), review_note=%s WHERE id=%s""",
+                        (new_status, body.get('operator'), (body.get('note') or '')[:500] or None, mid))
+        else:
+            cur.execute('UPDATE platform_edu_material SET status=%s WHERE id=%s', (new_status, mid))
+        cur.execute("""INSERT INTO platform_edu_log (material_id, action, from_status, to_status, operator, note)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (mid, action, cur_status, new_status, body.get('operator') or None,
+                     (body.get('note') or '')[:1000] or None))
+        cur.close()
+        return {'ok': True, 'id': mid, 'from': cur_status, 'to': new_status,
+                'acked_findings': len(blocking) if action == 'publish' else 0}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_edu_materials(status=None, category=None, topic=None, scope=None,
+                        keyword=None, with_body=False, material_id=None, limit=200):
+    """宣教材料列表 (§2.3(2) 按随访场景/病种/科室快速调用)。"""
+    ensure_platform_edu_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if material_id:
+            where.append('m.id=%s'); params.append(int(material_id))
+        if status:
+            where.append('m.status=%s'); params.append(status)
+        if category:
+            where.append('m.category=%s'); params.append(category)
+        if topic:
+            where.append('m.topic=%s'); params.append(topic)
+        if scope:
+            where.append('m.scope=%s'); params.append(scope)
+        if keyword:
+            where.append('(m.title LIKE %s OR JSON_SEARCH(m.tags, "one", %s) IS NOT NULL)')
+            params += ['%{}%'.format(keyword), '%{}%'.format(keyword)]
+        cols = ('m.id, m.code, m.version, m.title, m.category, m.stage, m.topic, m.format, '
+                'm.tags, m.scope, m.owner, m.source, m.status, m.content_findings, '
+                'm.reviewed_by, m.reviewed_at, m.review_note, m.created_at, m.updated_at, '
+                'CHAR_LENGTH(m.body) AS char_count')
+        if with_body or material_id:
+            cols += ', m.body'
+        params.append(int(limit))
+        cur.execute('SELECT {} FROM platform_edu_material m WHERE {} '
+                    'ORDER BY FIELD(m.status,"reviewing","draft","published","archived"), '
+                    'm.updated_at DESC LIMIT %s'.format(cols, ' AND '.join(where)), params)
+        names = [d[0] for d in cur.description]
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(names, row))
+            for k in ('reviewed_at', 'created_at', 'updated_at'):
+                if r.get(k) is not None and hasattr(r[k], 'strftime'):
+                    r[k] = r[k].strftime('%Y-%m-%d %H:%M:%S')
+            for k in ('tags', 'content_findings'):
+                if isinstance(r.get(k), str):
+                    try:
+                        r[k] = json.loads(r[k])
+                    except ValueError:
+                        pass
+            r['topic_label'] = EDU_TOPIC_LABELS.get(r.get('topic'), r.get('topic'))
+            r['format_label'] = EDU_FORMAT_LABELS.get(r.get('format'), r.get('format'))
+            r['status_label'] = EDU_STATUS_LABELS.get(r.get('status'), r.get('status'))
+            r['blocking_findings'] = sum(1 for f in (r.get('content_findings') or [])
+                                         if f.get('level') == 'block')
+            out.append(r)
+        if material_id and out:
+            cur.execute("""SELECT action, from_status, to_status, operator, note, created_at
+                           FROM platform_edu_log WHERE material_id=%s ORDER BY id""", (int(material_id),))
+            out[0]['log'] = [{'action': a, 'from': f, 'to': t, 'operator': o, 'note': n,
+                              'at': c.strftime('%Y-%m-%d %H:%M:%S') if hasattr(c, 'strftime') else c}
+                             for a, f, t, o, n, c in cur.fetchall()]
+        cur.close()
+        return {'ok': True, 'count': len(out), 'materials': out,
+                'topics': EDU_TOPIC_LABELS, 'formats': EDU_FORMAT_LABELS,
+                'statuses': EDU_STATUS_LABELS}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -6179,6 +6623,27 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/edu':
+            try:
+                limit = min(int((query.get('limit') or ['200'])[0]), 500)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'limit 必须是整数'}); return
+            st = (query.get('status') or [None])[0]
+            if st and st not in EDU_STATUSES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 {} 之一'.format('/'.join(EDU_STATUSES))}); return
+            tp = (query.get('topic') or [None])[0]
+            if tp and tp not in EDU_TOPICS:
+                self._send_json(400, {'ok': False,
+                                      'error': 'topic 必须是 {} 之一'.format('/'.join(EDU_TOPICS))}); return
+            result, err = query_edu_materials(
+                status=st, category=(query.get('category') or [None])[0], topic=tp,
+                scope=(query.get('scope') or [None])[0],
+                keyword=(query.get('q') or [None])[0],
+                with_body=(query.get('withBody') or ['0'])[0] in ('1', 'true'),
+                material_id=(query.get('id') or [None])[0], limit=limit)
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/crfs':
             try:
                 limit = min(int((query.get('limit') or ['200'])[0]), 500)
@@ -6474,6 +6939,11 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/edu': '随访平台 M15: 宣教材料库 (?status=&category=&topic=&q=)',
+                    'POST /api/platform/edu/material': '随访平台 M15: 建/改宣教材料 (status 只能 draft/reviewing)',
+                    'POST /api/platform/edu/transition': '随访平台 M15: 提交/发布/退回/归档 ({id, action, operator})',
+                    'POST /api/platform/edu/generate': '随访平台 M15: 生成宣教草稿 (产出恒为 draft, 必须人工审核发布)',
+                    'POST /api/platform/edu/scan': '随访平台 M15: 内容体检 ({title?, body}) —— 标出剂量/用药调整/劝阻就医等高危表述',
                     'GET  /api/platform/crfs': '随访平台 M14: CRF 列表 (?code=&scope=private|shared&allVersions=1)',
                     'POST /api/platform/crf': '随访平台 M14: 建/改 CRF (破坏性改动且已有填报时自动开新版)',
                     'POST /api/platform/crf/copy': '随访平台 M14: 拷贝 CRF ({code, new_code})',
@@ -6653,6 +7123,31 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/edu/material':
+                result, err = upsert_edu_material(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/edu/transition':
+                result, err = edu_transition(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/edu/generate':
+                spec = body if isinstance(body, dict) else {}
+                if not (spec.get('disease') or spec.get('topic')):
+                    self._send_json(400, {'ok': False, 'error': '至少要给 disease(病种) 或 topic(主题)'}); return
+                draft, report = generate_edu_draft(spec)
+                self._send_json(200, {'ok': True, 'draft': draft, 'report': report})
+
+            elif pathname == '/api/platform/edu/scan':
+                if not body.get('body'):
+                    self._send_json(400, {'ok': False, 'error': '需要 body(正文)'}); return
+                f = scan_edu_content(str(body['body']), body.get('title') or '')
+                self._send_json(200, {'ok': True, 'findings': f,
+                                      'blocking': sum(1 for x in f if x['level'] == 'block'),
+                                      'rules': [{'code': c, 'level': l, 'why': w}
+                                                for c, l, _, w, _n in EDU_CONTENT_RULES]})
 
             elif pathname == '/api/platform/crf':
                 result, err = upsert_platform_crf(body)
@@ -6906,6 +7401,8 @@ if __name__ == '__main__':
         ensure_platform_qc_tables()
         # M14: CRF 定义 + 填报 (idempotent)
         ensure_platform_crf_tables()
+        # M15: 宣教材料 + 流转留痕 (idempotent)
+        ensure_platform_edu_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -6957,6 +7454,11 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/edu                     随访平台 M15: 宣教材料库')
+    print('[端点] POST /api/platform/edu/material            随访平台 M15: 建/改宣教材料')
+    print('[端点] POST /api/platform/edu/transition          随访平台 M15: 提交/发布/退回/归档')
+    print('[端点] POST /api/platform/edu/generate            随访平台 M15: 生成宣教草稿')
+    print('[端点] POST /api/platform/edu/scan                随访平台 M15: 内容体检')
     print('[端点] GET  /api/platform/crfs                    随访平台 M14: CRF 列表')
     print('[端点] POST /api/platform/crf                     随访平台 M14: 建/改 CRF (自动版本管理)')
     print('[端点] POST /api/platform/crf/copy                随访平台 M14: 拷贝 CRF')
