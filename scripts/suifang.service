@@ -15,8 +15,14 @@ WorkingDirectory=/opt/suifang
 # 5.06-v7: 微信小程序 jscode2session 需要 WX_APPSECRET, 走 EnvironmentFile 读
 # /opt/suifang/wx.env (内容: WX_APPSECRET=xxx, 一行一对). 文件不存在不报错 (=-),
 # 此时 /api/wx/login 会返回明确错误提示, 不影响其他端点.
+# python3 -u 是必须的, 不是可选项:
+# stdout 重定向到文件时 Python 走块缓冲(约 8KB 才落盘一次), 而这个服务每次重启都是被
+# pkill -9 杀的 —— SIGKILL 不给刷缓冲的机会, 整个缓冲区直接丢。实测 2026-08-02:
+# 进程跑了 40 分钟, /proc/<pid>/fdinfo/1 的 pos 仍然是 0, server.log 里最后一次启动横幅
+# 还停在 5 月 27 日的 v5.06-v9, 7/16、7/17、8/2 三次重启的日志全没了。
+# 加 -u 走无缓冲, 每行立刻落盘, 崩溃现场才留得下来。
 EnvironmentFile=-/opt/suifang/wx.env
-ExecStart=/bin/sh -c 'exec /root/miniconda3/bin/python3 /opt/suifang/health_server.py >> /opt/suifang/server.log 2>&1'
+ExecStart=/bin/sh -c 'exec /root/miniconda3/bin/python3 -u /opt/suifang/health_server.py >> /opt/suifang/server.log 2>&1'
 Restart=on-failure
 RestartSec=5
 

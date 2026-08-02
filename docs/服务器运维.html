@@ -187,8 +187,11 @@ pymysql</strong></td>
 </tbody>
 </table>
 <h2 id="ssh-免密首次配置">SSH 免密（首次配置）</h2>
-<p>服务器已配 <code>~/.ssh/id_ed25519</code> 公钥，从配置过 key
-的机器（如 Windows 主机）可以免密 SSH。</p>
+<p>服务器 <code>/root/.ssh/authorized_keys</code> 里放着若干台机器的公钥，配过的机器可以免密 SSH。
+<strong>Windows 主机和 WSL 是两台不同的机器、两把不同的 key</strong>（<code>C:\Users\&lt;你&gt;\.ssh\</code>
+和 WSL 的 <code>~/.ssh/</code> 互不相干），要各推各的——2026-08-02 之前只有 Windows 那把在里面，
+这就是当时 WSL 里 <code>ssh</code> 报 <code>Permission denied (publickey)</code> 的全部原因，
+和 WSL 的网络能力无关。</p>
 <p>新机器接入步骤：</p>
 <div class="sourceCode" id="cb1"><pre
 class="sourceCode powershell"><code class="sourceCode powershell"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Windows</span></span>
@@ -263,10 +266,25 @@ class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="
                                          192.168.4.174 (六元 MySQL h6dp_suifang)
 
 外网用户 ──HTTPS──&gt; dc.ncrc.org.cn ──nginx 反代──&gt; 192.168.4.104:3000</code></pre>
-<p><strong>注意</strong>：WSL2 默认网络模式<strong>不共享 Windows VPN
-tunnel</strong>——WSL 这边 SSH 不到 192.168.4.104。 所有部署操作必须在
-Windows PowerShell（或装了 git-bash 的 Windows）下完成，不要在 WSL 里跑
-redeploy.sh。</p>
+<p><strong>2026-08-02 更新</strong>：上面这段"WSL 连不上"的旧说法<strong>已经不成立</strong>。
+现在公司 VPN 连上之后，WSL 这边 <code>ping 192.168.4.104</code> 和 22 端口都是通的，
+实测能完成 SSH 握手。当年那条结论（WSL2 不共享 Windows VPN tunnel）大概率是 VPN
+客户端配置变过，或者 WSL 网络模式改过。</p>
+<p>WSL 里如果还连不上，先分清是<strong>网络</strong>还是<strong>认证</strong>——这两件事
+的报错完全不同，别再一律归到"WSL 网络限制"上：</p>
+<ul>
+<li><code>Connection timed out</code> / ping 不通 → 真的是网络，检查 VPN 是否连着。</li>
+<li><code>Permission denied (publickey)</code> → 网络是通的，只是这台机器的公钥不在服务器
+<code>~/.ssh/authorized_keys</code> 里。按上面「SSH 免密（首次配置）」推一次公钥即可，
+WSL 和 Windows 是两把不同的 key，各推各的。</li>
+<li>连上去却发现是别的机器 → 检查 <code>~/.ssh/config</code>。历史上为了走隧道加过一条
+<code>Host 192.168.4.104 / HostName 127.0.0.1 / Port 2222</code> 的别名，VPN 直连之后
+这条只会帮倒忙，会把 <code>ssh root@192.168.4.104</code> 悄悄拐到本地 2222 端口。
+临时绕开用 <code>ssh -F /dev/null -i ~/.ssh/id_ed25519 root@192.168.4.104</code>，
+长期建议直接把那段别名删掉。</li>
+</ul>
+<p>所以部署在 Windows（Git Bash）还是 WSL 里跑都可以，条件只有一个：<strong>那台机器的公钥
+已经推上去了</strong>。</p>
 <h2 id="故障排查">故障排查</h2>
 <table>
 <thead>
@@ -298,9 +316,29 @@ redeploy.sh。</p>
 <td><code>systemctl daemon-reload &amp;&amp; systemctl enable suifang</code></td>
 </tr>
 <tr>
-<td>WSL 里 SSH timeout</td>
-<td>WSL2 网络限制</td>
-<td>切到 PowerShell 操作；或改 WSL networkingMode=mirrored</td>
+<td>WSL 里 SSH <code>Connection timed out</code></td>
+<td>VPN 没连，或 WSL 网络模式不共享 tunnel</td>
+<td>先确认 VPN；仍不通再改 WSL <code>networkingMode=mirrored</code>。<b>注意别和下一行混淆</b></td>
+</tr>
+<tr>
+<td>WSL 里 SSH <code>Permission denied (publickey)</code></td>
+<td>网络是通的，只是这台机器的公钥没推上去</td>
+<td>按「SSH 免密（首次配置）」推公钥；WSL 与 Windows 是两把 key，各推各的</td>
+</tr>
+<tr>
+<td>SSH 连上去却不是那台服务器</td>
+<td><code>~/.ssh/config</code> 里残留隧道别名（→ 127.0.0.1:2222）</td>
+<td><code>ssh -F /dev/null -i ~/.ssh/id_ed25519 root@192.168.4.104</code> 临时绕开；长期把别名删掉</td>
+</tr>
+<tr>
+<td><code>server.log</code> 停在很久以前不再更新</td>
+<td>unit 里 <code>python3</code> 没加 <code>-u</code>：输出重定向到文件走块缓冲，而服务每次都被 <code>pkill -9</code> 杀，SIGKILL 不刷缓冲</td>
+<td>确认 <code>ExecStart</code> 是 <code>python3 -u</code>，然后 <code>daemon-reload</code> + 重启。查证：<code>cat /proc/&lt;pid&gt;/fdinfo/1</code> 的 <code>pos</code> 长期为 0 即是此症</td>
+</tr>
+<tr>
+<td>部署脚本停在 <code>[4/5]</code>，没输出也没到 <code>[5/5]</code></td>
+<td>旧版 <code>redeploy.sh</code> 的 <code>pkill -9 -f health_server.py</code> 把执行它的远端 shell 自己杀了（那条命令行里就含这个字符串），后面的 <code>daemon-reload</code>/<code>restart</code> 全没跑</td>
+<td>已于 2026-08-02 修复为 <code>[h]ealth_server[.]py</code> 且 <code>daemon-reload</code> 提到最前。<b>历史影响</b>：此前上传的新 unit 文件从未真正生效过</td>
 </tr>
 </tbody>
 </table>

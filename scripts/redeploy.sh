@@ -52,8 +52,10 @@ else
 fi
 
 # Step 1: 备份服务器上的现版本
+# 备份文件名的时间戳用服务器时钟(远端 date), 不用本机的 —— 服务器在 CST, 操作的人可能在
+# 别的时区, 名字和文件 mtime 对不上会让回滚时选错版本。
 echo "[1/5] 备份现有 health_server.py（如果有）"
-eval "$SSH_CMD $USER@$SERVER \"mkdir -p $SUIFANG_DIR && [ -f $SUIFANG_DIR/health_server.py ] && cp $SUIFANG_DIR/health_server.py $SUIFANG_DIR/health_server.py.bak.\$(date +%Y%m%d_%H%M%S) && echo '已备份' || echo '(无旧文件，跳过备份)'\""
+eval "$SSH_CMD $USER@$SERVER \"mkdir -p $SUIFANG_DIR && [ -f $SUIFANG_DIR/health_server.py ] && cp $SUIFANG_DIR/health_server.py $SUIFANG_DIR/health_server.py.bak.\\\$(date +%Y%m%d_%H%M%S) && echo '已备份' || echo '(无旧文件，跳过备份)'\""
 
 # Step 2: 上传 Python 主程序
 echo
@@ -65,15 +67,35 @@ echo
 echo "[3/5] 上传 suifang.service"
 eval "$SCP_CMD '$LOCAL_UNIT' $USER@$SERVER:/etc/systemd/system/suifang.service"
 
-# Step 4: 杀旧进程 + reload + restart
+# Step 4: reload + restart
+#
+# 这一步 2026-08-02 之前是坏的, 坏得很隐蔽 —— 原本第一句是:
+#     pkill -9 -f health_server.py; sleep 2; systemctl daemon-reload && ... && restart
+# `pkill -f` 匹配的是**整条命令行**, 而执行这串命令的远端 sh 自己的命令行里就含
+# "health_server.py" 这几个字 —— 于是 pkill 把自己杀了, 后面的 daemon-reload / enable /
+# restart 一句都没执行, 脚本也就走不到 [5/5]。服务能爬起来纯粹是靠 unit 里的
+# Restart=on-failure, 而且只有在文件已经传完(Step 2)时才恰好捡到新代码。
+# 更危险的是 daemon-reload 从来没跑过 —— Step 3 传上去的新 unit 文件一直是不生效的。
+# journal 实证: "main process exited, code=killed, status=9/KILL" 紧跟
+#              "holdoff time over, scheduling restart", 中间没有任何 systemctl 动作。
+#
+# 现在的写法:
+#   - daemon-reload 放最前面, 保证 Step 3 传的 unit 一定生效
+#   - 用 systemctl stop 正常停服务(systemd 知道自己的 PID), 不再靠 pkill 当主手段
+#   - 保留一个 [h]ealth_server 形式的 pkill 兜脱缰进程: 正则 [h]ealth 匹配字面
+#     "health", 而本行自身的命令行里是带方括号的 "[h]ealth", 匹配不上, 不会再自杀
+#   - sed -n '1,15p' 取代 head -15: head 提前关管道会给 systemctl 发 SIGPIPE
+#   - 结尾 exit 0: 这步的返回值不该让外层 set -e 掐掉 [5/5] 的验证输出
 echo
 echo "[4/5] 重启服务"
-eval "$SSH_CMD $USER@$SERVER \"pkill -9 -f health_server.py 2>/dev/null; sleep 2; systemctl daemon-reload && systemctl enable suifang && systemctl restart suifang && sleep 3 && systemctl status suifang --no-pager | head -15\""
+eval "$SSH_CMD $USER@$SERVER \"systemctl daemon-reload; systemctl enable suifang >/dev/null 2>&1; systemctl stop suifang; sleep 1; pkill -9 -f '[h]ealth_server[.]py' >/dev/null 2>&1; sleep 1; systemctl start suifang; sleep 3; systemctl status suifang --no-pager | sed -n '1,15p'; echo '--- is-active:' \\\$(systemctl is-active suifang); exit 0\""
 
 # Step 5: 验证
 echo
 echo "[5/5] 服务状态"
-eval "$SSH_CMD $USER@$SERVER \"tail -20 $SUIFANG_DIR/server.log; echo '---'; curl -s http://localhost:3000/api/status\""
+# 纯验证输出, 任何一句失败都不该让 set -e 把脚本掐在这里(那样反而看不到失败现场), 故 exit 0。
+# unit 加了 python3 -u 之后 server.log 才会实时落盘, 这里的 tail 也才看得到本次启动横幅。
+eval "$SSH_CMD $USER@$SERVER \"tail -25 $SUIFANG_DIR/server.log; echo '---'; curl -s http://localhost:3000/api/status; echo; exit 0\""
 
 echo
 echo "=== 部署完成。从外网验证 ==="
