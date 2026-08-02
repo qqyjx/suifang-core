@@ -1,6 +1,7 @@
 // pages/dataManagement/index.ts
 import { dataStorage } from '../../services/dataStorage'
 import { dataExport } from '../../services/dataExport'
+import { ENV } from '../../services/env'
 import type { HealthDataType } from '../../types/healthData'
 
 Page({
@@ -24,7 +25,10 @@ Page({
     currentDataType: '',
     showDetail: false,
     syncStatus: '',
-    serverUrl: 'http://localhost:3000'
+    // 体验版/正式版强制校验合法域名且只允许 https, 写死的 http://localhost:3000 在真机上
+    // 100% 请求失败(页面上还只读展示给用户看, 界面里也没有输入框可改)。统一取 ENV.API_BASE,
+    // 与 dataStorage 主上传链路同源。
+    serverUrl: ENV.API_BASE
   },
 
   onLoad() {

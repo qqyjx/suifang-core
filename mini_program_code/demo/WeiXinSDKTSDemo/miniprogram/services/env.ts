@@ -14,7 +14,9 @@
  */
 export const ENV = {
   IS_TEST_BUILD: true,
-  BUILD_TAG: '5.06-v10',
+  // 对外口径仍是 v10 (2c8dca8/de86216 已把 v11 降回并清了残留), 小数位只用来区分
+  // "v10 的第几次重传" —— 首页右上角角标就是靠它确认手机上拿到的是新包还是缓存旧包。
+  BUILD_TAG: '5.06-v10.1',
   API_BASE: 'https://dc.ncrc.org.cn/api2',
   SUPPORTED_DEVICE_PREFIXES: ['VP-', 'S101', 'VPR'],
   MIN_BLE_RSSI: -75,
