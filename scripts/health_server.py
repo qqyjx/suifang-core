@@ -3787,6 +3787,1301 @@ def platform_qc_compare(patient_no, scale_code):
         conn.close()
 
 
+# ============ 随访平台 1.1 M14 (智能 CRF 表单, 方案 §2.1) ============
+#
+# CRF = Case Report Form, 临床研究的病例报告表。和量表(M10)的区别不是长相而是用途:
+# 量表要算分、要划界值, 一份量表的题目动不得(动了信效度就不成立); CRF 只采集,
+# 题目本来就该随项目调整。所以两者共用校验代码, 但**不共用表** —— 把"不能改的"
+# 和"就是要改的"塞进同一张表, 迟早有人为了改 CRF 而放宽了量表的约束。
+#
+# 题型按方案 §2.1(1) 原文逐个列出。表格类那 4 种在引擎里其实是同一套机制
+# (一张表格 = 若干列 × 若干行, 每列有自己的类型), 差别只在"列允许是什么类型";
+# 这里仍然保留 4 个独立的类型名, 因为验收要逐条对方案。
+CRF_BASIC_TYPES = {
+    'note':      '提示语',      # 只展示不采集, 没有答案
+    'text':      '文本填空',
+    'paragraph': '段落填空',
+    'number':    '数字填空',
+    'date':      '日期填空',
+    'single':    '单选',
+    'multi':     '多选',
+    'select':    '下拉选',
+}
+# 表格题型 -> 该表格的列允许用哪些类型
+CRF_TABLE_TYPES = {
+    'table_input':    ('输入框表格',   ('text', 'number', 'date')),
+    'table_select':   ('选择表格',     ('single', 'multi')),
+    'table_dropdown': ('下拉框表格',   ('select',)),
+    'table_mixed':    ('列表混搭表格', ('text', 'paragraph', 'number', 'date', 'single', 'multi', 'select')),
+}
+CRF_ITEM_TYPES = tuple(CRF_BASIC_TYPES) + tuple(CRF_TABLE_TYPES)
+CRF_OPTION_TYPES = ('single', 'multi', 'select')     # 必须带 options 的类型
+CRF_NO_ANSWER_TYPES = ('note',)                      # 不采集答案, 不参与必填/校验
+
+CRF_LOGIC_ACTIONS = {
+    'show':      '显示',
+    'hide':      '隐藏',
+    'enable':    '启用',
+    'disable':   '禁用',
+    'require':   '置为必填',
+    'optional':  '置为选填',
+    'set_value': '自动设值',
+    'check':     '逻辑校验',      # 条件成立即报错(强/弱由 severity 定)
+    'exclusive': '互斥',          # targets 里最多只能填一个
+}
+CRF_OPS = ('eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'contains', 'empty', 'filled')
+CRF_SCOPES = ('private', 'shared')
+
+
+def _crf_items(definition):
+    """铺平 items(CRF 允许分节, 节里再放题)。返回 [(section_name, item)]。"""
+    out = []
+    for sec in (definition or {}).get('sections') or []:
+        for it in sec.get('items') or []:
+            out.append((sec.get('name') or '', it))
+    for it in (definition or {}).get('items') or []:
+        out.append(('', it))
+    return out
+
+
+def validate_crf_definition(d):
+    """CRF 定义结构校验。返回 errors 列表(空 = 合法)。"""
+    errs = []
+    if not isinstance(d, dict):
+        return ['definition 必须是对象']
+    pairs = _crf_items(d)
+    if not pairs:
+        return ['definition 至少要有一道题 (items 或 sections[].items)']
+
+    seen = set()
+    for sec, it in pairs:
+        where = '题 {}'.format(it.get('id') or '(缺 id)')
+        if not isinstance(it, dict):
+            errs.append('items 里有非对象元素'); continue
+        iid = it.get('id')
+        if not iid:
+            errs.append(where + ' 缺 id')
+        elif iid in seen:
+            errs.append('题 id 重复: ' + str(iid))
+        else:
+            seen.add(iid)
+        t = it.get('type')
+        if t not in CRF_ITEM_TYPES:
+            errs.append('{} 的 type 必须是 {} 之一, 得到 {!r}'.format(
+                where, '/'.join(CRF_ITEM_TYPES), t))
+            continue
+        if t != 'note' and not it.get('text'):
+            errs.append(where + ' 缺题干 text')
+        if t in CRF_OPTION_TYPES:
+            opts = it.get('options')
+            if not isinstance(opts, list) or not opts:
+                errs.append(where + ' 选择类题型必须有 options')
+            else:
+                vals = set()
+                for j, o in enumerate(opts):
+                    if not isinstance(o, dict) or 'label' not in o or 'value' not in o:
+                        errs.append('{} 的 options[{}] 必须含 label 和 value'.format(where, j))
+                    elif o['value'] in vals:
+                        errs.append('{} 的 options 里 value 重复: {!r}'.format(where, o['value']))
+                    else:
+                        vals.add(o['value'])
+        if t == 'number':
+            lo, hi = it.get('min'), it.get('max')
+            if lo is not None and hi is not None and lo > hi:
+                errs.append('{} 的 min({}) 大于 max({})'.format(where, lo, hi))
+        if it.get('format') and it['format'] not in QC_FORMAT_CHECKS:
+            errs.append('{} 的 format 必须是 {} 之一'.format(where, '/'.join(QC_FORMAT_CHECKS)))
+        if t in CRF_TABLE_TYPES:
+            errs += _validate_crf_table(it, where)
+
+    # ---- 逻辑规则 ----
+    for i, rule in enumerate((d.get('logic') or [])):
+        w = 'logic[{}]'.format(i)
+        if not isinstance(rule, dict):
+            errs.append(w + ' 必须是对象'); continue
+        act = (rule.get('then') or {}).get('action') if rule.get('then') else rule.get('action')
+        if act not in CRF_LOGIC_ACTIONS:
+            errs.append('{} 的 action 必须是 {} 之一, 得到 {!r}'.format(
+                w, '/'.join(CRF_LOGIC_ACTIONS), act))
+            continue
+        tgts = (rule.get('then') or rule).get('targets') or []
+        if not isinstance(tgts, list) or not tgts:
+            errs.append(w + ' 缺 targets')
+        else:
+            for t in tgts:
+                if t not in seen:
+                    errs.append('{} 指向不存在的题 {!r}'.format(w, t))
+        if act == 'exclusive':
+            if len(tgts) < 2:
+                errs.append(w + ' 互斥至少要指定 2 道题')
+            continue
+        cond = rule.get('when')
+        if cond is None:
+            errs.append(w + ' 缺 when 条件')
+        else:
+            errs += _validate_crf_cond(cond, seen, w)
+        if act == 'set_value' and 'value' not in (rule.get('then') or {}):
+            errs.append(w + ' 自动设值必须给 then.value')
+    return errs
+
+
+def lint_crf_definition(d):
+    """结构合法之外的**用法**问题。返回 advisories 列表, 不阻断保存。
+
+    和 validate 分开是因为这些都不是错误, 是"多半不是你想要的":
+
+    最要紧的一条是 show-在-默认可见的题上。作者写下
+        {when: 用药=是, then: show 用药清单}
+    通常心里想的是"不满足条件就别显示", 但 show 只会把它设为可见, 而这道题**本来就可见** ——
+    规则等于没写, 表单上永远显示用药清单。要真做成条件显示, 那道题必须先声明 hidden:true。
+    这类错配不会报任何错, 只会安静地把不该采集的字段一直摆在那儿。
+    """
+    out = []
+    pairs = _crf_items(d or {})
+    by_id = {it.get('id'): it for _, it in pairs}
+    rules = (d or {}).get('logic') or []
+
+    shown, hidden_by_rule = set(), set()
+    for rule in rules:
+        then = rule.get('then') or rule
+        act = then.get('action') or rule.get('action')
+        for t in (then.get('targets') or rule.get('targets') or []):
+            if act == 'show':
+                shown.add(t)
+            elif act == 'hide':
+                hidden_by_rule.add(t)
+    for t in sorted(shown):
+        it = by_id.get(t)
+        if it is None:
+            continue
+        if it.get('hidden') is not True and t not in hidden_by_rule:
+            out.append({
+                'kind': 'show_without_default_hidden', 'field': t,
+                'detail': '题「{}」有 show 规则, 但它默认就是可见的, 也没有任何 hide 规则 —— '
+                          '这条 show 等于没写, 该题会一直显示。要做成条件显示, '
+                          '请给它加 "hidden": true, 由 show 规则来揭开'.format(
+                              str(it.get('text') or t)[:24])})
+    # 有 show 也有 hide 的题, 两条规则的条件应当互补, 否则会留下"两边都不成立"的空档,
+    # 那时该题落回默认状态, 而作者多半没想过默认状态是什么。
+    for t in sorted(shown & hidden_by_rule):
+        it = by_id.get(t) or {}
+        if it.get('hidden') is not True:
+            out.append({
+                'kind': 'show_hide_default_visible', 'field': t,
+                'detail': '题「{}」同时有 show 和 hide 规则, 但默认可见 —— '
+                          '当两条规则的条件都不成立时(比如驱动它的题还没答、或已被隐藏), '
+                          '它会落回"显示"。若本意是"没明确要求就不显示", 请加 "hidden": true'.format(
+                              str(it.get('text') or t)[:24])})
+    for _, it in pairs:
+        if it.get('required') and it.get('hidden') is True and it.get('id') not in shown:
+            out.append({
+                'kind': 'required_but_never_shown', 'field': it.get('id'),
+                'detail': '题「{}」既是必填又默认隐藏, 且没有任何 show 规则能揭开它 —— '
+                          '它永远不会出现, 那个 required 也就永远不起作用'.format(
+                              str(it.get('text') or it.get('id'))[:24])})
+    return out
+
+
+def _validate_crf_table(it, where):
+    """表格题的列/行结构校验。"""
+    errs = []
+    label, allowed = CRF_TABLE_TYPES[it['type']]
+    cols = it.get('columns')
+    if not isinstance(cols, list) or not cols:
+        return [where + ' 表格题必须有 columns']
+    cids = set()
+    for j, c in enumerate(cols):
+        w = '{} 的第 {} 列'.format(where, j + 1)
+        if not isinstance(c, dict):
+            errs.append(w + ' 必须是对象'); continue
+        if not c.get('id'):
+            errs.append(w + ' 缺 id')
+        elif c['id'] in cids:
+            errs.append(w + ' id 重复: ' + str(c['id']))
+        else:
+            cids.add(c['id'])
+        ct = c.get('type')
+        if ct not in allowed:
+            errs.append('{} 的 type 是 {!r}, 但「{}」只允许 {}'.format(
+                w, ct, label, '/'.join(allowed)))
+        elif ct in CRF_OPTION_TYPES and not (isinstance(c.get('options'), list) and c['options']):
+            errs.append(w + ' 选择类列必须有 options')
+    rows = it.get('rows')
+    if rows is not None and not isinstance(rows, list):
+        errs.append(where + ' rows 必须是数组(固定行的行名), 动态加行请置为 null 并设 dynamic:true')
+    if not rows and not it.get('dynamic'):
+        errs.append(where + ' 表格既没有固定 rows, 也没标 dynamic:true —— 那这张表格永远是空的')
+    return errs
+
+
+def _validate_crf_cond(cond, ids, where):
+    """条件表达式校验(支持 all/any/not 嵌套)。"""
+    errs = []
+    if not isinstance(cond, dict):
+        return [where + ' 的条件必须是对象']
+    for key in ('all', 'any'):
+        if key in cond:
+            if not isinstance(cond[key], list) or not cond[key]:
+                errs.append('{} 的 {} 必须是非空数组'.format(where, key))
+            else:
+                for sub in cond[key]:
+                    errs += _validate_crf_cond(sub, ids, where)
+            return errs
+    if 'not' in cond:
+        return _validate_crf_cond(cond['not'], ids, where)
+    f = cond.get('field')
+    if not f:
+        errs.append(where + ' 的条件缺 field')
+    elif f not in ids:
+        errs.append('{} 的条件引用了不存在的题 {!r}'.format(where, f))
+    op = cond.get('op')
+    if op not in CRF_OPS:
+        errs.append('{} 的条件 op 必须是 {} 之一, 得到 {!r}'.format(where, '/'.join(CRF_OPS), op))
+    elif op not in ('empty', 'filled') and 'value' not in cond:
+        errs.append('{} 的条件缺 value'.format(where))
+    return errs
+
+
+def _crf_blank(v):
+    return v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, (list, dict)) and not v)
+
+
+def _eval_crf_cond(cond, data, visible):
+    """求值一个条件。
+
+    **被隐藏的题, 其答案不参与任何条件求值** —— 这是这块最容易错的地方:
+    患者答了 Q2=是 让 Q3 出现, 然后改了 Q1 使 Q2 被隐藏, 如果 Q2 的旧答案还算数,
+    Q3 就会一直挂在那儿。临床数据里这叫幽灵数据, 导出后没人看得出哪些该作废。
+    """
+    if 'all' in cond:
+        return all(_eval_crf_cond(c, data, visible) for c in cond['all'])
+    if 'any' in cond:
+        return any(_eval_crf_cond(c, data, visible) for c in cond['any'])
+    if 'not' in cond:
+        return not _eval_crf_cond(cond['not'], data, visible)
+    f, op = cond.get('field'), cond.get('op')
+    v = data.get(f) if visible.get(f, True) else None
+    tgt = cond.get('value')
+    if op == 'empty':
+        return _crf_blank(v)
+    if op == 'filled':
+        return not _crf_blank(v)
+    if _crf_blank(v):
+        return False        # 没答的题, 除 empty 外一律不满足
+    try:
+        if op == 'eq':
+            return v == tgt
+        if op == 'ne':
+            return v != tgt
+        if op == 'in':
+            return v in (tgt if isinstance(tgt, list) else [tgt])
+        if op == 'contains':
+            return tgt in v if isinstance(v, (list, str)) else False
+        fv, ft = float(v), float(tgt)
+        return {'gt': fv > ft, 'gte': fv >= ft, 'lt': fv < ft, 'lte': fv <= ft}[op]
+    except (TypeError, ValueError, KeyError):
+        return False
+
+
+def eval_crf_logic(definition, data):
+    """跑一遍逻辑规则 (方案 §2.1(2))。返回 state:
+
+      {visible:{id:bool}, enabled:{id:bool}, required:{id:bool},
+       auto:{id:value}, violations:[...], stale:[被隐藏但仍有答案的题], passes:n}
+
+    规则会级联(Q1 显示 Q2, Q2 的值再显示 Q3), 所以要迭代到不动点。上限是题数+2 轮:
+    真实的级联深度不会超过题数, 超了说明规则互相打架(A 显示 B、B 隐藏 A),
+    这时不静默收敛到某一轮的结果, 而是报出来让人去改规则 —— 静默收敛的后果是
+    同一份数据在不同浏览器/不同填写顺序下呈现不同的表单。
+    """
+    data = data or {}
+    pairs = _crf_items(definition)
+    ids = [it.get('id') for _, it in pairs]
+    by_id = {it.get('id'): it for _, it in pairs}
+    rules = (definition or {}).get('logic') or []
+
+    def base_state():
+        vis, en, req = {}, {}, {}
+        for i in ids:
+            it = by_id[i]
+            vis[i] = it.get('hidden') is not True
+            en[i] = it.get('disabled') is not True
+            req[i] = bool(it.get('required')) and it.get('type') not in CRF_NO_ANSWER_TYPES
+        return vis, en, req
+
+    visible, enabled, required = base_state()
+    auto, violations = {}, []
+    passes, stable = 0, False
+    limit = len(ids) + 2
+    while passes < limit:
+        passes += 1
+        nv, ne, nr = base_state()
+        na, nviol = {}, []
+        for rule in rules:
+            then = rule.get('then') or rule
+            act = then.get('action') or rule.get('action')
+            tgts = then.get('targets') or rule.get('targets') or []
+            if act == 'exclusive':
+                filled = [t for t in tgts if visible.get(t, True) and not _crf_blank(data.get(t))]
+                if len(filled) > 1:
+                    nviol.append({
+                        'rule': 'exclusive', 'fields': filled,
+                        'severity': rule.get('severity') or 'block',
+                        'message': rule.get('message') or '「{}」互斥, 不能同时填写'.format(
+                            '」「'.join(str((by_id.get(t) or {}).get('text') or t)[:20] for t in filled))})
+                continue
+            if not _eval_crf_cond(rule.get('when') or {}, data, visible):
+                continue
+            for t in tgts:
+                if act == 'show':
+                    nv[t] = True
+                elif act == 'hide':
+                    nv[t] = False
+                elif act == 'enable':
+                    ne[t] = True
+                elif act == 'disable':
+                    ne[t] = False
+                elif act == 'require':
+                    nr[t] = True
+                elif act == 'optional':
+                    nr[t] = False
+                elif act == 'set_value':
+                    na[t] = then.get('value')
+            if act == 'check':
+                nviol.append({
+                    'rule': 'check', 'fields': list(tgts),
+                    'severity': rule.get('severity') or 'warn',
+                    'message': rule.get('message') or '逻辑校验未通过'})
+        if (nv, ne, nr) == (visible, enabled, required):
+            visible, enabled, required, auto, violations = nv, ne, nr, na, nviol
+            stable = True
+            break
+        visible, enabled, required, auto, violations = nv, ne, nr, na, nviol
+    if not stable:
+        violations.append({
+            'rule': 'logic_cycle', 'fields': [], 'severity': 'block',
+            'message': '逻辑规则在 {} 轮内没有收敛, 多半是两条规则互相打架'
+                       '(比如 A 显示 B、B 又隐藏 A)。请检查规则表 —— 不改的话, '
+                       '同一份数据在不同填写顺序下会呈现不同的表单'.format(limit)})
+    # 被隐藏却仍带着答案的题 = 幽灵数据。不在这里直接删(那是静默改数据),
+    # 交给 submit 决定, 但一定要报出来。
+    stale = [i for i in ids if not visible.get(i, True) and not _crf_blank(data.get(i))]
+    return {'visible': visible, 'enabled': enabled, 'required': required,
+            'auto': auto, 'violations': violations, 'stale': stale, 'passes': passes}
+
+
+def validate_crf_data(definition, data, state=None):
+    """校验一份 CRF 填报。返回 (errors, warnings)。
+
+    强校验(block)进 errors 会挡住提交, 弱校验(warn)进 warnings 只提示 —— 方案 §2.1(2)
+    明写要这两档。这里复用 M13 的 QC_FORMAT_CHECKS, 不另起一套格式规则:
+    身份证/手机号的判定标准在整个平台里只该有一份。
+    """
+    data = data or {}
+    state = state or eval_crf_logic(definition, data)
+    errors, warnings = [], []
+    for _, it in _crf_items(definition):
+        iid, t = it.get('id'), it.get('type')
+        if t in CRF_NO_ANSWER_TYPES:
+            continue
+        # 隐藏的题一律不校验。不设这条, 一个被逻辑隐藏的必填项会让表单永远提交不了,
+        # 而且报错指向的题在界面上根本看不见 —— 使用者完全无从下手。
+        if not state['visible'].get(iid, True):
+            continue
+        v = data.get(iid)
+        if _crf_blank(v):
+            if state['required'].get(iid):
+                errors.append({'field': iid, 'error': '必填项未作答'})
+            continue
+        if t == 'number':
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                errors.append({'field': iid, 'error': '必须是数字'}); continue
+            lo, hi = it.get('min'), it.get('max')
+            if (lo is not None and fv < lo) or (hi is not None and fv > hi):
+                errors.append({'field': iid, 'error': '超出允许范围 {}~{}'.format(
+                    _fmt_num(lo) if lo is not None else '-', _fmt_num(hi) if hi is not None else '-')})
+        elif t == 'date':
+            if not re.match(r'^\d{4}-\d{2}-\d{2}$', str(v)):
+                errors.append({'field': iid, 'error': "日期格式应为 YYYY-MM-DD"})
+        elif t in ('single', 'select'):
+            vals = [o.get('value') for o in (it.get('options') or [])]
+            if v not in vals:
+                errors.append({'field': iid, 'error': '答案不在选项范围内'})
+        elif t == 'multi':
+            if not isinstance(v, list):
+                errors.append({'field': iid, 'error': '多选题答案必须是数组'})
+            else:
+                vals = [o.get('value') for o in (it.get('options') or [])]
+                bad = [x for x in v if x not in vals]
+                if bad:
+                    errors.append({'field': iid, 'error': '含不在选项范围内的答案: {}'.format(bad[:3])})
+        elif t in CRF_TABLE_TYPES:
+            errors += _validate_crf_table_data(it, v)
+        if it.get('format') and isinstance(v, str):
+            msg = QC_FORMAT_CHECKS[it['format']](v)
+            if msg:
+                errors.append({'field': iid, 'error': msg})
+        if it.get('maxlength') and isinstance(v, str) and len(v) > int(it['maxlength']):
+            errors.append({'field': iid, 'error': '超过 {} 字'.format(it['maxlength'])})
+
+    for vi in state['violations']:
+        (errors if vi.get('severity') == 'block' else warnings).append(
+            {'field': (vi.get('fields') or [None])[0], 'error': vi['message'], 'rule': vi['rule']})
+    for iid in state['stale']:
+        warnings.append({'field': iid, 'rule': 'stale_hidden',
+                         'error': '该题已被逻辑隐藏但仍留有答案 —— 提交时会连同隐藏原因一起归档, '
+                                  '不会计入本次数据'})
+    return errors, warnings
+
+
+def _validate_crf_table_data(it, v):
+    """表格题答案校验。答案形如 [{列id: 值}, ...], 一个元素一行。"""
+    iid = it.get('id')
+    if not isinstance(v, list):
+        return [{'field': iid, 'error': '表格题答案必须是数组(每个元素一行)'}]
+    cols = {c['id']: c for c in (it.get('columns') or []) if c.get('id')}
+    rows = it.get('rows')
+    if rows and len(v) != len(rows):
+        return [{'field': iid, 'error': '固定行表格应有 {} 行, 收到 {} 行'.format(len(rows), len(v))}]
+    if it.get('dynamic') and it.get('max_rows') and len(v) > int(it['max_rows']):
+        return [{'field': iid, 'error': '最多 {} 行'.format(it['max_rows'])}]
+    errs = []
+    for ri, row in enumerate(v):
+        if not isinstance(row, dict):
+            errs.append({'field': iid, 'error': '第 {} 行必须是对象'.format(ri + 1)}); continue
+        for cid, cv in row.items():
+            c = cols.get(cid)
+            if c is None:
+                errs.append({'field': iid, 'error': '第 {} 行有未定义的列 {!r}'.format(ri + 1, cid)})
+                continue
+            if _crf_blank(cv):
+                if c.get('required'):
+                    errs.append({'field': iid, 'error': '第 {} 行「{}」必填'.format(
+                        ri + 1, c.get('label') or cid)})
+                continue
+            ct = c.get('type')
+            if ct == 'number':
+                try:
+                    fv = float(cv)
+                except (TypeError, ValueError):
+                    errs.append({'field': iid, 'error': '第 {} 行「{}」必须是数字'.format(
+                        ri + 1, c.get('label') or cid)}); continue
+                lo, hi = c.get('min'), c.get('max')
+                if (lo is not None and fv < lo) or (hi is not None and fv > hi):
+                    errs.append({'field': iid, 'error': '第 {} 行「{}」超出范围 {}~{}'.format(
+                        ri + 1, c.get('label') or cid,
+                        _fmt_num(lo) if lo is not None else '-',
+                        _fmt_num(hi) if hi is not None else '-')})
+            elif ct == 'date' and not re.match(r'^\d{4}-\d{2}-\d{2}$', str(cv)):
+                errs.append({'field': iid, 'error': '第 {} 行「{}」日期格式应为 YYYY-MM-DD'.format(
+                    ri + 1, c.get('label') or cid)})
+            elif ct in ('single', 'select'):
+                vals = [o.get('value') for o in (c.get('options') or [])]
+                if cv not in vals:
+                    errs.append({'field': iid, 'error': '第 {} 行「{}」答案不在选项范围内'.format(
+                        ri + 1, c.get('label') or cid)})
+            elif ct == 'multi' and not isinstance(cv, list):
+                errs.append({'field': iid, 'error': '第 {} 行「{}」多选答案必须是数组'.format(
+                    ri + 1, c.get('label') or cid)})
+    return errs
+
+
+# ---- 版本管理: 方案 §2.1(3) "支持项目开展中增改变量、调整顺序, 且修改不影响已有数据" ----
+#
+# "不影响已有数据" 的实现不是"不让改", 而是**分清哪些改动会让旧数据变得读不懂**:
+#
+#   删掉一道题     -> 旧记录里那道题的答案成了没有归属的孤儿值        -> 破坏性
+#   改题型         -> 旧答案的数据形态对不上新定义(单选值 vs 数组)    -> 破坏性
+#   删/改选项分值  -> 旧记录指向一个不再存在的选项, 导出时无法翻译     -> 破坏性
+#   收紧取值范围   -> 旧记录里合法的值现在成了非法值                  -> 破坏性
+#   新增题         -> 旧记录只是缺这一项, 是正常的缺失, 不是损坏      -> 安全
+#   改题干措辞     -> 答案含义不变                                    -> 安全
+#   调整顺序       -> 数据按 id 存, 与顺序无关                        -> 安全
+#   放宽取值范围   -> 旧值仍然合法                                    -> 安全
+#
+# 破坏性改动一律**开新版本**, 旧填报仍钉在旧版本上, 两边都完整可读。
+# 安全改动就地改, 免得改个错别字也涨一个版本、把版本号变成噪音。
+def classify_crf_change(old_def, new_def):
+    """比对两版 CRF 定义。返回 {breaking:[...], safe:[...], verdict:'in_place'|'new_version'}"""
+    breaking, safe = [], []
+    old_items = {it.get('id'): it for _, it in _crf_items(old_def or {})}
+    new_items = {it.get('id'): it for _, it in _crf_items(new_def or {})}
+
+    for iid, oit in old_items.items():
+        nit = new_items.get(iid)
+        if nit is None:
+            breaking.append({'field': iid, 'kind': 'item_removed',
+                             'detail': '删除了题「{}」—— 已填报记录里这道题的答案会成为无归属的孤儿值'.format(
+                                 str(oit.get('text') or iid)[:30])})
+            continue
+        if oit.get('type') != nit.get('type'):
+            breaking.append({'field': iid, 'kind': 'type_changed',
+                             'detail': '题「{}」的类型由 {} 改为 {} —— 旧答案的数据形态对不上新定义'.format(
+                                 str(oit.get('text') or iid)[:20], oit.get('type'), nit.get('type'))})
+            continue
+        if oit.get('type') in CRF_OPTION_TYPES:
+            ov = set(json.dumps(o.get('value'), sort_keys=True) for o in (oit.get('options') or []))
+            nv = set(json.dumps(o.get('value'), sort_keys=True) for o in (nit.get('options') or []))
+            gone = ov - nv
+            if gone:
+                breaking.append({'field': iid, 'kind': 'option_removed',
+                                 'detail': '题「{}」删掉了 {} 个选项值 —— 已选过这些选项的记录将指向不存在的选项'.format(
+                                     str(oit.get('text') or iid)[:20], len(gone))})
+            elif nv - ov:
+                safe.append({'field': iid, 'kind': 'option_added',
+                             'detail': '题「{}」新增了 {} 个选项'.format(
+                                 str(oit.get('text') or iid)[:20], len(nv - ov))})
+        if oit.get('type') == 'number':
+            for key, tighter in (('min', lambda o, n: n > o), ('max', lambda o, n: n < o)):
+                ov, nv = oit.get(key), nit.get(key)
+                if nv is None:
+                    if ov is not None:
+                        safe.append({'field': iid, 'kind': key + '_relaxed',
+                                     'detail': '题「{}」去掉了 {} 限制'.format(str(oit.get('text') or iid)[:20], key)})
+                elif ov is None or tighter(ov, nv):
+                    breaking.append({'field': iid, 'kind': key + '_tightened',
+                                     'detail': '题「{}」把 {} 收紧为 {} —— 已填报中原本合法的值可能变成非法'.format(
+                                         str(oit.get('text') or iid)[:20], key, _fmt_num(nv))})
+                elif ov != nv:
+                    safe.append({'field': iid, 'kind': key + '_relaxed',
+                                 'detail': '题「{}」把 {} 放宽为 {}'.format(
+                                     str(oit.get('text') or iid)[:20], key, _fmt_num(nv))})
+        if oit.get('type') in CRF_TABLE_TYPES:
+            oc = {c.get('id') for c in (oit.get('columns') or [])}
+            nc = {c.get('id') for c in (nit.get('columns') or [])}
+            if oc - nc:
+                breaking.append({'field': iid, 'kind': 'column_removed',
+                                 'detail': '表格题「{}」删掉了 {} 列 —— 旧记录里这些列的值会失去列定义'.format(
+                                     str(oit.get('text') or iid)[:20], len(oc - nc))})
+            elif nc - oc:
+                safe.append({'field': iid, 'kind': 'column_added',
+                             'detail': '表格题「{}」新增了 {} 列'.format(
+                                 str(oit.get('text') or iid)[:20], len(nc - oc))})
+        if oit.get('text') != nit.get('text'):
+            safe.append({'field': iid, 'kind': 'text_changed',
+                         'detail': '改了题「{}」的措辞(答案含义不变)'.format(iid)})
+
+    for iid, nit in new_items.items():
+        if iid not in old_items:
+            safe.append({'field': iid, 'kind': 'item_added',
+                         'detail': '新增题「{}」{} —— 已有记录只是缺这一项, 属正常缺失'.format(
+                             str(nit.get('text') or iid)[:30],
+                             '(必填, 已有记录会显示为不完整)' if nit.get('required') else '')})
+
+    old_order = [i for i in old_items if i in new_items]
+    new_order = [i for i in new_items if i in old_items]
+    if old_order != new_order:
+        safe.append({'field': None, 'kind': 'reordered',
+                     'detail': '调整了题目顺序(数据按 id 存, 与顺序无关)'})
+    if json.dumps((old_def or {}).get('logic') or [], sort_keys=True, ensure_ascii=False) != \
+       json.dumps((new_def or {}).get('logic') or [], sort_keys=True, ensure_ascii=False):
+        safe.append({'field': None, 'kind': 'logic_changed',
+                     'detail': '改了逻辑规则 —— 只影响今后的填写过程, 不改变已存数据的含义'})
+
+    return {'breaking': breaking, 'safe': safe,
+            'verdict': 'new_version' if breaking else 'in_place'}
+
+
+def _bump_version(v):
+    """'1' -> '2'; 'v1.2' -> 'v1.3'; 认不出数字就在后面挂 -2。"""
+    m = re.search(r'(\d+)(?!.*\d)', str(v or '1'))
+    if not m:
+        return str(v) + '-2'
+    return str(v)[:m.start()] + str(int(m.group(1)) + 1) + str(v)[m.end():]
+
+
+def ensure_platform_crf_tables():
+    """M14: CRF 定义表 + 填报表 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_crf (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(64) NOT NULL,
+                name VARCHAR(128) NOT NULL,
+                category VARCHAR(64) DEFAULT NULL COMMENT '病种/科室',
+                visit_type VARCHAR(32) DEFAULT NULL COMMENT '初诊/随诊/结局...',
+                version VARCHAR(32) NOT NULL DEFAULT '1',
+                scope ENUM('private','shared') DEFAULT 'private' COMMENT '§2.1(3) 私有/院内共享',
+                owner VARCHAR(64) DEFAULT NULL COMMENT '创建者; 私有 CRF 仅其可改',
+                source VARCHAR(32) DEFAULT 'manual' COMMENT 'manual/ai/excel/copy',
+                copied_from VARCHAR(191) DEFAULT NULL COMMENT '拷贝自 code@version',
+                definition JSON NOT NULL COMMENT '分节 + 题目 + 逻辑规则',
+                item_count INT DEFAULT NULL COMMENT '写入时算好的题数(含分节内的题)。
+                    不在查询时用 JSON_LENGTH 算: 那只数得到顶层 $.items, 分节的题一律漏掉,
+                    列表页会显示 "--"。这个数在写入时是已知的, 存下来最省事也最准。',
+                media JSON DEFAULT NULL COMMENT '§2.1(3) 音视频指导文件 [{name,url,type}]',
+                status ENUM('draft','active','archived') DEFAULT 'draft',
+                active TINYINT(1) DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_crf_code_version (code, version),
+                INDEX idx_scope (scope),
+                INDEX idx_category (category),
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M14 CRF 定义 (破坏性改动开新版, 旧填报钉旧版)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_crf_response (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                crf_code VARCHAR(64) NOT NULL,
+                crf_version VARCHAR(32) NOT NULL COMMENT '钉住填报时的版本, 后来改 CRF 不影响本条',
+                patient_no VARCHAR(64) NOT NULL,
+                plan_id BIGINT DEFAULT NULL,
+                visit_name VARCHAR(64) DEFAULT NULL COMMENT '访视节点名',
+                data JSON NOT NULL,
+                hidden_data JSON DEFAULT NULL COMMENT '提交时被逻辑隐藏的题的残留答案, 归档不计入',
+                operator VARCHAR(64) DEFAULT NULL,
+                status ENUM('submitted','superseded') DEFAULT 'submitted',
+                revision_of BIGINT DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_patient (patient_no, created_at),
+                INDEX idx_crf (crf_code, crf_version),
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M14 CRF 填报 (修订走新增+旧版标 superseded)'
+        """)
+        # 老库补 item_count 列 (本列 2026-08-02 才加, 此前建的表没有)
+        cur.execute("SHOW COLUMNS FROM platform_crf LIKE 'item_count'")
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE platform_crf ADD COLUMN item_count INT DEFAULT NULL "
+                        "COMMENT '写入时算好的题数(含分节内的题)'")
+            print('[启动] platform_crf 补列 item_count')
+        print('[启动] platform_crf / platform_crf_response 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_crf_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def upsert_platform_crf(body):
+    """建/改 CRF。破坏性改动自动开新版 (方案 §2.1(3))。
+
+    {code, name, definition, category?, visit_type?, scope?, owner?, version?,
+     status?, media?, source?, force_version?}
+
+    改一份**已有填报**的 CRF 时:
+      - 只有安全改动 -> 就地改, 版本号不变
+      - 有破坏性改动 -> 自动开新版, 旧版原样留着, 旧填报继续钉在旧版上
+    没有填报的 CRF 怎么改都就地改 —— 没有数据要保护, 涨版本号只是噪音。
+    """
+    code = str(body.get('code') or '').strip()
+    name = str(body.get('name') or '').strip()
+    if not code or not name:
+        return None, 'code 和 name 必填'
+    scope = body.get('scope') or 'private'
+    if scope not in CRF_SCOPES:
+        return None, 'scope 必须是 private 或 shared'
+    definition = body.get('definition')
+    if isinstance(definition, str):
+        try:
+            definition = json.loads(definition)
+        except ValueError:
+            return None, 'definition 不是合法 JSON'
+    errs = validate_crf_definition(definition)
+    if errs:
+        return None, 'CRF 定义有 {} 处问题: {}'.format(len(errs), '; '.join(errs[:6]))
+
+    ensure_platform_crf_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        version = str(body.get('version') or '').strip()
+        if version:
+            cur.execute('SELECT definition, owner FROM platform_crf WHERE code=%s AND version=%s',
+                        (code, version))
+        else:
+            cur.execute('SELECT definition, owner, version FROM platform_crf WHERE code=%s '
+                        'ORDER BY updated_at DESC LIMIT 1', (code,))
+        row = cur.fetchone()
+
+        change, note = None, None
+        if row:
+            old_def = row[0]
+            if isinstance(old_def, str):
+                old_def = json.loads(old_def)
+            if not version:
+                version = row[2]
+            cur.execute("SELECT COUNT(*) FROM platform_crf_response WHERE crf_code=%s AND crf_version=%s",
+                        (code, version))
+            used = cur.fetchone()[0]
+            change = classify_crf_change(old_def, definition)
+            if change['breaking'] and used:
+                new_version = str(body.get('force_version') or _bump_version(version))
+                note = ('检测到 {} 处破坏性改动, 而该版本已有 {} 份填报 —— 已自动开新版 {} (原 {} 保持不变, '
+                        '旧填报仍钉在旧版上, 两边都完整可读)').format(
+                            len(change['breaking']), used, new_version, version)
+                version = new_version
+            elif change['breaking']:
+                note = '有 {} 处破坏性改动, 但该版本还没有任何填报, 就地修改'.format(len(change['breaking']))
+        else:
+            version = version or '1'
+
+        cur.execute("""
+            INSERT INTO platform_crf (code, name, category, visit_type, version, scope, owner,
+                                      source, copied_from, definition, item_count, media, status, active)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+              name=VALUES(name), category=VALUES(category), visit_type=VALUES(visit_type),
+              scope=VALUES(scope), owner=VALUES(owner), source=VALUES(source),
+              definition=VALUES(definition), item_count=VALUES(item_count),
+              media=VALUES(media), status=VALUES(status), active=VALUES(active)
+        """, (code, name, body.get('category') or None, body.get('visit_type') or None,
+              version, scope, body.get('owner') or None, body.get('source') or 'manual',
+              body.get('copied_from') or None,
+              json.dumps(definition, ensure_ascii=False),
+              len(_crf_items(definition)),
+              json.dumps(body.get('media') or [], ensure_ascii=False),
+              body.get('status') or 'draft',
+              0 if body.get('active') in (0, False, '0') else 1))
+        cur.close()
+        return {'code': code, 'version': version,
+                'items': len(_crf_items(definition)),
+                'change': change, 'note': note,
+                'advisories': lint_crf_definition(definition)}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_platform_crfs(code=None, version=None, scope=None, category=None,
+                        owner=None, all_versions=False, with_definition=False, limit=200):
+    """CRF 列表 / 单份定义。默认每个 code 只给最新一版。"""
+    ensure_platform_crf_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if code:
+            where.append('c.code=%s'); params.append(code)
+        if version:
+            where.append('c.version=%s'); params.append(version)
+        if scope:
+            where.append('c.scope=%s'); params.append(scope)
+        if category:
+            where.append('c.category=%s'); params.append(category)
+        if owner:
+            where.append('c.owner=%s'); params.append(owner)
+        if not (all_versions or version):
+            # 每个 code 只留最新一版 —— 列表页给人看的是"有哪些表", 不是"有哪些版本"
+            where.append("c.updated_at = (SELECT MAX(x.updated_at) FROM platform_crf x WHERE x.code=c.code)")
+        cols = ("c.id, c.code, c.name, c.category, c.visit_type, c.version, c.scope, c.owner, "
+                "c.source, c.copied_from, c.media, c.status, c.active, c.created_at, c.updated_at, "
+                "c.item_count, "
+                "(SELECT COUNT(*) FROM platform_crf_response r WHERE r.crf_code=c.code AND r.crf_version=c.version) AS response_count, "
+                "(SELECT COUNT(*) FROM platform_crf x WHERE x.code=c.code) AS version_count")
+        if with_definition or code:
+            cols += ', c.definition'
+        params.append(int(limit))
+        cur.execute('SELECT {} FROM platform_crf c WHERE {} ORDER BY c.category, c.code, c.updated_at DESC '
+                    'LIMIT %s'.format(cols, ' AND '.join(where)), params)
+        names = [d[0] for d in cur.description]
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(names, row))
+            for k in ('created_at', 'updated_at'):
+                if r.get(k) is not None and hasattr(r[k], 'strftime'):
+                    r[k] = r[k].strftime('%Y-%m-%d %H:%M:%S')
+            for k in ('media', 'definition'):
+                if isinstance(r.get(k), str):
+                    try:
+                        r[k] = json.loads(r[k])
+                    except ValueError:
+                        pass
+            # item_count 是写入时存下的。老库里可能还是 NULL(补列之前建的行),
+            # 这时若手头有 definition 就现算一个, 免得列表页显示 "--"。
+            if r.get('item_count') is None and r.get('definition'):
+                r['item_count'] = len(_crf_items(r['definition']))
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'crfs': out,
+                'item_types': dict(CRF_BASIC_TYPES,
+                                   **{k: v[0] for k, v in CRF_TABLE_TYPES.items()})}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def copy_platform_crf(body):
+    """拷贝一份 CRF (方案 §2.1(3) "支持 CRF 拷贝")。
+
+    拷贝出来的是**新 code 的第 1 版**, 不是原表的新版本 —— 拷贝的意图是"以此为底
+    另做一张表", 如果做成新版本, 改动就会牵连原表已有的填报。
+    """
+    src = str(body.get('code') or '').strip()
+    new_code = str(body.get('new_code') or '').strip()
+    if not src or not new_code:
+        return None, 'code(源) 和 new_code(新) 必填'
+    if src == new_code:
+        return None, 'new_code 不能与源相同 —— 拷贝要生成一张独立的表'
+    ensure_platform_crf_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if body.get('version'):
+            cur.execute('SELECT name, category, visit_type, version, definition, media '
+                        'FROM platform_crf WHERE code=%s AND version=%s', (src, str(body['version'])))
+        else:
+            cur.execute('SELECT name, category, visit_type, version, definition, media '
+                        'FROM platform_crf WHERE code=%s ORDER BY updated_at DESC LIMIT 1', (src,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '源 CRF 不存在: {}'.format(src)
+        cur.execute('SELECT 1 FROM platform_crf WHERE code=%s LIMIT 1', (new_code,))
+        if cur.fetchone():
+            cur.close()
+            return None, 'new_code 已存在: {}'.format(new_code)
+        name, category, visit_type, ver, defn, media = row
+        cur.close()
+        return upsert_platform_crf({
+            'code': new_code, 'name': body.get('new_name') or (name + ' (副本)'),
+            'category': category, 'visit_type': visit_type, 'version': '1',
+            'scope': body.get('scope') or 'private', 'owner': body.get('owner'),
+            'source': 'copy', 'copied_from': '{}@{}'.format(src, ver),
+            'definition': json.loads(defn) if isinstance(defn, str) else defn,
+            'media': json.loads(media) if isinstance(media, str) else media,
+            'status': 'draft'})
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def submit_crf_response(body):
+    """提交一份 CRF 填报。
+
+    {crf_code, crf_version?, patient_no, data{}, visit_name?, plan_id?, operator?,
+     revision_of?, allow_warnings?}
+
+    强校验不过直接拒收。被逻辑隐藏却仍带答案的题, 其值挪进 hidden_data 单独归档 ——
+    既不静默丢弃(那是偷偷改数据), 也不混进正式数据(那是把作废的答案当成有效填报)。
+    """
+    code = str(body.get('crf_code') or body.get('code') or '').strip()
+    patient_no = str(body.get('patient_no') or '').strip()
+    data = body.get('data')
+    if not code or not patient_no:
+        return None, 'crf_code 和 patient_no 必填'
+    if not isinstance(data, dict):
+        return None, 'data 必须是对象 {题目id: 答案}'
+
+    ensure_platform_crf_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        version = body.get('crf_version') or body.get('version')
+        if version:
+            cur.execute('SELECT version, definition FROM platform_crf WHERE code=%s AND version=%s',
+                        (code, str(version)))
+        else:
+            cur.execute('SELECT version, definition FROM platform_crf WHERE code=%s AND active=1 '
+                        'ORDER BY updated_at DESC LIMIT 1', (code,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, 'CRF 不存在或已停用: {}'.format(code)
+        version, definition = row[0], row[1]
+        if isinstance(definition, str):
+            definition = json.loads(definition)
+
+        state = eval_crf_logic(definition, data)
+        errors, warnings = validate_crf_data(definition, data, state)
+        if errors:
+            cur.close()
+            return {'ok': False, 'accepted': False, 'errors': errors,
+                    'warnings': warnings, 'state': state}, None
+        if warnings and not body.get('allow_warnings'):
+            cur.close()
+            return {'ok': False, 'accepted': False, 'errors': [],
+                    'warnings': warnings, 'state': state,
+                    'hint': '有 {} 条弱校验提示。确认无误后带 allow_warnings=true 再提交'.format(len(warnings))}, None
+
+        # 自动设值的题, 以规则算出来的值为准 —— 否则客户端传什么就存什么, 自动设值形同虚设
+        clean = {k: v for k, v in data.items() if state['visible'].get(k, True)}
+        clean.update(state['auto'])
+        hidden = {k: data[k] for k in state['stale']}
+
+        revision_of = body.get('revision_of')
+        if revision_of is not None:
+            try:
+                revision_of = int(revision_of)
+            except (TypeError, ValueError):
+                cur.close()
+                return None, 'revision_of 必须是整数'
+            cur.execute('SELECT id FROM platform_crf_response WHERE id=%s', (revision_of,))
+            if not cur.fetchone():
+                cur.close()
+                return None, '被修订的记录不存在: {}'.format(revision_of)
+
+        cur.execute("""
+            INSERT INTO platform_crf_response
+              (crf_code, crf_version, patient_no, plan_id, visit_name, data, hidden_data,
+               operator, status, revision_of)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'submitted',%s)
+        """, (code, version, patient_no, body.get('plan_id'), body.get('visit_name') or None,
+              json.dumps(clean, ensure_ascii=False),
+              json.dumps(hidden, ensure_ascii=False) if hidden else None,
+              body.get('operator') or None, revision_of))
+        new_id = cur.lastrowid
+        if revision_of is not None:
+            cur.execute("UPDATE platform_crf_response SET status='superseded' WHERE id=%s", (revision_of,))
+        cur.close()
+        return {'ok': True, 'accepted': True, 'id': new_id, 'crf_code': code,
+                'crf_version': version, 'saved_fields': len(clean),
+                'archived_hidden': len(hidden), 'warnings': warnings}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+# ---- §2.1(1) AI 辅助 CRF 生成 ----
+#
+# 和 M12 生成量表的关键差别: CRF **可以**给出完整可用的草稿, 量表不行。
+# 量表的划界值是实证结果, 编不出来; 而 CRF 只是采集表, 「记录用药名称」这道题
+# 没有对错之分 —— 编出来的题目最多是不合用, 不会产生看似正常的错误结论。
+# 所以这里给的是真题干而不是占位符, 但仍然是**草稿**, 仍然要人过一遍。
+CRF_BASE_SECTIONS = [
+    ('基本信息', [
+        ('patient_no', '门诊号', 'text', {'required': True}),
+        ('visit_date', '访视日期', 'date', {'required': True}),
+        ('age', '年龄', 'number', {'min': 0, 'max': 130}),
+        ('gender', '性别', 'single', {'options': [('男', 1), ('女', 2)]}),
+        ('phone', '联系电话', 'text', {'format': 'phone'}),
+    ]),
+    ('本次访视', [
+        ('visit_type', '访视类型', 'select',
+         {'options': [('初诊', 1), ('常规随诊', 2), ('计划外随访', 3)], 'required': True}),
+        ('chief_complaint', '主诉', 'paragraph', {}),
+    ]),
+    ('用药情况', [
+        ('on_med', '目前是否在用药', 'single',
+         {'options': [('是', 1), ('否', 0)], 'required': True}),
+        ('med_table', '用药清单', 'table_mixed', {
+            'dynamic': True, 'max_rows': 20,
+            'columns': [('drug', '药品名称', 'text', None), ('dose', '剂量', 'text', None),
+                        ('freq', '频次', 'select', [('每日一次', 1), ('每日两次', 2), ('每日三次', 3), ('按需', 9)]),
+                        ('adherence', '依从性', 'single', [('规律服用', 2), ('偶有漏服', 1), ('经常漏服', 0)])]}),
+    ]),
+    ('不良事件', [
+        ('has_ae', '本次随访期间是否发生不良事件', 'single',
+         {'options': [('是', 1), ('否', 0)], 'required': True}),
+        ('ae_desc', '不良事件描述', 'paragraph', {}),
+        ('ae_severity', '严重程度', 'select',
+         {'options': [('轻度', 1), ('中度', 2), ('重度', 3), ('严重不良事件', 4)]}),
+    ]),
+]
+
+
+def _mk_crf_item(iid, text, itype, extra):
+    it = {'id': iid, 'text': text, 'type': itype}
+    extra = extra or {}
+    if extra.get('required'):
+        it['required'] = True
+    for k in ('min', 'max', 'format', 'maxlength', 'dynamic', 'max_rows'):
+        if extra.get(k) is not None:
+            it[k] = extra[k]
+    if extra.get('options'):
+        it['options'] = [{'label': l, 'value': v} for l, v in extra['options']]
+    if extra.get('columns'):
+        it['columns'] = [dict({'id': cid, 'label': cl, 'type': ct},
+                              **({'options': [{'label': l, 'value': v} for l, v in copts]} if copts else {}))
+                         for cid, cl, ct, copts in extra['columns']]
+    return it
+
+
+def generate_crf_draft(spec):
+    """§2.1(1): 按病种/访视/采集需求生成 CRF 草稿。返回 (draft, report)。
+
+    后端可插拔, 与 M12 同一惯例: 默认本地模板, 配了 SCALE_LLM_PROVIDER=claude 且装了
+    SDK 才走大模型, 否则带原因回落模板而不是报错。
+    """
+    notes = []
+    disease = str(spec.get('disease') or '').strip()
+    visit = str(spec.get('visit_type') or '随诊').strip()
+    fields = [str(x).strip() for x in (spec.get('fields') or []) if str(x).strip()]
+    backend = (spec.get('backend') or os.environ.get('SCALE_LLM_PROVIDER') or 'template').lower()
+
+    draft, err = (None, None)
+    if backend == 'claude':
+        draft, err = _generate_via_claude({
+            'goal': 'CRF: {} {}'.format(disease, visit), 'dimensions': fields}, notes)
+        if err:
+            notes.append({'step': 'backend_fallback', 'confidence': 'high',
+                          'detail': '大模型后端不可用({}), 已回落本地模板'.format(err)})
+            draft = None
+
+    sections = []
+    for sec_name, items in CRF_BASE_SECTIONS:
+        sections.append({'name': sec_name,
+                         'items': [_mk_crf_item(*it) for it in items]})
+    notes.append({'step': 'base_template', 'confidence': 'high',
+                  'detail': '生成 {} 个基础章节({}), 覆盖 CRF 的通用骨架'.format(
+                      len(sections), '、'.join(s['name'] for s in sections))})
+
+    # 用户点名的采集字段单独成节。类型靠字段名里的线索猜, 猜不出一律给文本 ——
+    # 猜错成日期/数字会让人填不进去, 给文本至少填得进去, 事后改类型也是安全改动。
+    if fields:
+        extra = []
+        for i, f in enumerate(fields):
+            if re.search(r'(日期|时间|date)', f):
+                t, ex = 'date', {}
+            elif re.search(r'(次数|数量|年龄|身高|体重|剂量|评分|值|计数|水平|浓度)', f):
+                t, ex = 'number', {}
+            elif re.search(r'(是否|有无)', f):
+                t, ex = 'single', {'options': [('是', 1), ('否', 0)]}
+            elif re.search(r'(描述|说明|备注|小结|情况)', f):
+                t, ex = 'paragraph', {}
+            else:
+                t, ex = 'text', {}
+            extra.append(_mk_crf_item('f{}'.format(i + 1), f, t, ex))
+        sections.append({'name': '{}专项采集'.format(disease or '项目'), 'items': extra})
+        notes.append({'step': 'custom_fields', 'confidence': 'low',
+                      'detail': '按需求生成 {} 个专项字段。题型是按字段名里的关键词猜的'
+                                '(含"日期"→日期题、含"是否"→是否题…), 猜不准的一律给了文本题 —— '
+                                '请逐个核对; 事后改类型属破坏性改动, 有填报后会开新版'.format(len(extra))})
+
+    # 逻辑规则: 只生成能从题目语义确定推出来的那几条, 不臆造
+    logic = [
+        {'when': {'field': 'on_med', 'op': 'eq', 'value': 0},
+         'then': {'action': 'hide', 'targets': ['med_table']}},
+        {'when': {'field': 'has_ae', 'op': 'eq', 'value': 0},
+         'then': {'action': 'hide', 'targets': ['ae_desc', 'ae_severity']}},
+        {'when': {'field': 'has_ae', 'op': 'eq', 'value': 1},
+         'then': {'action': 'require', 'targets': ['ae_desc', 'ae_severity']}},
+    ]
+    notes.append({'step': 'logic', 'confidence': 'medium',
+                  'detail': '生成 {} 条逻辑规则: 没在用药就隐藏用药清单; 没有不良事件就隐藏'
+                            '描述与严重程度, 有则置为必填。被隐藏的题不参与必填校验, '
+                            '也不会把残留答案计入正式数据'.format(len(logic))})
+
+    definition = {'title': '{}{} CRF'.format(disease or '通用', visit),
+                  'sections': sections, 'logic': logic}
+    if draft and isinstance(draft.get('definition'), dict):
+        notes.append({'step': 'llm_merge', 'confidence': 'low',
+                      'detail': '大模型产出已作为参考并入草稿, 题干与题型仍须逐条核对'})
+
+    # 不用内置 hash(): Python 的字符串 hash 每个进程都重新加盐, 同样的病种+访视
+    # 在服务重启前后会算出不同的 code, 而这是个默认值, 使用者不会想到它会变。
+    # md5 只是拿来当稳定摘要, 不涉及任何安全用途。
+    import hashlib
+    code = re.sub(r'[^A-Za-z0-9]', '', (spec.get('code') or '')) or \
+        'CRF{}'.format(hashlib.md5((disease + '|' + visit).encode('utf-8')).hexdigest()[:6].upper())
+    out = {'code': code, 'name': definition['title'], 'category': disease or None,
+           'visit_type': visit, 'scope': 'private', 'source': 'ai',
+           'definition': definition}
+    report = {'backend': backend, 'item_count': len(_crf_items(definition)),
+              'section_count': len(sections), 'logic_count': len(logic),
+              'notes': notes, 'validation': validate_crf_definition(definition),
+              'advisories': lint_crf_definition(definition), 'needs_review': True}
+    return out, report
+
+
+# ---- §2.1(4) Excel 辅助建表 ----
+_EXCEL_TYPE_HINTS = [
+    (r'(单选|radio)', 'single'), (r'(多选|checkbox)', 'multi'),
+    (r'(下拉|select|dropdown)', 'select'), (r'(日期|date)', 'date'),
+    (r'(数值|数字|number|int|float)', 'number'),
+    (r'(段落|长文本|textarea|paragraph)', 'paragraph'),
+    (r'(文本|填空|text|string)', 'text'), (r'(提示|说明|note)', 'note'),
+]
+
+
+def parse_excel_to_crf(xlsx_bytes, code=None, name=None):
+    """§2.1(4): Excel 模板 -> CRF 草稿。返回 (draft, report, error)。
+
+    认两种排布, 自动判断:
+      A. **配置式** —— 表头含"题型/类型"等列, 一行一道题, 列里写明题干/类型/选项/必填
+      B. **数据式** —— 就是一张普通表格, 首行是字段名。这时题型只能靠**下面几行的实际值**
+         去推: 整列都是 YYYY-MM-DD 就当日期题, 整列都是数字就当数字题, 取值种类很少
+         且重复出现就当单选题。推不出来一律给文本题。
+
+    B 类推断一定会有错, 所以每一列都在 report 里写明"凭什么这么判", 让人对着核。
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        return None, None, ('服务器未安装 openpyxl, 无法解析 Excel。'
+                            '装法: pip install openpyxl —— 在那之前请改用「AI 生成」或手工建表')
+    try:
+        import io
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True, read_only=True)
+    except Exception as e:
+        return None, None, 'Excel 打不开: {}'.format(e)
+
+    ws = wb[wb.sheetnames[0]]
+    rows = []
+    for r in ws.iter_rows(max_row=200, values_only=True):
+        if r and any(c is not None and str(c).strip() for c in r):
+            rows.append([('' if c is None else str(c).strip()) for c in r])
+    wb.close()
+    if not rows:
+        return None, None, 'Excel 第一个工作表是空的'
+
+    header = rows[0]
+    notes = []
+    hidx = {}
+    for i, h in enumerate(header):
+        for key, pats in (('text', r'(题干|问题|字段名?|标题|name|label)'),
+                          ('type', r'(题型|类型|type)'),
+                          ('options', r'(选项|可选值|options)'),
+                          ('required', r'(必填|required)'),
+                          ('id', r'^(id|编码|变量名|code)$'),
+                          ('section', r'(章节|分节|section|模块)')):
+            if key not in hidx and re.search(pats, h, re.I):
+                hidx[key] = i
+    config_mode = 'text' in hidx and 'type' in hidx
+
+    items, sections = [], {}
+    if config_mode:
+        notes.append({'step': 'layout', 'confidence': 'high',
+                      'detail': '识别为配置式表格(表头含题干与题型列), 一行一道题'})
+        for ri, row in enumerate(rows[1:], start=2):
+            txt = row[hidx['text']] if hidx['text'] < len(row) else ''
+            if not txt:
+                continue
+            raw_t = row[hidx['type']] if hidx['type'] < len(row) else ''
+            t = 'text'
+            for pat, tt in _EXCEL_TYPE_HINTS:
+                if re.search(pat, raw_t, re.I):
+                    t = tt; break
+            iid = (row[hidx['id']] if 'id' in hidx and hidx['id'] < len(row) else '') or 'e{}'.format(ri)
+            iid = re.sub(r'[^0-9A-Za-z_]', '_', str(iid)) or 'e{}'.format(ri)
+            it = {'id': iid, 'text': txt, 'type': t}
+            if 'required' in hidx and hidx['required'] < len(row) and \
+                    re.search(r'(是|必填|Y|yes|true|1)', row[hidx['required']], re.I):
+                it['required'] = True
+            if t in CRF_OPTION_TYPES:
+                raw_o = row[hidx['options']] if 'options' in hidx and hidx['options'] < len(row) else ''
+                opts = [o.strip() for o in re.split(r'[;；,，/|]', raw_o) if o.strip()]
+                if not opts:
+                    notes.append({'step': 'options_missing', 'confidence': 'high',
+                                  'detail': '第 {} 行「{}」是选择题但没给选项, 已降级为文本题'.format(ri, txt[:20])})
+                    it['type'] = 'text'
+                else:
+                    it['options'] = [{'label': o, 'value': i} for i, o in enumerate(opts)]
+            sec = row[hidx['section']] if 'section' in hidx and hidx['section'] < len(row) else ''
+            sections.setdefault(sec or '', []).append(it)
+            items.append(it)
+    else:
+        notes.append({'step': 'layout', 'confidence': 'medium',
+                      'detail': '未找到题型列, 按数据式表格处理: 首行当字段名, '
+                                '题型由下面 {} 行的实际取值推断'.format(len(rows) - 1)})
+        body = rows[1:]
+        for ci, hname in enumerate(header):
+            if not hname:
+                continue
+            col = [r[ci] for r in body if ci < len(r) and r[ci] != '']
+            it = {'id': 'c{}'.format(ci + 1), 'text': hname, 'type': 'text'}
+            why = '整列无有效取值, 默认文本题'
+            if col:
+                if all(re.match(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}', c) for c in col):
+                    it['type'] = 'date'; why = '{} 个取值全都是日期格式'.format(len(col))
+                elif all(re.match(r'^-?\d+(\.\d+)?$', c) for c in col):
+                    it['type'] = 'number'; why = '{} 个取值全都是数字'.format(len(col))
+                    nums = [float(c) for c in col]
+                    it['min'], it['max'] = min(nums), max(nums)
+                    why += ', 按实测范围暂定 min/max 为 {}~{} —— 这只是样本范围, 不是业务约束, 请核对'.format(
+                        _fmt_num(it['min']), _fmt_num(it['max']))
+                else:
+                    uniq = sorted(set(col))
+                    if 2 <= len(uniq) <= 8 and len(col) >= len(uniq) * 2:
+                        it['type'] = 'single'
+                        it['options'] = [{'label': u, 'value': i} for i, u in enumerate(uniq)]
+                        why = '只有 {} 种取值且重复出现({} 行), 判为单选题'.format(len(uniq), len(col))
+                    else:
+                        # 用**中位数**长度而不是最大值: 一列三四个字的科室代码里混进一条
+                        # 三十字的备注, 按最大值就把整列判成段落题了。中位数反映的是
+                        # "这一列平常长什么样"。25 字是单行输入框大致装得下的中文上限。
+                        lens = sorted(len(c) for c in col)
+                        med = lens[len(lens) // 2]
+                        if med >= 25:
+                            it['type'] = 'paragraph'
+                            why = '取值长度中位数 {} 字(最长 {} 字), 单行输入框装不下, 判为段落题'.format(
+                                med, lens[-1])
+                        else:
+                            why = '取值零散、长度中位数仅 {} 字, 判为文本题'.format(med)
+            notes.append({'step': 'column_type', 'confidence': 'low',
+                          'detail': '列「{}」判为{} —— {}'.format(
+                              hname[:20], CRF_BASIC_TYPES.get(it['type'], it['type']), why)})
+            items.append(it)
+        sections[''] = items
+
+    definition = ({'sections': [{'name': k, 'items': v} for k, v in sections.items() if k],
+                   'items': sections.get('', []), 'logic': []}
+                  if any(sections.keys()) else {'items': items, 'logic': []})
+    definition = {k: v for k, v in definition.items() if v or k == 'logic'}
+    if 'items' not in definition and 'sections' not in definition:
+        definition['items'] = items
+
+    draft = {'code': code or re.sub(r'[^0-9A-Za-z]', '', ws.title)[:20] or 'CRFXLSX',
+             'name': name or ws.title or 'Excel 导入的 CRF',
+             'scope': 'private', 'source': 'excel', 'definition': definition}
+    report = {'sheet': ws.title, 'rows_read': len(rows), 'mode': 'config' if config_mode else 'data',
+              'item_count': len(_crf_items(definition)), 'notes': notes,
+              'validation': validate_crf_definition(definition),
+              'advisories': lint_crf_definition(definition), 'needs_review': True}
+    return draft, report, None
+
+
+def query_crf_responses(patient_no=None, code=None, include_superseded=False, limit=100):
+    """CRF 填报记录列表。"""
+    ensure_platform_crf_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if patient_no:
+            where.append('r.patient_no=%s'); params.append(patient_no)
+        if code:
+            where.append('r.crf_code=%s'); params.append(code)
+        if not include_superseded:
+            where.append("r.status='submitted'")
+        params.append(int(limit))
+        cur.execute("""
+            SELECT r.id, r.crf_code, r.crf_version, c.name, r.patient_no, p.name,
+                   r.visit_name, r.data, r.hidden_data, r.operator, r.status,
+                   r.revision_of, r.plan_id, r.created_at
+            FROM platform_crf_response r
+            LEFT JOIN platform_crf c ON c.code=r.crf_code AND c.version=r.crf_version
+            LEFT JOIN platform_patient p ON p.patient_no=r.patient_no
+            WHERE {}
+            ORDER BY r.created_at DESC, r.id DESC LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'crf_code', 'crf_version', 'crf_name', 'patient_no', 'patient_name',
+                'visit_name', 'data', 'hidden_data', 'operator', 'status', 'revision_of',
+                'plan_id', 'created_at']
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            if r.get('created_at') is not None and hasattr(r['created_at'], 'strftime'):
+                r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+            for k in ('data', 'hidden_data'):
+                if isinstance(r.get(k), str):
+                    try:
+                        r[k] = json.loads(r[k])
+                    except ValueError:
+                        pass
+            r['field_count'] = len(r['data']) if isinstance(r.get('data'), dict) else 0
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'responses': out}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -4884,6 +6179,36 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/crfs':
+            try:
+                limit = min(int((query.get('limit') or ['200'])[0]), 500)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'limit 必须是整数'}); return
+            scope = (query.get('scope') or [None])[0]
+            if scope and scope not in CRF_SCOPES:
+                self._send_json(400, {'ok': False, 'error': 'scope 必须是 private 或 shared'}); return
+            result, err = query_platform_crfs(
+                code=(query.get('code') or [None])[0],
+                version=(query.get('version') or [None])[0],
+                scope=scope, category=(query.get('category') or [None])[0],
+                owner=(query.get('owner') or [None])[0],
+                all_versions=(query.get('allVersions') or ['0'])[0] in ('1', 'true'),
+                with_definition=(query.get('withDefinition') or ['0'])[0] in ('1', 'true'),
+                limit=limit)
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/crf/responses':
+            try:
+                limit = min(int((query.get('limit') or ['100'])[0]), 500)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'limit 必须是整数'}); return
+            result, err = query_crf_responses(
+                patient_no=(query.get('patientNo') or [None])[0],
+                code=(query.get('code') or [None])[0],
+                include_superseded=(query.get('includeSuperseded') or ['0'])[0] in ('1', 'true'),
+                limit=limit)
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/qc/findings':
             try:
                 limit = min(int((query.get('limit') or ['100'])[0]), 500)
@@ -5149,6 +6474,15 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/crfs': '随访平台 M14: CRF 列表 (?code=&scope=private|shared&allVersions=1)',
+                    'POST /api/platform/crf': '随访平台 M14: 建/改 CRF (破坏性改动且已有填报时自动开新版)',
+                    'POST /api/platform/crf/copy': '随访平台 M14: 拷贝 CRF ({code, new_code})',
+                    'POST /api/platform/crf/preview': '随访平台 M14: 实时预览 —— 跑逻辑+校验不落库',
+                    'POST /api/platform/crf/diff': '随访平台 M14: 比对两版定义, 标出破坏性/安全改动',
+                    'POST /api/platform/crf/generate': '随访平台 M14: AI 生成 CRF 草稿 ({disease, visit_type, fields[]})',
+                    'POST /api/platform/crf/parse-excel': '随访平台 M14: Excel -> CRF 草稿 ({xlsx_base64})',
+                    'POST /api/platform/crf/response': '随访平台 M14: 提交 CRF 填报',
+                    'GET  /api/platform/crf/responses': '随访平台 M14: CRF 填报记录',
                     'POST /api/platform/qc/run': '随访平台 M13: 跑自动质控 ({patient_no?, scale_code?})',
                     'GET  /api/platform/qc/findings': '随访平台 M13: 质控发现 (?status=&severity=block|warn&patientNo=)',
                     'GET  /api/platform/qc/compare': '随访平台 M13: 历次对比明细 (?patientNo=&code=), 逐题标出变化',
@@ -5319,6 +6653,75 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/crf':
+                result, err = upsert_platform_crf(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/crf/copy':
+                result, err = copy_platform_crf(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/crf/response':
+                result, err = submit_crf_response(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/crf/preview':
+                # 实时预览 (§2.1(3)): 跑逻辑 + 校验但**不落库**, 供填写过程中逐步反馈。
+                # 不走写接口门禁, 与 /scale/score 同理。
+                definition = body.get('definition')
+                if not isinstance(definition, dict):
+                    code = body.get('crf_code') or body.get('code')
+                    if not code:
+                        self._send_json(400, {'ok': False, 'error': '需要 definition 或 crf_code'}); return
+                    q, e = query_platform_crfs(code=code, version=body.get('crf_version'))
+                    if e or not q['crfs']:
+                        self._send_json(404, {'ok': False, 'error': e or 'CRF 不存在'}); return
+                    definition = q['crfs'][0]['definition']
+                errs = validate_crf_definition(definition)
+                if errs:
+                    self._send_json(400, {'ok': False, 'error': 'CRF 定义有问题', 'validation': errs}); return
+                state = eval_crf_logic(definition, body.get('data') or {})
+                errors, warnings = validate_crf_data(definition, body.get('data') or {}, state)
+                self._send_json(200, {'ok': True, 'state': state, 'errors': errors,
+                                      'warnings': warnings,
+                                      'advisories': lint_crf_definition(definition)})
+
+            elif pathname == '/api/platform/crf/diff':
+                # §2.1(3) 改表前先看会不会伤到已有数据
+                a, bdef = body.get('old'), body.get('new')
+                if not isinstance(a, dict) or not isinstance(bdef, dict):
+                    self._send_json(400, {'ok': False, 'error': '需要 old 和 new 两份 definition'}); return
+                self._send_json(200, dict(classify_crf_change(a, bdef), ok=True))
+
+            elif pathname == '/api/platform/crf/generate':
+                spec = body if isinstance(body, dict) else {}
+                if not (spec.get('disease') or spec.get('fields')):
+                    self._send_json(400, {'ok': False,
+                                          'error': '至少要给 disease(病种) 或 fields(采集字段)'}); return
+                if spec.get('fields') is not None and not isinstance(spec['fields'], list):
+                    self._send_json(400, {'ok': False, 'error': 'fields 必须是数组'}); return
+                if isinstance(spec.get('fields'), list) and len(spec['fields']) > 80:
+                    self._send_json(400, {'ok': False, 'error': 'fields 最多 80 个'}); return
+                draft, report = generate_crf_draft(spec)
+                self._send_json(200, {'ok': True, 'draft': draft, 'report': report})
+
+            elif pathname == '/api/platform/crf/parse-excel':
+                if not body.get('xlsx_base64'):
+                    self._send_json(400, {'ok': False, 'error': '需要 xlsx_base64'}); return
+                try:
+                    import base64 as _b64
+                    xb = _b64.b64decode(body['xlsx_base64'])
+                except Exception:
+                    self._send_json(400, {'ok': False, 'error': 'xlsx_base64 不是合法 base64'}); return
+                if len(xb) > 20 * 1024 * 1024:
+                    self._send_json(400, {'ok': False, 'error': 'Excel 超过 20MB'}); return
+                draft, report, err = parse_excel_to_crf(xb, body.get('code'), body.get('name'))
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err}); return
+                self._send_json(200, {'ok': True, 'draft': draft, 'report': report})
 
             elif pathname == '/api/platform/qc/run':
                 result, err = platform_qc_run(
@@ -5501,6 +6904,8 @@ if __name__ == '__main__':
         ensure_platform_scale_tables()
         # M13: 质控发现 + 质疑单 + 流转留痕 (idempotent)
         ensure_platform_qc_tables()
+        # M14: CRF 定义 + 填报 (idempotent)
+        ensure_platform_crf_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -5552,6 +6957,15 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/crfs                    随访平台 M14: CRF 列表')
+    print('[端点] POST /api/platform/crf                     随访平台 M14: 建/改 CRF (自动版本管理)')
+    print('[端点] POST /api/platform/crf/copy                随访平台 M14: 拷贝 CRF')
+    print('[端点] POST /api/platform/crf/preview             随访平台 M14: 实时预览(逻辑+校验, 不落库)')
+    print('[端点] POST /api/platform/crf/diff                随访平台 M14: 改动影响比对')
+    print('[端点] POST /api/platform/crf/generate            随访平台 M14: AI 生成 CRF 草稿')
+    print('[端点] POST /api/platform/crf/parse-excel         随访平台 M14: Excel -> CRF 草稿')
+    print('[端点] POST /api/platform/crf/response            随访平台 M14: 提交 CRF 填报')
+    print('[端点] GET  /api/platform/crf/responses           随访平台 M14: CRF 填报记录')
     print('[端点] POST /api/platform/qc/run                  随访平台 M13: 跑自动质控')
     print('[端点] GET  /api/platform/qc/findings             随访平台 M13: 质控发现列表')
     print('[端点] GET  /api/platform/qc/compare              随访平台 M13: 历次对比明细')

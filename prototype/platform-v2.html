@@ -15,7 +15,7 @@
 
   模块与真实能力的对应:
     运营驾驶舱   真实   患者数/待建档数/未处理报警/今日任务, 均现算
-    随访资料准备 未建设  CRF/量表/宣教/知情 —— 方案阶段一 11 个功能点, 尚无实现
+    随访资料准备 部分   M10-12 量表库 + M14 CRF 引擎已通; 宣教材料与知情资料未建设
     随访计划编排 真实   M5 platform_plan
     随访执行中心 真实   M2 报警闭环 + M7 体征阈值/趋势预警 + M5 今日任务
     患者管理     真实   M1 建档/绑定/体征 + M4 佩戴依从性 + M8 待建档发现
@@ -142,7 +142,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
     <div class="nav-title">工作台</div>
     <a class="nav-item active" data-page="dashboard">⌂ <span>运营驾驶舱</span></a>
     <div class="nav-title">随访全流程</div>
-    <a class="nav-item" data-page="assets">▣ <span>随访资料准备</span><i class="wip">未建设</i></a>
+    <a class="nav-item" data-page="assets">▣ <span>随访资料准备</span></a>
     <a class="nav-item" data-page="plans">⌘ <span>随访计划编排</span></a>
     <a class="nav-item" data-page="execute">▶ <span>随访执行中心</span><i class="badge" id="navAlarmBadge" style="display:none">0</i></a>
     <div class="nav-title">业务管理</div>
@@ -174,7 +174,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         </div>
 
         <div class="stagebar">
-          <div class="stage" data-goto="assets"><span class="stage-num">1</span><div><b>随访资料准备</b><small>CRF · 量表 · 宣教 —— 未建设</small></div></div>
+          <div class="stage" data-goto="assets"><span class="stage-num">1</span><div><b>随访资料准备</b><small>CRF 与量表引擎已上线；宣教 · 知情未建设</small></div></div>
           <span class="stage-arrow">›</span>
           <div class="stage live" data-goto="plans"><span class="stage-num">2</span><div><b>随访计划生成</b><small>计划引擎已上线</small></div></div>
           <span class="stage-arrow">›</span>
@@ -341,13 +341,15 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         <div class="module-hero">
           <div><h2>随访资料准备</h2><p>方案阶段一：CRF 表单 · 量表体系 · 宣教材料 · 知情同意</p></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="white-btn" id="crfGenBtn">▤ AI 生成 CRF</button>
+            <button class="white-btn" id="crfExcelBtn">⇱ Excel 建表</button>
             <button class="white-btn" id="scaleGenBtn">✦ AI 生成量表</button>
             <button class="white-btn" id="scaleParseBtn">⇱ 从文档解析量表</button>
             <button class="white-btn" id="scaleImportBtn">⬆ 导入量表 (JSON)</button>
           </div>
         </div>
         <div class="asset-grid">
-          <div class="card asset"><div class="big-icon">▤</div><h3>智能 CRF 表单</h3><p>全题型覆盖、高级逻辑校验与临床数据元映射</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.1 · 4 个功能点</small></div></div>
+          <div class="card asset"><div class="big-icon">▤</div><h3>智能 CRF 表单</h3><p>8 种基本题型 + 4 种表格题型 · 逻辑显隐/启禁/自动设值/互斥 · 破坏性改动自动开新版</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="crfCardN">--</small></div></div>
           <div class="card asset"><div class="big-icon">◈</div><h3>专业量表库</h3><p>题型配置 · 评分规则 · 分量表 · 划界值分级 · 字段映射 · 医护填报与患者自评</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="scaleCardN">--</small></div></div>
           <div class="card asset"><div class="big-icon">▧</div><h3>宣教材料库</h3><p>按病种、病程和人群生成个性化患教内容</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.3 · 2 个功能点</small></div></div>
           <div class="card asset"><div class="big-icon">✎</div><h3>知情与项目资料</h3><p>电子签署、版本管理、权限管控与全周期留痕</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.4 · 2 个功能点</small></div></div>
@@ -355,6 +357,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
 
         <div class="tabs" style="margin-top:18px">
           <button class="tab active" data-stab="lib">量表库 <span id="tabScaleN">0</span></button>
+          <button class="tab" data-stab="crf">CRF 表单库 <span id="tabCrfN">0</span></button>
           <button class="tab" data-stab="resp">填报记录 <span id="tabRespN">0</span></button>
         </div>
         <div id="stabLib">
@@ -366,9 +369,35 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
           </div>
           <div class="rows" id="scaleWrap"><div class="loading">加载中…</div></div>
         </div>
+        <div id="stabCrf" style="display:none">
+          <div class="note-strip">
+            <b>改表不会伤到已填的数据。</b>
+            改措辞、加题、调顺序、放宽取值范围 —— 就地改，版本号不动。
+            删题、改题型、删选项、收紧范围 —— 这些会让旧记录读不懂，所以在该版本已有填报时<b>自动开新版</b>，
+            旧填报仍钉在旧版上，两边都完整可读。改之前可以先点「改动影响」看会不会伤到数据。
+          </div>
+          <div class="rows" id="crfWrap"><div class="loading">加载中…</div></div>
+          <div class="card panel" style="margin-top:16px">
+            <div class="panel-head"><h3>方案 §2.1 逐条对照</h3></div>
+            <div class="table-wrap"><table><thead><tr><th>要求</th><th>状态</th><th>说明</th></tr></thead><tbody>
+              <tr><td>全题型覆盖（8 基本 + 4 表格）</td><td><span class="tag green">已建</span></td><td>提示语/文本/段落/数字/日期/单选/多选/下拉 + 输入框·选择·下拉框·列表混搭四种表格</td></tr>
+              <tr><td>高级逻辑：显隐 / 启禁 / 自动设值 / 互斥 / 逻辑校验</td><td><span class="tag green">已建</span></td><td>服务端求值，规则会级联并迭代到不动点；隐藏的题不参与必填校验，其旧答案也不驱动后续逻辑</td></tr>
+              <tr><td>必填 / 数值范围 / 手机号身份证格式校验</td><td><span class="tag green">已建</span></td><td>与数据质控共用同一套格式规则，身份证走校验位</td></tr>
+              <tr><td>强校验阻断 / 弱校验提示</td><td><span class="tag green">已建</span></td><td>强校验直接拒收；弱校验需确认后才落库</td></tr>
+              <tr><td>项目开展中增改变量、调整顺序，且不影响已有数据</td><td><span class="tag green">已建</span></td><td>改动分安全/破坏性两类，破坏性且已有填报时自动开新版</td></tr>
+              <tr><td>私有 / 共享 CRF · 拷贝 · 实时预览</td><td><span class="tag green">已建</span></td><td>拷贝生成的是独立新表的第 1 版，不是原表的新版本——否则改动会牵连原表的填报</td></tr>
+              <tr><td>AI 辅助生成 CRF 模板</td><td><span class="tag amber">部分</span></td><td>本地模板已通（基础骨架 + 按字段名猜题型 + 三条逻辑规则）；接大模型需服务器另配 SDK 与密钥</td></tr>
+              <tr><td>Excel + 大模型辅助建表</td><td><span class="tag amber">部分</span></td><td>配置式与数据式两种排布都能解析，每列都给出推断依据；「大模型」部分同上</td></tr>
+              <tr><td>字段与临床数据元映射</td><td><span class="tag grey">未建设</span></td><td>需要一套院内数据元字典做对照，目前没有</td></tr>
+              <tr><td>实时备份</td><td><span class="tag grey">未建设</span></td><td>历史版本查得到，但没有定时快照与一键回滚</td></tr>
+              <tr><td>附带音视频指导文件</td><td><span class="tag grey">未建设</span></td><td>表结构留了 media 字段，还没有上传与播放</td></tr>
+            </tbody></table></div>
+          </div>
+        </div>
         <div id="stabResp" style="display:none">
           <div class="rows" id="respWrap"><div class="loading">加载中…</div></div>
         </div>
+        <input type="file" id="crfExcelFile" accept=".xlsx,.xlsm" style="display:none">
         <input type="file" id="scaleFile" accept=".json" style="display:none">
         <input type="file" id="scalePdfFile" accept=".pdf,.txt,.md" style="display:none">
       </section>
@@ -629,6 +658,7 @@ const S = {
   scales: [], responses: [], scaleCache: {}, fillCode: null, fillRevision: null,
   parseFile: null, draft: null,
   qcFindings: [], qcQueries: [], cmpData: null,
+  crfs: [], crfFill: null, crfDraft: null,
 };
 
 /* ================================================================ 导航 */
@@ -642,7 +672,7 @@ function goto(page) {
   if (page === 'plans') loadPlans();
   if (page === 'analytics') loadAnalytics();
   if (page === 'settings') fillSettings();
-  if (page === 'assets') { loadScales(); loadResponses(); }
+  if (page === 'assets') { loadScales(); loadResponses(); loadCrfs(); }
   if (page === 'quality') loadQuality();
 }
 document.addEventListener('click', e => {
@@ -2147,9 +2177,503 @@ document.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => {
   const t = b.dataset.stab;
   document.querySelectorAll('[data-stab]').forEach(x => x.classList.toggle('active', x === b));
   document.getElementById('stabLib').style.display = t === 'lib' ? '' : 'none';
+  document.getElementById('stabCrf').style.display = t === 'crf' ? '' : 'none';
   document.getElementById('stabResp').style.display = t === 'resp' ? '' : 'none';
   if (t === 'resp') loadResponses();
+  if (t === 'crf') loadCrfs();
 });
+
+/* ================================================================ M14 CRF 表单 (方案 §2.1) */
+const CRF_TYPE_LABEL = {
+  note: '提示语', text: '文本填空', paragraph: '段落填空', number: '数字填空',
+  date: '日期填空', single: '单选', multi: '多选', select: '下拉选',
+  table_input: '输入框表格', table_select: '选择表格',
+  table_dropdown: '下拉框表格', table_mixed: '列表混搭表格',
+};
+const CRF_ACTION_LABEL = {
+  show: '显示', hide: '隐藏', enable: '启用', disable: '禁用', require: '置为必填',
+  optional: '置为选填', set_value: '自动设值', check: '逻辑校验', exclusive: '互斥',
+};
+
+async function loadCrfs() {
+  const wrap = document.getElementById('crfWrap');
+  try {
+    const d = await getJSON('/api/platform/crfs?limit=200');
+    S.crfs = d.crfs || [];
+    document.getElementById('tabCrfN').textContent = S.crfs.length;
+    const card = document.getElementById('crfCardN');
+    if (card) card.textContent = S.crfs.length ? S.crfs.length + ' 张表单' : '暂无表单';
+    wrap.innerHTML = S.crfs.length ? S.crfs.map(c =>
+      '<div class="row-card row-plan">'+
+        '<div><span class="strong">'+esc(c.name)+'</span><span class="sub">'+esc(c.code)+
+          ' v'+esc(c.version)+(c.version_count > 1 ? '（共 '+c.version_count+' 版）' : '')+'</span></div>'+
+        '<div>'+esc(c.category || '未分类')+'<span class="sub">'+esc(c.visit_type || '未标访视类型')+'</span></div>'+
+        '<div><b style="font-size:16px">'+(c.item_count == null ? '--' : c.item_count)+'</b> 题'+
+          '<span class="sub">'+(c.scope === 'shared' ? '院内共享' : '私有')+
+          (c.owner ? ' · '+esc(c.owner) : '')+'</span></div>'+
+        '<div>'+(c.response_count ? '<b>'+c.response_count+'</b> 份填报' : '<span style="color:#9ca3af">尚无填报</span>')+
+          '<span class="sub">'+esc(c.source === 'ai' ? 'AI 生成' : c.source === 'excel' ? 'Excel 导入'
+            : c.source === 'copy' ? '拷贝自 '+esc(c.copied_from || '') : '手工建表')+'</span></div>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+          '<button class="secondary" onclick="viewCrf(\''+esc(c.code)+'\')">预览</button>'+
+          '<button class="link" onclick="fillCrf(\''+esc(c.code)+'\')">填报</button>'+
+          '<button class="link" onclick="copyCrf(\''+esc(c.code)+'\')">拷贝</button>'+
+        '</div>'+
+      '</div>').join('')
+      : emptyBox('▤', '还没有 CRF 表单', '点右上角「AI 生成 CRF」或「Excel 建表」。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+
+/* 把一份 definition 渲染成只读的结构预览。逻辑规则单独列出来并翻译成人话 ——
+   规则写在 JSON 里没人看得懂, 而"这张表什么时候显示哪道题"恰恰是审表的人最要核的。 */
+function crfStructureHtml(defn, adv) {
+  const secs = (defn.sections && defn.sections.length)
+    ? defn.sections : [{ name: '', items: defn.items || [] }];
+  let h = '';
+  secs.forEach(sec => {
+    if (sec.name) h += '<h4 style="margin:16px 0 8px;color:#3c4a52">'+esc(sec.name)+'</h4>';
+    h += '<div class="rows">' + (sec.items || []).map(it =>
+      '<div class="qc-item" style="border-left:3px solid #e3e8ea">'+
+        '<div class="qc-head"><span class="tag blue">'+esc(CRF_TYPE_LABEL[it.type] || it.type)+'</span>'+
+          '<b>'+esc(it.text || it.id)+'</b>'+
+          (it.required ? '<span class="tag red">必填</span>' : '')+
+          (it.hidden ? '<span class="tag grey">默认隐藏</span>' : '')+
+          '<span style="margin-left:auto;font-size:11px;color:#9ca3af">'+esc(it.id)+'</span></div>'+
+        (it.options ? '<div class="qc-meta">'+it.options.map(o =>
+            '<span>'+esc(o.label)+'='+esc(String(o.value))+'</span>').join('')+'</div>' : '')+
+        (it.columns ? '<div class="qc-meta">列：'+it.columns.map(c =>
+            '<span>'+esc(c.label || c.id)+'('+esc(CRF_TYPE_LABEL[c.type] || c.type)+')</span>').join('')+
+            (it.rows ? '<span>固定 '+it.rows.length+' 行</span>' : '<span>可动态加行</span>')+'</div>' : '')+
+        ((it.min != null || it.max != null) ? '<div class="qc-meta"><span>取值范围 '+
+            (it.min == null ? '不限' : it.min)+' ~ '+(it.max == null ? '不限' : it.max)+'</span></div>' : '')+
+        (it.format ? '<div class="qc-meta"><span>格式校验：'+esc(it.format)+'</span></div>' : '')+
+      '</div>').join('') + '</div>';
+  });
+  const logic = defn.logic || [];
+  if (logic.length) {
+    h += '<h4 style="margin:18px 0 8px;color:#3c4a52">逻辑规则（'+logic.length+' 条）</h4><ul class="qc-log">'+
+      logic.map(r => {
+        const then = r.then || r;
+        const act = then.action || r.action;
+        const tg = (then.targets || r.targets || []).join('、');
+        if (act === 'exclusive') return '<li><b>互斥</b>：'+esc(tg)+' 最多只能填一个</li>';
+        return '<li>当 <b>'+esc(condText(r.when))+'</b> 时，<b>'+esc(CRF_ACTION_LABEL[act] || act)+
+          '</b> '+esc(tg)+(act === 'set_value' ? '（设为 '+esc(String(then.value))+'）' : '')+'</li>';
+      }).join('') + '</ul>';
+  }
+  if (adv && adv.length) {
+    h += '<div class="err" style="margin-top:14px"><b>建表提示（不影响保存，但多半不是你想要的）</b><br>'+
+      adv.map(a => '· ' + esc(a.detail)).join('<br>') + '</div>';
+  }
+  return h;
+}
+function condText(c) {
+  if (!c) return '(无条件)';
+  if (c.all) return c.all.map(condText).join(' 且 ');
+  if (c.any) return c.any.map(condText).join(' 或 ');
+  if (c.not) return '非(' + condText(c.not) + ')';
+  const OP = { eq: '=', ne: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤',
+               in: '属于', contains: '含有', empty: '未填', filled: '已填' };
+  if (c.op === 'empty' || c.op === 'filled') return c.field + ' ' + OP[c.op];
+  return c.field + ' ' + (OP[c.op] || c.op) + ' ' + JSON.stringify(c.value);
+}
+
+async function viewCrf(code) {
+  try {
+    const d = await getJSON('/api/platform/crfs?code=' + encodeURIComponent(code) + '&allVersions=1');
+    const list = d.crfs || [];
+    if (!list.length) { toast('CRF 不存在'); return; }
+    const cur = list[0];
+    let h = '<div class="detail-card">'+
+      '<div class="detail-row"><span>编码 · 版本</span><b>'+esc(cur.code)+' v'+esc(cur.version)+'</b></div>'+
+      '<div class="detail-row"><span>题目数</span><b>'+cur.item_count+'</b></div>'+
+      '<div class="detail-row"><span>可见范围</span><b>'+(cur.scope === 'shared' ? '院内共享' : '私有')+'</b></div>'+
+      '<div class="detail-row"><span>本版填报数</span><b>'+cur.response_count+'</b></div></div>';
+    if (list.length > 1) {
+      h += '<div class="note-strip" style="margin-top:12px">这张表有 <b>'+list.length+'</b> 个版本。'+
+        '每份填报都钉在它当时的版本上，旧数据不会因为后来改表而失真：<br>'+
+        list.map(v => '· v'+esc(v.version)+'（'+v.item_count+' 题，'+v.response_count+' 份填报）').join('<br>')+
+        '</div>';
+    }
+    h += crfStructureHtml(cur.definition, null);
+    openDrawer(cur.name, '结构预览 · 只读', h,
+      '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+      '<button class="primary" onclick="fillCrf(\''+esc(code)+'\')">填报这张表</button>');
+  } catch (e) { toast('加载失败：' + e.message, 5000); }
+}
+
+function copyCrf(code) {
+  const src = (S.crfs || []).find(c => c.code === code) || {};
+  openModal('拷贝 CRF', '拷贝出来是一张独立的新表（第 1 版），不是原表的新版本',
+    '<div class="field"><label>新编码</label><input id="cpCode" value="'+esc(code)+'_COPY"></div>'+
+    '<div class="field"><label>新名称</label><input id="cpName" value="'+esc((src.name || '') + ' (副本)')+'"></div>'+
+    '<div class="field"><label>可见范围</label><select id="cpScope">'+
+      '<option value="private">私有（仅创建者可改）</option>'+
+      '<option value="shared">院内共享（跨科室复用）</option></select></div>'+
+    '<div class="err" style="margin-top:4px">拷贝刻意不做成"原表的新版本"——那样后续改动会牵连原表已有的填报。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="cpGo">拷贝</button>');
+  document.getElementById('cpGo').onclick = async () => {
+    const btn = document.getElementById('cpGo'); btn.disabled = true; btn.textContent = '拷贝中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/crf/copy', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code, new_code: document.getElementById('cpCode').value.trim(),
+          new_name: document.getElementById('cpName').value.trim(),
+          scope: document.getElementById('cpScope').value,
+          owner: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); toast('已拷贝为 ' + d.code + ' v' + d.version); await loadCrfs();
+    } catch (e) { btn.disabled = false; btn.textContent = '拷贝'; toast('拷贝失败：' + e.message, 5000); }
+  };
+}
+
+/* ---- 填报: 逻辑由**服务端**求值。前端也能算, 但那样任何人绕过页面直接 POST
+   就能提交本该被隐藏/被校验拦住的数据 —— 逻辑是数据约束, 不是展示效果。 ---- */
+async function fillCrf(code) {
+  try {
+    const d = await getJSON('/api/platform/crfs?code=' + encodeURIComponent(code));
+    if (!d.crfs.length) { toast('CRF 不存在'); return; }
+    const c = d.crfs[0];
+    closeDrawer();
+    // 先问清是给谁填。放在开头而不是提交时问, 是因为门诊号决定这份数据挂在谁名下 ——
+    // 填完一长张表才发现填错了人, 只能重来。
+    if (!S.patients.length) await loadPatients().catch(() => {});
+    openModal('填报 ' + c.name, 'v' + c.version + ' · 先确认这份数据记在谁名下',
+      '<div class="field"><label>门诊号</label><input id="cfPno" list="cfPnoList" placeholder="输入或从已建档患者中选">'+
+      '<datalist id="cfPnoList">' + (S.patients || []).map(p =>
+        '<option value="' + esc(p.patient_no) + '">' + esc(p.name || '') + '</option>').join('') + '</datalist></div>'+
+      '<div class="field"><label>访视节点<span class="sub">选填，如「术后 3 个月」</span></label>'+
+        '<input id="cfVisit" value="' + esc(c.visit_type || '') + '"></div>',
+      '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="cfStart">开始填报</button>');
+    document.getElementById('cfStart').onclick = () => {
+      const pno = document.getElementById('cfPno').value.trim();
+      if (!pno) { toast('请填写门诊号'); return; }
+      S.crfFill = { code: c.code, version: c.version, defn: c.definition, data: {},
+                    patient_no: pno, visit_name: document.getElementById('cfVisit').value.trim() || null };
+      closeModal();
+      renderCrfForm();
+    };
+  } catch (e) { toast('加载失败：' + e.message, 5000); }
+}
+
+function crfFieldHtml(it, val, state) {
+  const dis = state.enabled[it.id] === false ? ' disabled' : '';
+  const v = val == null ? '' : val;
+  const req = state.required[it.id] ? '<b style="color:#d74c55">*</b> ' : '';
+  let input;
+  if (it.type === 'note') return '<div class="note-strip" style="margin:0 0 10px">'+esc(it.text)+'</div>';
+  if (it.type === 'paragraph') input = '<textarea data-cf="'+esc(it.id)+'" style="height:70px"'+dis+'>'+esc(v)+'</textarea>';
+  else if (it.type === 'number') input = '<input type="number" data-cf="'+esc(it.id)+'" value="'+esc(v)+'"'+dis+'>';
+  else if (it.type === 'date') input = '<input type="date" data-cf="'+esc(it.id)+'" value="'+esc(v)+'"'+dis+'>';
+  else if (it.type === 'single' || it.type === 'select')
+    input = '<select data-cf="'+esc(it.id)+'"'+dis+'><option value="">（未选）</option>'+
+      (it.options || []).map(o => '<option value="'+esc(JSON.stringify(o.value))+'"'+
+        (JSON.stringify(o.value) === JSON.stringify(val) ? ' selected' : '')+'>'+esc(o.label)+'</option>').join('')+'</select>';
+  else if (it.type === 'multi')
+    input = '<div style="display:flex;gap:12px;flex-wrap:wrap;padding:4px 0">'+
+      (it.options || []).map(o => '<label style="display:flex;gap:5px;align-items:center;font-weight:400">'+
+        '<input type="checkbox" data-cfm="'+esc(it.id)+'" value="'+esc(JSON.stringify(o.value))+'"'+
+        ((Array.isArray(val) && val.some(x => JSON.stringify(x) === JSON.stringify(o.value))) ? ' checked' : '')+dis+'>'+
+        esc(o.label)+'</label>').join('')+'</div>';
+  else if (String(it.type).indexOf('table_') === 0) input = crfTableHtml(it, val, dis);
+  else input = '<input data-cf="'+esc(it.id)+'" value="'+esc(v)+'"'+dis+'>';
+  return '<div class="field"><label>'+req+esc(it.text || it.id)+
+    (it.format ? '<span class="sub">格式：'+esc(it.format)+'</span>' : '')+
+    ((it.min != null || it.max != null) ? '<span class="sub">范围 '+
+      (it.min == null ? '不限' : it.min)+' ~ '+(it.max == null ? '不限' : it.max)+'</span>' : '')+
+    '</label>'+input+'<div class="flErr" data-cerr="'+esc(it.id)+'"></div></div>';
+}
+
+function crfTableHtml(it, val, dis) {
+  const cols = it.columns || [];
+  const rows = it.rows || [];
+  const data = Array.isArray(val) ? val : [];
+  const n = rows.length || Math.max(data.length, 1);
+  let h = '<div class="table-wrap"><table data-cft="'+esc(it.id)+'"><thead><tr>'+
+    (rows.length ? '<th></th>' : '') + cols.map(c => '<th>'+esc(c.label || c.id)+
+      (c.required ? ' <b style="color:#d74c55">*</b>' : '')+'</th>').join('')+'</tr></thead><tbody>';
+  for (let r = 0; r < n; r++) {
+    h += '<tr>' + (rows.length ? '<td style="color:#82909c;white-space:nowrap">'+esc(rows[r])+'</td>' : '');
+    cols.forEach(c => {
+      const cv = (data[r] || {})[c.id];
+      const at = ' data-cfr="'+r+'" data-cfc="'+esc(c.id)+'"'+dis;
+      if (c.type === 'single' || c.type === 'select')
+        h += '<td><select'+at+'><option value="">（未选）</option>'+
+          (c.options || []).map(o => '<option value="'+esc(JSON.stringify(o.value))+'"'+
+            (JSON.stringify(o.value) === JSON.stringify(cv) ? ' selected' : '')+'>'+esc(o.label)+'</option>').join('')+'</select></td>';
+      else if (c.type === 'number') h += '<td><input type="number" class="mini"'+at+' value="'+esc(cv == null ? '' : cv)+'"></td>';
+      else if (c.type === 'date') h += '<td><input type="date" class="mini"'+at+' value="'+esc(cv == null ? '' : cv)+'"></td>';
+      else h += '<td><input class="mini"'+at+' value="'+esc(cv == null ? '' : cv)+'"></td>';
+    });
+    h += '</tr>';
+  }
+  h += '</tbody></table></div>';
+  if (it.dynamic) h += '<button class="link" onclick="crfAddRow(\''+esc(it.id)+'\')">+ 加一行</button>';
+  return h;
+}
+function crfAddRow(iid) {
+  const f = S.crfFill; if (!f) return;
+  collectCrfData();
+  const cur = Array.isArray(f.data[iid]) ? f.data[iid] : [];
+  f.data[iid] = cur.concat([{}]);
+  renderCrfForm();
+}
+
+function collectCrfData() {
+  const f = S.crfFill; if (!f) return;
+  document.querySelectorAll('[data-cf]').forEach(el => {
+    const id = el.dataset.cf;
+    let v = el.value;
+    if (v === '') { f.data[id] = null; return; }
+    if (el.tagName === 'SELECT') { try { v = JSON.parse(v); } catch (e) {} }
+    else if (el.type === 'number') v = Number(v);
+    f.data[id] = v;
+  });
+  const multi = {};
+  document.querySelectorAll('[data-cfm]').forEach(el => {
+    const id = el.dataset.cfm;
+    multi[id] = multi[id] || [];
+    if (el.checked) { try { multi[id].push(JSON.parse(el.value)); } catch (e) { multi[id].push(el.value); } }
+  });
+  Object.keys(multi).forEach(k => { f.data[k] = multi[k].length ? multi[k] : null; });
+  document.querySelectorAll('table[data-cft]').forEach(t => {
+    const id = t.dataset.cft; const rows = [];
+    t.querySelectorAll('tbody tr').forEach((tr, ri) => {
+      const row = {};
+      tr.querySelectorAll('[data-cfc]').forEach(el => {
+        let v = el.value;
+        if (v === '') return;
+        if (el.tagName === 'SELECT') { try { v = JSON.parse(v); } catch (e) {} }
+        else if (el.type === 'number') v = Number(v);
+        row[el.dataset.cfc] = v;
+      });
+      rows.push(row);
+    });
+    // 固定行表格保留全部行(哪怕是空行), 否则行数对不上定义会被校验拦住;
+    // 动态表格去掉尾部空行, 免得"加了一行没填"变成一条空记录
+    const it = crfFindItem(id);
+    f.data[id] = (it && it.rows) ? rows : rows.filter(r => Object.keys(r).length);
+    if (f.data[id] && !f.data[id].length) f.data[id] = null;
+  });
+}
+function crfFindItem(id) {
+  const f = S.crfFill; if (!f) return null;
+  const secs = (f.defn.sections && f.defn.sections.length) ? f.defn.sections : [{ items: f.defn.items || [] }];
+  for (const s of secs) for (const it of (s.items || [])) if (it.id === id) return it;
+  return null;
+}
+
+let crfPreviewTimer = null;
+async function renderCrfForm(state, errors, warnings) {
+  const f = S.crfFill; if (!f) return;
+  if (!state) {
+    // 首次渲染先用一个"全可见"的保守状态, 随即向服务端要真实状态
+    state = { visible: {}, enabled: {}, required: {}, auto: {}, violations: [], stale: [] };
+    crfPreview();
+  }
+  const secs = (f.defn.sections && f.defn.sections.length)
+    ? f.defn.sections : [{ name: '', items: f.defn.items || [] }];
+  let h = '';
+  secs.forEach(sec => {
+    const vis = (sec.items || []).filter(it => state.visible[it.id] !== false);
+    if (!vis.length) return;
+    if (sec.name) h += '<h4 style="margin:14px 0 8px;color:#3c4a52">'+esc(sec.name)+'</h4>';
+    h += vis.map(it => crfFieldHtml(it, f.data[it.id], {
+      enabled: state.enabled, required: state.required })).join('');
+  });
+  const hiddenN = Object.values(state.visible || {}).filter(v => v === false).length;
+  if (hiddenN) h = '<div class="note-strip">根据已填内容，当前有 <b>'+hiddenN+'</b> 道题被逻辑隐藏，'+
+    '它们不参与必填校验；若之前填过，提交时会单独归档、不计入本次数据。</div>' + h;
+  if (warnings && warnings.length) h += '<div class="err" style="margin-top:10px"><b>弱校验提示（不阻断，需确认）</b><br>'+
+    warnings.map(w => '· ' + esc(w.error)).join('<br>')+'</div>';
+  openDrawer('填报 · ' + esc(f.code), '门诊号 ' + esc(f.patient_no) + ' · v' + esc(f.version) +
+    ' · 逻辑与校验均由服务端求值', h,
+    '<button class="secondary" onclick="closeDrawer()">取消</button>'+
+    '<button class="primary" id="cfSubmit">提交</button>');
+  (errors || []).forEach(x => {
+    const el = document.querySelector('[data-cerr="' + x.field + '"]');
+    if (el) el.textContent = x.error;
+  });
+  document.getElementById('drBody').oninput = () => {
+    collectCrfData();
+    clearTimeout(crfPreviewTimer);
+    crfPreviewTimer = setTimeout(crfPreview, 400);
+  };
+  document.getElementById('cfSubmit').onclick = submitCrf;
+}
+
+async function crfPreview() {
+  const f = S.crfFill; if (!f) return;
+  try {
+    const res = await fetch(API_BASE + '/api/platform/crf/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ crf_code: f.code, crf_version: f.version, data: f.data }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) return;
+    renderCrfForm(d.state, null, d.warnings);
+  } catch (e) { /* 预览失败不打断填写 */ }
+}
+
+async function submitCrf(allowWarnings) {
+  const f = S.crfFill; if (!f) return;
+  collectCrfData();
+  const btn = document.getElementById('cfSubmit');
+  if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/crf/response', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ crf_code: f.code, crf_version: f.version,
+        patient_no: f.patient_no, visit_name: f.visit_name || null,
+        data: f.data, operator: localStorage.getItem(LS_OP) || null,
+        allow_warnings: allowWarnings === true }),
+    });
+    const d = await res.json();
+    if (d.accepted === false) {
+      if (btn) { btn.disabled = false; btn.textContent = '提交'; }
+      document.querySelectorAll('.flErr').forEach(el => el.textContent = '');
+      (d.errors || []).forEach(x => {
+        const el = document.querySelector('[data-cerr="' + x.field + '"]');
+        if (el) el.textContent = x.error;
+      });
+      if (!d.errors.length && d.warnings.length) {
+        if (confirm('有 ' + d.warnings.length + ' 条弱校验提示：\n\n' +
+            d.warnings.map(w => '· ' + w.error).join('\n') + '\n\n确认无误并提交？')) {
+          return submitCrf(true);
+        }
+        return;
+      }
+      toast('还有 ' + d.errors.length + ' 处需要修正', 4000);
+      return;
+    }
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    closeDrawer();
+    toast('已提交：存入 ' + d.saved_fields + ' 个字段' +
+      (d.archived_hidden ? '，另有 ' + d.archived_hidden + ' 项被隐藏的残留答案单独归档' : ''), 6000);
+    S.crfFill = null;
+    await loadCrfs();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '提交'; }
+    toast('提交失败：' + e.message, 5000);
+  }
+}
+
+/* ---- §2.1(1) AI 生成 CRF ---- */
+document.getElementById('crfGenBtn').onclick = () => {
+  openModal('AI 生成 CRF', '产出是草稿，需人工逐题审核后才能保存',
+    '<div class="form-row">'+
+      '<div class="field"><label>病种 / 科室</label><input id="cgDisease" placeholder="例如：2型糖尿病"></div>'+
+      '<div class="field"><label>访视类型</label><select id="cgVisit">'+
+        '<option>随诊</option><option>初诊</option><option>结局访视</option><option>计划外随访</option></select></div>'+
+    '</div>'+
+    '<div class="field"><label>需要采集的字段<span class="sub">一行一个；题型会按字段名里的关键词推测</span></label>'+
+      '<textarea id="cgFields" style="height:90px" placeholder="末次糖化血红蛋白&#10;是否发生低血糖&#10;足部检查日期&#10;并发症情况"></textarea></div>'+
+    '<div class="field"><label>表单编码<span class="sub">留空自动生成</span></label><input id="cgCode" placeholder="选填"></div>'+
+    '<div class="err" style="margin-top:4px">题型是按字段名<b>猜</b>的（含「日期」→日期题、含「是否」→单选…），'+
+      '猜不准的一律给文本题。保存前请逐题核对——表单一旦有了填报，改题型属破坏性改动、会开新版。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="cgGo">生成草稿</button>');
+  document.getElementById('cgGo').onclick = async () => {
+    const btn = document.getElementById('cgGo');
+    const disease = document.getElementById('cgDisease').value.trim();
+    const fields = document.getElementById('cgFields').value.split('\n').map(x => x.trim()).filter(Boolean);
+    if (!disease && !fields.length) { toast('至少填写病种或采集字段'); return; }
+    btn.disabled = true; btn.textContent = '生成中…';
+    try {
+      const res = await fetch(API_BASE + '/api/platform/crf/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disease: disease, visit_type: document.getElementById('cgVisit').value,
+          fields: fields, code: document.getElementById('cgCode').value.trim() || undefined }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); reviewCrfDraft(d.draft, d.report);
+    } catch (e) { btn.disabled = false; btn.textContent = '生成草稿'; toast('生成失败：' + e.message, 5000); }
+  };
+};
+
+/* ---- §2.1(4) Excel 建表 ---- */
+document.getElementById('crfExcelBtn').onclick = () => document.getElementById('crfExcelFile').click();
+document.getElementById('crfExcelFile').onchange = async ev => {
+  const file = ev.target.files[0];
+  ev.target.value = '';
+  if (!file) return;
+  toast('正在解析 ' + file.name + '…');
+  try {
+    const buf = await file.arrayBuffer();
+    let bin = '';
+    const b = new Uint8Array(buf);
+    for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+    const res = await fetch(API_BASE + '/api/platform/crf/parse-excel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ xlsx_base64: btoa(bin), name: file.name.replace(/\.[^.]+$/, '') }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    reviewCrfDraft(d.draft, d.report);
+  } catch (e) { toast('解析失败：' + e.message, 6000); }
+};
+
+function reviewCrfDraft(draft, report) {
+  S.crfDraft = draft;
+  const src = report.backend ? 'AI 生成' : 'Excel 解析';
+  let h = '<div class="detail-card"><h4>'+src+'结果概览</h4>'+
+    (report.backend ? '<div class="detail-row"><span>生成后端</span><b>'+esc(report.backend)+'</b></div>' : '')+
+    (report.mode ? '<div class="detail-row"><span>表格排布</span><b>'+
+      (report.mode === 'config' ? '配置式（表头含题型列）' : '数据式（靠实际取值推断题型）')+'</b></div>' : '')+
+    '<div class="detail-row"><span>识别题目</span><b>'+report.item_count+' 道</b></div>'+
+    (report.section_count ? '<div class="detail-row"><span>章节</span><b>'+report.section_count+' 个</b></div>' : '')+
+    (report.logic_count ? '<div class="detail-row"><span>逻辑规则</span><b>'+report.logic_count+' 条</b></div>' : '')+
+    '</div>';
+  if ((report.notes || []).length) {
+    h += '<h4 style="margin:16px 0 8px">判定依据（逐条核对）</h4><ul class="qc-log">'+
+      report.notes.map(n => '<li><b>'+
+        (n.confidence === 'high' ? '高' : n.confidence === 'medium' ? '中' : '低')+'</b> '+
+        esc(n.step)+'<br><span style="color:#4a5760">'+esc(n.detail)+'</span></li>').join('')+'</ul>';
+  }
+  h += '<h4 style="margin:18px 0 8px">表单元信息（可改）</h4>'+
+    '<div class="form-row"><div class="field"><label>编码</label><input id="cdCode" value="'+esc(draft.code || '')+'"></div>'+
+    '<div class="field"><label>名称</label><input id="cdName" value="'+esc(draft.name || '')+'"></div></div>'+
+    '<div class="form-row"><div class="field"><label>病种/科室</label><input id="cdCat" value="'+esc(draft.category || '')+'"></div>'+
+    '<div class="field"><label>可见范围</label><select id="cdScope">'+
+      '<option value="private">私有</option><option value="shared">院内共享</option></select></div></div>';
+  h += crfStructureHtml(draft.definition, report.advisories);
+  if ((report.validation || []).length) {
+    h += '<div class="err" style="margin-top:12px"><b>结构校验未通过（必须先修）</b><br>'+
+      report.validation.map(e => '· ' + esc(e)).join('<br>')+'</div>';
+  }
+  openDrawer(src + '草稿 · 待人工确认', '确认无误后保存到 CRF 库', h,
+    '<button class="secondary" onclick="downloadCrfDraft()">下载 JSON 手工修</button>'+
+    '<button class="primary" id="cdSave"'+((report.validation || []).length ? ' disabled' : '')+'>保存到 CRF 库</button>');
+  document.getElementById('cdSave').onclick = async () => {
+    const btn = document.getElementById('cdSave'); btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/crf', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({}, draft, {
+          code: document.getElementById('cdCode').value.trim(),
+          name: document.getElementById('cdName').value.trim(),
+          category: document.getElementById('cdCat').value.trim() || null,
+          scope: document.getElementById('cdScope').value,
+          owner: localStorage.getItem(LS_OP) || null, status: 'active' })),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeDrawer();
+      toast('已保存 ' + d.code + ' v' + d.version + (d.note ? '（' + d.note + '）' : ''), 7000);
+      document.querySelector('[data-stab="crf"]').click();
+    } catch (e) { btn.disabled = false; btn.textContent = '保存到 CRF 库'; toast('保存失败：' + e.message, 6000); }
+  };
+}
+function downloadCrfDraft() {
+  if (!S.crfDraft) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(S.crfDraft, null, 2)], { type: 'application/json' }));
+  a.download = (S.crfDraft.code || 'crf') + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 
 /* ================================================================ 系统管理 */
 function fillSettings() {
