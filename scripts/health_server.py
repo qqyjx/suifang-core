@@ -9411,6 +9411,636 @@ def consult_review(body):
         conn.close()
 
 
+# ============ 随访平台 1.1 M23 (主动筛查与自助收录, 方案 §4.1) ============
+#
+# §4.1(2) 的"联动纳排规则批量入组"已由 M18 覆盖, §4.1(1) 的 Excel 导入由 M9 覆盖。
+# 这一版补的是**自助填报入口**和**筛查任务全周期**。
+#
+# 公开填报链接是整个平台唯一一个"不登录就能访问"的入口, 它打在患者库上。
+# 四条规矩:
+#
+# 1) **写入单向。** 提交能创建一条待审记录, 但**绝不回显任何已有患者的数据**。
+#    如果自助页会按门诊号回显"您的既往信息", 那任何人猜一个门诊号就能读别人的病历 ——
+#    这是这块最容易犯也最致命的错。所以公开接口只吐表单结构, 从不吐患者数据。
+#
+# 2) **提交进待审, 不直接建档。** 陌生人填的东西直接进 platform_patient, 等于把
+#    患者名册的写权限交给任何拿到链接的人。必须有人看过才采纳。
+#
+# 3) **token 用 secrets 生成**, 不用时间戳/自增/md5(可预测的都不算)。带有效期和
+#    次数上限 —— 印在海报上的链接会一直被扫, 没有上限就等于永久开放。
+#
+# 4) **限流。** 同一个 token 短时间内狂提交, 多半不是患者在填表。
+
+SCREEN_TASK_STATUSES = {'draft': '草稿', 'pending': '待审批', 'running': '进行中',
+                        'paused': '已暂停', 'ended': '已结束', 'rejected': '已驳回'}
+SCREEN_TASK_TRANSITIONS = {
+    'submit':  {'from': ('draft', 'rejected'), 'to': 'pending'},
+    'approve': {'from': ('pending',), 'to': 'running'},
+    'reject':  {'from': ('pending',), 'to': 'rejected'},
+    'pause':   {'from': ('running',), 'to': 'paused'},
+    'resume':  {'from': ('paused',), 'to': 'running'},
+    'end':     {'from': ('running', 'paused', 'pending'), 'to': 'ended'},
+}
+SUBMISSION_STATUSES = {'pending': '待审核', 'accepted': '已采纳', 'rejected': '已驳回'}
+SCREEN_LINK_KINDS = {'open': '通用链接(谁扫都能填)', 'bound': '定向链接(绑定一位患者)'}
+SCREEN_RATE_WINDOW = 60          # 限流窗口(秒)
+SCREEN_RATE_MAX = 10             # 同一 token 每窗口最多提交几次
+SCREEN_PUBLIC_BASE = os.environ.get('PLATFORM_PUBLIC_BASE') or ''
+
+QR_UNAVAILABLE = ('服务器没装二维码库, 只给出链接。装法: pip install segno(纯 Python, 无依赖)。'
+                  '刻意不手写一个无法验证能否被扫出来的编码器 —— 一张扫不出来的二维码'
+                  '印在诊室海报上, 比没有二维码更糟。链接本身已完全可用, 可以先用任意工具生成二维码。')
+
+
+def ensure_platform_screen_tables():
+    """M23: 筛查任务 + 自助链接 + 提交 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_screen_task (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(64) NOT NULL UNIQUE,
+                name VARCHAR(128) NOT NULL,
+                cohort_code VARCHAR(64) DEFAULT NULL COMMENT '采纳后按哪个纳排方案评估入组',
+                crf_code VARCHAR(64) DEFAULT NULL COMMENT '自助填报用哪份表单/问卷',
+                intro VARCHAR(1000) DEFAULT NULL COMMENT '给患者看的说明',
+                status ENUM('draft','pending','running','paused','ended','rejected') DEFAULT 'draft',
+                owner VARCHAR(64) DEFAULT NULL,
+                approver VARCHAR(64) DEFAULT NULL,
+                approve_note VARCHAR(500) DEFAULT NULL,
+                approved_at DATETIME DEFAULT NULL,
+                start_date DATE DEFAULT NULL,
+                end_date DATE DEFAULT NULL COMMENT '超过这天还在 running 就算超期',
+                target_n INT DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M23 筛查任务'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_screen_link (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                token VARCHAR(64) NOT NULL UNIQUE COMMENT 'secrets 生成, 不可预测',
+                task_code VARCHAR(64) NOT NULL,
+                kind ENUM('open','bound') DEFAULT 'open',
+                patient_no VARCHAR(64) DEFAULT NULL COMMENT '定向链接绑定的患者',
+                label VARCHAR(128) DEFAULT NULL COMMENT '这条链接投放在哪(门诊海报/短信/公众号)',
+                max_uses INT DEFAULT NULL,
+                used INT DEFAULT 0,
+                expires_at DATETIME DEFAULT NULL,
+                active TINYINT(1) DEFAULT 1,
+                created_by VARCHAR(64) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_task (task_code), INDEX idx_active (active)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M23 自助填报链接(公开入口)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_screen_submission (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                task_code VARCHAR(64) NOT NULL,
+                token VARCHAR(64) DEFAULT NULL,
+                patient_no VARCHAR(64) DEFAULT NULL COMMENT '定向链接带来的; 通用链接由患者自填, 未经核实',
+                contact VARCHAR(64) DEFAULT NULL,
+                data JSON NOT NULL,
+                status ENUM('pending','accepted','rejected') DEFAULT 'pending'
+                    COMMENT '陌生人提交的数据不直接进患者库, 必须有人看过才采纳',
+                review_note VARCHAR(500) DEFAULT NULL,
+                reviewed_by VARCHAR(64) DEFAULT NULL,
+                reviewed_at DATETIME DEFAULT NULL,
+                source_ip VARCHAR(64) DEFAULT NULL,
+                user_agent VARCHAR(300) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_task (task_code, status), INDEX idx_token (token),
+                INDEX idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M23 自助填报提交(待审区)'
+        """)
+        print('[启动] platform_screen_task / _link / _submission 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_screen_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def upsert_screen_task(body):
+    """建/改筛查任务。running 之后不许改问卷 —— 改了会让前后收上来的数据对不齐。"""
+    code = re.sub(r'[^0-9A-Za-z_\-]', '', str(body.get('code') or ''))[:64]
+    name = str(body.get('name') or '').strip()
+    if not code or not name:
+        return None, 'code 和 name 必填'
+    for k in ('start_date', 'end_date'):
+        v = str(body.get(k) or '').strip()
+        if v and not re.match(r'^\d{4}-\d{2}-\d{2}$', v):
+            return None, "{} 必须是 'YYYY-MM-DD'".format(k)
+
+    ensure_platform_screen_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, crf_code FROM platform_screen_task WHERE code=%s', (code,))
+        old = cur.fetchone()
+        if old and old[0] in ('running', 'paused') and body.get('crf_code') \
+                and body['crf_code'] != old[1]:
+            cur.execute("SELECT COUNT(*) FROM platform_screen_submission WHERE task_code=%s", (code,))
+            n = cur.fetchone()[0]
+            if n:
+                cur.close()
+                return None, ('任务已在进行中且收到 {} 份提交, 不能换问卷 —— '
+                              '换了会让前后收上来的数据对不齐, 而这批数据是要拿来判断入组的。'
+                              '请结束本任务后另建一个'.format(n))
+        cur.execute("""
+            INSERT INTO platform_screen_task (code, name, cohort_code, crf_code, intro,
+                                              owner, start_date, end_date, target_n)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE name=VALUES(name), cohort_code=VALUES(cohort_code),
+              crf_code=VALUES(crf_code), intro=VALUES(intro), owner=VALUES(owner),
+              start_date=VALUES(start_date), end_date=VALUES(end_date), target_n=VALUES(target_n)
+        """, (code, name, body.get('cohort_code') or None, body.get('crf_code') or None,
+              (body.get('intro') or '')[:1000] or None, body.get('owner') or None,
+              body.get('start_date') or None, body.get('end_date') or None, body.get('target_n')))
+        cur.close()
+        return {'code': code, 'name': name, 'status': (old[0] if old else 'draft')}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def screen_task_transition(body):
+    """任务状态流转 {code, action, operator, note?}。审批要署名。"""
+    code = str(body.get('code') or '').strip()
+    action = str(body.get('action') or '').strip()
+    tr = SCREEN_TASK_TRANSITIONS.get(action)
+    if not code or not tr:
+        return None, 'code 必填, action 必须是 {}'.format('/'.join(SCREEN_TASK_TRANSITIONS))
+    op = str(body.get('operator') or '').strip()
+    if action in ('approve', 'reject') and not op:
+        return None, '审批必须署名 —— 这个任务批下去就会生成公开填报链接, 得有人负责'
+    note = str(body.get('note') or '').strip()
+    if action == 'reject' and not note:
+        return None, '驳回必须写明原因'
+
+    ensure_platform_screen_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status FROM platform_screen_task WHERE code=%s', (code,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '筛查任务不存在: {}'.format(code)
+        cur_st = row[0]
+        if cur_st not in tr['from']:
+            cur.close()
+            return None, '当前状态「{}」不能执行 {} (允许的前置状态: {})'.format(
+                SCREEN_TASK_STATUSES.get(cur_st, cur_st), action,
+                '/'.join(SCREEN_TASK_STATUSES.get(x, x) for x in tr['from']))
+        new = tr['to']
+        if action in ('approve', 'reject'):
+            cur.execute("""UPDATE platform_screen_task SET status=%s, approver=%s,
+                           approve_note=%s, approved_at=NOW() WHERE code=%s""",
+                        (new, op, note[:500] or None, code))
+        else:
+            cur.execute('UPDATE platform_screen_task SET status=%s WHERE code=%s', (new, code))
+        # 结束/暂停时把链接一并停掉 —— 任务停了链接还能填, 等于任务没停
+        if new in ('ended', 'paused', 'rejected'):
+            cur.execute('UPDATE platform_screen_link SET active=0 WHERE task_code=%s', (code,))
+            n = cur.rowcount
+        else:
+            n = 0
+        cur.close()
+        out = {'ok': True, 'code': code, 'from': cur_st, 'to': new,
+               'status_label': SCREEN_TASK_STATUSES[new]}
+        if n:
+            out['links_deactivated'] = n
+            out['note'] = ('已同时停用 {} 条填报链接 —— 任务停了链接还能填, '
+                           '等于任务没停'.format(n))
+        return out, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def create_screen_link(body):
+    """生成一条自助填报链接。token 用 secrets, 不可预测。"""
+    task = str(body.get('task_code') or '').strip()
+    kind = body.get('kind') or 'open'
+    if not task:
+        return None, 'task_code 必填'
+    if kind not in SCREEN_LINK_KINDS:
+        return None, 'kind 必须是 open 或 bound'
+    if kind == 'bound' and not str(body.get('patient_no') or '').strip():
+        return None, '定向链接必须给 patient_no'
+    days = body.get('valid_days')
+    try:
+        days = int(days) if days is not None else 30
+    except (TypeError, ValueError):
+        return None, 'valid_days 必须是整数'
+    if not (1 <= days <= 365):
+        return None, 'valid_days 需在 1~365 之间'
+    max_uses = body.get('max_uses')
+    if max_uses is not None:
+        try:
+            max_uses = int(max_uses)
+        except (TypeError, ValueError):
+            return None, 'max_uses 必须是整数'
+        if max_uses < 1:
+            return None, 'max_uses 至少为 1'
+    elif kind == 'bound':
+        max_uses = 1        # 定向链接默认一次性 —— 它代表某一位患者
+
+    ensure_platform_screen_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status FROM platform_screen_task WHERE code=%s', (task,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '筛查任务不存在: {}'.format(task)
+        if row[0] != 'running':
+            cur.close()
+            return None, ('任务当前是「{}」, 只有进行中的任务才能生成填报链接 —— '
+                          '未经审批就把入口发出去, 等于绕过了审批'.format(
+                              SCREEN_TASK_STATUSES.get(row[0], row[0])))
+        import secrets
+        token = secrets.token_urlsafe(32)[:43]
+        cur.execute("""INSERT INTO platform_screen_link
+                       (token, task_code, kind, patient_no, label, max_uses, expires_at, created_by)
+                       VALUES (%s,%s,%s,%s,%s,%s,DATE_ADD(NOW(), INTERVAL %s DAY),%s)""",
+                    (token, task, kind, body.get('patient_no') or None,
+                     (body.get('label') or '')[:128] or None, max_uses, days,
+                     body.get('created_by') or None))
+        cur.close()
+        url = ((SCREEN_PUBLIC_BASE.rstrip('/') + '/screen.html?t=' + token)
+               if SCREEN_PUBLIC_BASE else ('/screen.html?t=' + token))
+        out = {'ok': True, 'token': token, 'url': url, 'kind': kind,
+               'kind_label': SCREEN_LINK_KINDS[kind], 'valid_days': days,
+               'max_uses': max_uses}
+        try:
+            import segno
+            import io as _io
+            buf = _io.BytesIO()
+            segno.make(url, error='m').save(buf, kind='png', scale=6)
+            import base64 as _b64
+            out['qr_png'] = 'data:image/png;base64,' + _b64.b64encode(buf.getvalue()).decode()
+        except ImportError:
+            out['qr_note'] = QR_UNAVAILABLE
+        if not SCREEN_PUBLIC_BASE:
+            out['url_note'] = ('未配置 PLATFORM_PUBLIC_BASE, 只给出相对路径。'
+                               '印到海报上之前请配上对外可访问的域名')
+        return out, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def screen_form_public(token):
+    """公开接口: 按 token 返回表单结构。
+
+    **只吐表单结构, 绝不吐任何患者数据。** 这是这块最要紧的一条 —— 若按门诊号回显
+    "您的既往信息", 任何人猜一个门诊号就能读别人的病历。定向链接也只回一句
+    "本次填报将记在您名下", 不回姓名不回既往记录。
+    """
+    if not token:
+        return None, '缺少 token'
+    ensure_platform_screen_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT l.task_code, l.kind, l.max_uses, l.used, l.expires_at, l.active,
+                              t.name, t.intro, t.crf_code, t.status
+                       FROM platform_screen_link l
+                       JOIN platform_screen_task t ON t.code=l.task_code
+                       WHERE l.token=%s""", (token,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '链接无效'
+        task, kind, mx, used, exp, active, name, intro, crf, tstatus = row
+        if not active or tstatus != 'running':
+            cur.close()
+            return None, '本次筛查已结束或暂停, 链接不再可用'
+        if exp and exp < datetime.datetime.now():
+            cur.close()
+            return None, '链接已过期'
+        if mx is not None and used >= mx:
+            cur.close()
+            return None, '链接已达使用次数上限'
+        definition = None
+        if crf:
+            cur.execute("SELECT definition FROM platform_crf WHERE code=%s AND active=1 "
+                        "ORDER BY id DESC LIMIT 1", (crf,))
+            d = cur.fetchone()
+            if d:
+                definition = json.loads(d[0]) if isinstance(d[0], str) else d[0]
+        cur.close()
+        return {'ok': True, 'task_name': name, 'intro': intro,
+                'crf_code': crf, 'definition': definition,
+                'bound': kind == 'bound',
+                'bound_note': '本次填报将记在您名下' if kind == 'bound' else None,
+                'privacy_note': ('本页只用于提交信息, 不会显示任何既往病历。'
+                                 '提交后由医护人员核对, 核对通过才会进入随访')}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def screen_submit_public(body, source_ip=None, user_agent=None):
+    """公开接口: 提交自助填报。落到**待审区**, 不直接建档。"""
+    token = str(body.get('token') or '').strip()
+    data = body.get('data')
+    if not token:
+        return None, '缺少 token'
+    if not isinstance(data, dict) or not data:
+        return None, '没有收到填写内容'
+    if len(json.dumps(data, ensure_ascii=False)) > 40000:
+        return None, '内容过大'
+
+    ensure_platform_screen_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT l.id, l.task_code, l.kind, l.patient_no, l.max_uses, l.used,
+                              l.expires_at, l.active, t.status, t.crf_code
+                       FROM platform_screen_link l
+                       JOIN platform_screen_task t ON t.code=l.task_code
+                       WHERE l.token=%s""", (token,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '链接无效'
+        lid, task, kind, bound_no, mx, used, exp, active, tstatus, crf = row
+        if not active or tstatus != 'running':
+            cur.close()
+            return None, '本次筛查已结束或暂停'
+        if exp and exp < datetime.datetime.now():
+            cur.close()
+            return None, '链接已过期'
+        if mx is not None and used >= mx:
+            cur.close()
+            return None, '链接已达使用次数上限'
+        # 限流: 同一 token 短时间狂提交, 多半不是患者在填表
+        cur.execute("""SELECT COUNT(*) FROM platform_screen_submission
+                       WHERE token=%s AND created_at > DATE_SUB(NOW(), INTERVAL %s SECOND)""",
+                    (token, SCREEN_RATE_WINDOW))
+        if cur.fetchone()[0] >= SCREEN_RATE_MAX:
+            cur.close()
+            return None, '提交过于频繁, 请稍后再试'
+
+        # 有表单定义就校验一遍, 免得收上来一堆填不全的
+        if crf:
+            cur.execute("SELECT definition FROM platform_crf WHERE code=%s AND active=1 "
+                        "ORDER BY id DESC LIMIT 1", (crf,))
+            d = cur.fetchone()
+            if d:
+                defn = json.loads(d[0]) if isinstance(d[0], str) else d[0]
+                errs, _w = validate_crf_data(defn, data)
+                if errs:
+                    cur.close()
+                    return {'ok': False, 'accepted': False, 'errors': errs}, None
+
+        # patient_no 这一列的含义是"**已确认**的身份", 只有定向链接才填得起 ——
+        # 它的患者号是服务端记录的, 不听提交里带的(否则任何人都能拿一条定向链接
+        # 往别人名下塞数据)。
+        # 通用链接上患者自填的号码没经过任何核实, 只留在 data 里当线索;
+        # 写进这一列会让审核时"必须核实门诊号"那道关自动通过 —— 正是它要防的事。
+        pno = bound_no if kind == 'bound' else None
+        contact = str(data.get('phone') or data.get('contact') or '')[:64] or None
+        cur.execute("""INSERT INTO platform_screen_submission
+                       (task_code, token, patient_no, contact, data, status, source_ip, user_agent)
+                       VALUES (%s,%s,%s,%s,%s,'pending',%s,%s)""",
+                    (task, token, pno, contact, json.dumps(data, ensure_ascii=False),
+                     (source_ip or '')[:64] or None, (user_agent or '')[:300] or None))
+        sid = cur.lastrowid
+        cur.execute('UPDATE platform_screen_link SET used=used+1 WHERE id=%s', (lid,))
+        cur.close()
+        return {'ok': True, 'accepted': True, 'submission_id': sid,
+                'message': '已收到，感谢您的填写。医护人员核对后会与您联系。'}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def screen_submission_review(body):
+    """审核一份自助提交 {id, action: accept|reject, operator, note?, patient_no?}
+
+    accept 时才建档 —— 陌生人填的东西不直接进患者库。
+    """
+    try:
+        sid = int(body.get('id'))
+    except (TypeError, ValueError):
+        return None, 'id 必填且为整数'
+    action = str(body.get('action') or '').strip()
+    if action not in ('accept', 'reject'):
+        return None, 'action 必须是 accept 或 reject'
+    op = str(body.get('operator') or '').strip()
+    if not op:
+        return None, '审核必须署名'
+    note = str(body.get('note') or '').strip()
+    if action == 'reject' and not note:
+        return None, '驳回必须写明原因'
+
+    ensure_platform_screen_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, task_code, patient_no, data FROM platform_screen_submission WHERE id=%s',
+                    (sid,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '提交记录不存在: {}'.format(sid)
+        if row[0] != 'pending':
+            cur.close()
+            return None, '该提交已{}，不能重复审核'.format(SUBMISSION_STATUSES.get(row[0], row[0]))
+        task, pno, data = row[1], row[2], row[3]
+        if isinstance(data, str):
+            data = json.loads(data)
+        new_status = 'accepted' if action == 'accept' else 'rejected'
+        created = None
+        if action == 'accept':
+            pno = str(body.get('patient_no') or pno or '').strip()
+            if not pno:
+                cur.close()
+                claimed = str((data or {}).get('patient_no') or '').strip()
+                return None, ('采纳时必须确定门诊号 —— 通用链接上患者自填的号码没经过核实, '
+                              '请核对后填入正确的门诊号{}'.format(
+                                  '。患者自填的是「{}」, 可作参考'.format(claimed) if claimed else ''))
+            cur.execute('SELECT patient_no FROM platform_patient WHERE patient_no=%s', (pno,))
+            if not cur.fetchone():
+                cur.execute("""INSERT INTO platform_patient (patient_no, name, gender, age, note)
+                               VALUES (%s,%s,%s,%s,%s)""",
+                            (pno, str(data.get('name') or '')[:64] or None,
+                             data.get('gender') if data.get('gender') in ('M', 'F') else None,
+                             data.get('age') if isinstance(data.get('age'), int) else None,
+                             '自助筛查采纳({})'.format(task)))
+                created = True
+            else:
+                created = False
+        cur.execute("""UPDATE platform_screen_submission SET status=%s, patient_no=%s,
+                       reviewed_by=%s, review_note=%s, reviewed_at=NOW() WHERE id=%s""",
+                    (new_status, pno, op, note[:500] or None, sid))
+        cur.close()
+        return {'ok': True, 'id': sid, 'status': new_status,
+                'status_label': SUBMISSION_STATUSES[new_status],
+                'patient_no': pno if action == 'accept' else None,
+                'patient_created': created,
+                'note': ('已建档 {}。是否入组由纳排规则决定 —— 到「纳排与分组」里试算'.format(pno)
+                         if created else None)}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_screen_tasks(code=None, status=None, with_links=True, limit=100):
+    """筛查任务列表, 含超期与待审批预警 (§4.1(4))。"""
+    ensure_platform_screen_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if code:
+            where.append('t.code=%s'); params.append(code)
+        if status:
+            where.append('t.status=%s'); params.append(status)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT t.code, t.name, t.cohort_code, t.crf_code, t.intro, t.status, t.owner,
+                   t.approver, t.approve_note, t.approved_at, t.start_date, t.end_date,
+                   t.target_n, t.created_at,
+                   (SELECT COUNT(*) FROM platform_screen_submission s
+                     WHERE s.task_code=t.code) AS total_sub,
+                   (SELECT COUNT(*) FROM platform_screen_submission s
+                     WHERE s.task_code=t.code AND s.status='pending') AS pending_sub,
+                   (SELECT COUNT(*) FROM platform_screen_submission s
+                     WHERE s.task_code=t.code AND s.status='accepted') AS accepted_sub,
+                   (SELECT COUNT(*) FROM platform_screen_link l
+                     WHERE l.task_code=t.code AND l.active=1) AS active_links,
+                   DATEDIFF(CURDATE(), t.end_date) AS overdue_days,
+                   DATEDIFF(NOW(), t.updated_at) AS idle_days
+            FROM platform_screen_task t WHERE {} ORDER BY
+              FIELD(t.status,'pending','running','paused','draft','rejected','ended'),
+              t.updated_at DESC LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['code', 'name', 'cohort_code', 'crf_code', 'intro', 'status', 'owner',
+                'approver', 'approve_note', 'approved_at', 'start_date', 'end_date',
+                'target_n', 'created_at', 'total_sub', 'pending_sub', 'accepted_sub',
+                'active_links', 'overdue_days', 'idle_days']
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            for k in ('approved_at', 'created_at'):
+                if d.get(k) is not None and hasattr(d[k], 'strftime'):
+                    d[k] = d[k].strftime('%Y-%m-%d %H:%M:%S')
+            for k in ('start_date', 'end_date'):
+                if d.get(k) is not None and hasattr(d[k], 'strftime'):
+                    d[k] = d[k].strftime('%Y-%m-%d')
+            d['status_label'] = SCREEN_TASK_STATUSES.get(d['status'], d['status'])
+            d['progress'] = (round(d['accepted_sub'] * 100.0 / d['target_n'], 1)
+                             if d.get('target_n') else None)
+            # §4.1(4): 对超期、待审批任务预警
+            alerts = []
+            if d['status'] == 'running' and (d.get('overdue_days') or 0) > 0:
+                alerts.append({'kind': 'overdue', 'level': 'warn',
+                               'detail': '已超过计划结束日 {} 天, 但链接仍然开着 —— '
+                                         '印出去的二维码不会自己失效'.format(d['overdue_days'])})
+            if d['status'] == 'pending' and (d.get('idle_days') or 0) >= 3:
+                alerts.append({'kind': 'awaiting_approval', 'level': 'warn',
+                               'detail': '待审批已 {} 天'.format(d['idle_days'])})
+            if d['pending_sub'] >= 20:
+                alerts.append({'kind': 'backlog', 'level': 'warn',
+                               'detail': '有 {} 份提交等着核对 —— 患者已经填了, 这边压着'
+                                         '会让人觉得没人管'.format(d['pending_sub'])})
+            d['alerts'] = alerts
+            out.append(d)
+        if with_links and code and out:
+            cur.execute("""SELECT token, kind, patient_no, label, max_uses, used,
+                                  expires_at, active, created_by, created_at
+                           FROM platform_screen_link WHERE task_code=%s ORDER BY id DESC""", (code,))
+            out[0]['links'] = [{
+                'token_short': a[:8] + '…', 'kind': b, 'kind_label': SCREEN_LINK_KINDS.get(b, b),
+                'patient_no': c, 'label': d2, 'max_uses': e, 'used': f,
+                'expires_at': g.strftime('%Y-%m-%d %H:%M') if hasattr(g, 'strftime') else g,
+                'active': bool(h), 'created_by': i,
+                'created_at': j.strftime('%Y-%m-%d %H:%M') if hasattr(j, 'strftime') else j}
+                for a, b, c, d2, e, f, g, h, i, j in cur.fetchall()]
+        cur.close()
+        return {'ok': True, 'count': len(out), 'tasks': out,
+                'statuses': SCREEN_TASK_STATUSES, 'link_kinds': SCREEN_LINK_KINDS,
+                'public_base': SCREEN_PUBLIC_BASE or None,
+                'qr_available': _has_segno()}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def _has_segno():
+    try:
+        import segno       # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def query_screen_submissions(task_code=None, status=None, limit=200):
+    """自助提交列表(待审区)。"""
+    ensure_platform_screen_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if task_code:
+            where.append('s.task_code=%s'); params.append(task_code)
+        if status:
+            where.append('s.status=%s'); params.append(status)
+        params.append(int(limit))
+        cur.execute("""SELECT s.id, s.task_code, t.name, s.patient_no, s.contact, s.data,
+                              s.status, s.review_note, s.reviewed_by, s.reviewed_at,
+                              s.source_ip, s.created_at
+                       FROM platform_screen_submission s
+                       LEFT JOIN platform_screen_task t ON t.code=s.task_code
+                       WHERE {} ORDER BY s.id DESC LIMIT %s""".format(' AND '.join(where)), params)
+        cols = ['id', 'task_code', 'task_name', 'patient_no', 'contact', 'data', 'status',
+                'review_note', 'reviewed_by', 'reviewed_at', 'source_ip', 'created_at']
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            for k in ('reviewed_at', 'created_at'):
+                if d.get(k) is not None and hasattr(d[k], 'strftime'):
+                    d[k] = d[k].strftime('%Y-%m-%d %H:%M:%S')
+            if isinstance(d.get('data'), str):
+                try:
+                    d['data'] = json.loads(d['data'])
+                except ValueError:
+                    pass
+            d['status_label'] = SUBMISSION_STATUSES.get(d['status'], d['status'])
+            d['field_count'] = len(d['data']) if isinstance(d.get('data'), dict) else 0
+            out.append(d)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'submissions': out,
+                'statuses': SUBMISSION_STATUSES}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -10533,6 +11163,30 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/screen/tasks':
+            st = (query.get('status') or [None])[0]
+            if st and st not in SCREEN_TASK_STATUSES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 {} 之一'.format('/'.join(SCREEN_TASK_STATUSES))}); return
+            result, err = query_screen_tasks((query.get('code') or [None])[0], st,
+                                             limit=min(int((query.get('limit') or ['100'])[0] or 100), 300))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/screen/submissions':
+            st = (query.get('status') or [None])[0]
+            if st and st not in SUBMISSION_STATUSES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 {} 之一'.format('/'.join(SUBMISSION_STATUSES))}); return
+            result, err = query_screen_submissions((query.get('task') or [None])[0], st,
+                                                   limit=min(int((query.get('limit') or ['200'])[0] or 200), 500))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/screen/form':
+            # **公开接口**(患者扫码后打开)。只吐表单结构, 从不吐任何患者数据 ——
+            # 若按门诊号回显"您的既往信息", 任何人猜一个号就能读别人的病历。
+            result, err = screen_form_public((query.get('t') or [None])[0])
+            self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/consults':
             lv = (query.get('level') or [None])[0]
             if lv and lv not in TRIAGE_LEVELS:
@@ -10999,6 +11653,14 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/screen/tasks': '随访平台 M23: 筛查任务(含超期/待审批预警)',
+                    'POST /api/platform/screen/task': '随访平台 M23: 建/改筛查任务',
+                    'POST /api/platform/screen/task/transition': '随访平台 M23: 提交审批/批准/驳回/启停/结束',
+                    'POST /api/platform/screen/link': '随访平台 M23: 生成自助填报链接(token 不可预测, 带有效期与次数上限)',
+                    'GET  /api/platform/screen/form': '随访平台 M23 **公开**: 按 token 取表单结构(绝不返回患者数据)',
+                    'POST /api/platform/screen/submit': '随访平台 M23 **公开**: 提交自助填报(落待审区, 不直接建档)',
+                    'GET  /api/platform/screen/submissions': '随访平台 M23: 待审提交列表',
+                    'POST /api/platform/screen/submission/review': '随访平台 M23: 审核采纳/驳回',
                     'POST /api/platform/consult': '随访平台 M22: 健康咨询(急症分诊前置, 不调模型直接中断; 不给诊断处方)',
                     'POST /api/platform/consult/triage': '随访平台 M22: 只跑高风险分诊({text}), 供语音随访等复用',
                     'GET  /api/platform/consults': '随访平台 M22: 咨询留痕(全程可审核, ?level=&unreviewed=1)',
@@ -11223,6 +11885,31 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/screen/task':
+                result, err = upsert_screen_task(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/screen/task/transition':
+                result, err = screen_task_transition(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/screen/link':
+                result, err = create_screen_link(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/screen/submit':
+                # **公开接口**(患者提交)。落待审区, 不直接建档 —— 陌生人填的东西
+                # 直接进患者库, 等于把名册写权限交给任何拿到链接的人。
+                result, err = screen_submit_public(
+                    body, self.client_address[0] if self.client_address else None,
+                    self.headers.get('User-Agent'))
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/screen/submission/review':
+                result, err = screen_submission_review(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/consult':
                 # 患者提问入口。刻意不走写接口门禁 —— 这个接口将来要开给患者端小程序,
@@ -11630,6 +12317,8 @@ if __name__ == '__main__':
         ensure_platform_export_tables()
         # M22: 健康咨询留痕 (idempotent)
         ensure_platform_consult_tables()
+        # M23: 筛查任务 + 自助链接 + 提交 (idempotent)
+        ensure_platform_screen_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -11681,6 +12370,10 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/screen/tasks             随访平台 M23: 筛查任务')
+    print('[端点] POST /api/platform/screen/link              随访平台 M23: 生成自助填报链接')
+    print('[端点] GET  /api/platform/screen/form              随访平台 M23 公开: 取表单(不返回患者数据)')
+    print('[端点] POST /api/platform/screen/submit            随访平台 M23 公开: 提交(落待审区)')
     print('[端点] POST /api/platform/consult                  随访平台 M22: 健康咨询(分诊前置)')
     print('[端点] POST /api/platform/consult/triage           随访平台 M22: 高风险分诊')
     print('[端点] GET  /api/platform/consults                 随访平台 M22: 咨询留痕')

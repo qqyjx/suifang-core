@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>健康筛查</title>
+<!--
+  患者自助填报页。**这一页刻意做得很薄**:
+
+  它是整个平台唯一一个不登录就能打开的入口, 而且会被印成二维码贴在诊室墙上。
+  所以它只做两件事 —— 按 token 取表单结构、把填的内容提交回去。
+  它**从不请求任何患者数据接口**, 页面上也永远不会出现别人的信息:
+  只要它能按门诊号回显"您的既往记录", 任何人猜一个号就能读别人的病历。
+-->
+<style>
+:root{--green:#1b9a78;--line:#e3e8ea;--muted:#82909c}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+     background:#f5f7f7;color:#22303a;-webkit-text-size-adjust:100%}
+.wrap{max-width:600px;margin:0 auto;padding:18px 16px 40px}
+.card{background:#fff;border-radius:14px;padding:20px 18px;box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:14px}
+h1{font-size:19px;margin:0 0 6px}
+.intro{color:var(--muted);font-size:14px;white-space:pre-wrap}
+.privacy{background:#f4f8f7;border-left:3px solid var(--green);border-radius:0 8px 8px 0;
+         padding:11px 13px;font-size:13px;color:#4a5760;line-height:1.75;margin-top:12px}
+.field{margin-bottom:16px}
+label{display:block;font-size:14px;font-weight:600;margin-bottom:6px}
+label .req{color:#d74c55}
+input,select,textarea{width:100%;padding:11px 12px;font-size:16px;border:1px solid var(--line);
+       border-radius:9px;background:#fff;color:inherit;font-family:inherit}
+textarea{height:80px;resize:vertical}
+.opts{display:flex;gap:10px;flex-wrap:wrap}
+.opt{flex:1 1 auto;min-width:96px}
+.opt input{display:none}
+.opt span{display:block;text-align:center;padding:11px 8px;border:1px solid var(--line);
+          border-radius:9px;font-size:15px;cursor:pointer;background:#fff}
+.opt input:checked+span{border-color:var(--green);background:#eaf7f4;color:var(--green);font-weight:600}
+.err{color:#d74c55;font-size:13px;margin-top:5px;min-height:1px}
+button.go{width:100%;padding:14px;font-size:17px;font-weight:600;color:#fff;background:var(--green);
+          border:0;border-radius:10px;margin-top:6px}
+button.go:disabled{opacity:.55}
+.state{text-align:center;padding:52px 20px;color:var(--muted)}
+.state .ico{font-size:44px;display:block;margin-bottom:12px}
+.state h2{color:#22303a;font-size:18px;margin:0 0 8px}
+.foot{text-align:center;color:#9ca3af;font-size:12px;margin-top:18px;line-height:1.8}
+</style></head><body>
+<div class="wrap" id="app"><div class="state"><span class="ico">◷</span>加载中…</div></div>
+<script>
+const API = new URLSearchParams(location.search).get('api') || '';
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+const app = document.getElementById('app');
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const state = (ico, title, msg) =>
+  app.innerHTML = '<div class="card"><div class="state"><span class="ico">'+ico+'</span>'+
+    '<h2>'+esc(title)+'</h2><div>'+esc(msg)+'</div></div></div>';
+
+let DEF = null;
+
+function fieldHtml(it) {
+  const req = it.required ? '<span class="req">*</span> ' : '';
+  let input;
+  if (it.type === 'note') return '<div class="privacy">'+esc(it.text)+'</div>';
+  if (it.type === 'paragraph') input = '<textarea data-f="'+esc(it.id)+'"></textarea>';
+  else if (it.type === 'number') input = '<input type="number" inputmode="decimal" data-f="'+esc(it.id)+'">';
+  else if (it.type === 'date') input = '<input type="date" data-f="'+esc(it.id)+'">';
+  else if (it.type === 'single' || it.type === 'select')
+    input = '<div class="opts">'+(it.options||[]).map((o,i) =>
+      '<label class="opt"><input type="radio" name="'+esc(it.id)+'" data-r="'+esc(it.id)+'" '+
+      'value="'+esc(JSON.stringify(o.value))+'"><span>'+esc(o.label)+'</span></label>').join('')+'</div>';
+  else if (it.type === 'multi')
+    input = '<div class="opts">'+(it.options||[]).map(o =>
+      '<label class="opt"><input type="checkbox" data-m="'+esc(it.id)+'" '+
+      'value="'+esc(JSON.stringify(o.value))+'"><span>'+esc(o.label)+'</span></label>').join('')+'</div>';
+  else input = '<input data-f="'+esc(it.id)+'" '+(it.format === 'phone' ? 'inputmode="tel"' : '')+'>';
+  return '<div class="field"><label>'+req+esc(it.text)+'</label>'+input+
+         '<div class="err" data-e="'+esc(it.id)+'"></div></div>';
+}
+
+function collect() {
+  const d = {};
+  document.querySelectorAll('[data-f]').forEach(el => {
+    const v = el.value.trim();
+    if (v !== '') d[el.dataset.f] = (el.type === 'number') ? Number(v) : v;
+  });
+  document.querySelectorAll('[data-r]:checked').forEach(el => {
+    try { d[el.dataset.r] = JSON.parse(el.value); } catch (e) { d[el.dataset.r] = el.value; }
+  });
+  const multi = {};
+  document.querySelectorAll('[data-m]').forEach(el => {
+    multi[el.dataset.m] = multi[el.dataset.m] || [];
+    if (el.checked) { try { multi[el.dataset.m].push(JSON.parse(el.value)); } catch (e) {} }
+  });
+  Object.keys(multi).forEach(k => { if (multi[k].length) d[k] = multi[k]; });
+  return d;
+}
+
+async function load() {
+  if (!TOKEN) return state('⊘', '链接不完整', '请重新扫描二维码，或联系为您提供链接的医护人员。');
+  try {
+    const res = await fetch(API + '/api/platform/screen/form?t=' + encodeURIComponent(TOKEN),
+                            { cache: 'no-store' });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) return state('⊘', '链接不可用', d.error || ('HTTP ' + res.status));
+    DEF = d;
+    const items = (d.definition && d.definition.items) || [];
+    const secs = (d.definition && d.definition.sections) || [];
+    const all = items.concat(secs.reduce((a, s) => a.concat(s.items || []), []));
+    if (!all.length) return state('⊘', '暂无可填写的内容', '请联系医护人员。');
+    app.innerHTML =
+      '<div class="card"><h1>'+esc(d.task_name)+'</h1>'+
+      (d.intro ? '<div class="intro">'+esc(d.intro)+'</div>' : '')+
+      (d.bound_note ? '<div class="privacy">'+esc(d.bound_note)+'</div>' : '')+
+      '<div class="privacy">'+esc(d.privacy_note)+'</div></div>'+
+      '<div class="card">'+all.map(fieldHtml).join('')+
+      '<button class="go" id="go">提交</button></div>'+
+      '<div class="foot">本页仅用于提交信息，不展示任何既往病历。<br>'+
+      '如果您现在有紧急不适，请直接拨打 120 或前往就近医院急诊。</div>';
+    document.getElementById('go').onclick = submit;
+  } catch (e) { state('⊘', '网络异常', e.message); }
+}
+
+async function submit() {
+  const btn = document.getElementById('go');
+  btn.disabled = true; btn.textContent = '提交中…';
+  document.querySelectorAll('[data-e]').forEach(el => el.textContent = '');
+  try {
+    const res = await fetch(API + '/api/platform/screen/submit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: TOKEN, data: collect() }) });
+    const d = await res.json();
+    if (d.accepted === false && d.errors) {
+      d.errors.forEach(x => {
+        const el = document.querySelector('[data-e="' + x.field + '"]');
+        if (el) el.textContent = x.error;
+      });
+      btn.disabled = false; btn.textContent = '提交';
+      const first = document.querySelector('[data-e]:not(:empty)');
+      if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    state('✓', '已收到', d.message || '感谢您的填写。');
+  } catch (e) {
+    btn.disabled = false; btn.textContent = '提交';
+    alert('提交失败：' + e.message);
+  }
+}
+load();
+</script></body></html>
