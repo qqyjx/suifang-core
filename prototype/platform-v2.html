@@ -21,6 +21,7 @@
     患者管理     真实   M1 建档/绑定/体征 + M4 佩戴依从性 + M8 待建档发现
     数据质控     部分   M13 自动质控+历次对比+质疑闭环已通; 留痕回退与 OCR 采集未建设
     纳排与分组   真实   M18 纳排/分组/入组已通; AI 推荐纳排与模型分组未建(刻意)
+    随访流程     真实   M19 多级流程/访视窗口/流程外阶段/完成率已通; AI 生成计划未建
     统计分析     部分   M6 导出 + M16 高级检索与分布统计已通; CDISC/变量挑选/异步导出未建设
     系统管理     真实   API 配置 / 服务自检 (多角色权限体系未建设)
 -->
@@ -344,14 +345,66 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
       <!-- ===================== 随访计划编排 (M5) ===================== -->
       <section class="module-page" id="plans">
         <div class="module-hero">
-          <div><h2>随访计划编排</h2><p>固定频次 / 一次性计划 · 任务由 next_due 现算，不落地存储</p></div>
-          <button class="white-btn" id="newPlanBtn">＋ 新建计划</button>
+          <div><h2>随访计划编排</h2><p>方案 §3.3：多级流程 · 访视窗口 · 事件触发 · 流程库复用</p></div>
+          <div class="hero-actions">
+            <button class="white-btn" id="newFlowBtn">＋ 新建流程</button>
+            <button class="white-btn" id="newPlanBtn">＋ 简易计划</button>
+          </div>
         </div>
-        <div class="card panel" style="margin-bottom:14px">
-          <div class="panel-head"><div><h3>已实现的与方案要求的差距</h3>
-            <small>当前只支持"固定频次 / 一次性"两种模式。方案 §3.3 还要求非均匀随访、随到随访、三级以上多级流程、事件触发与终止、流程库复用 —— 这些尚未建设。</small></div></div>
+        <div class="note-strip">
+          <b>「访视窗口」和「流程外阶段」是这一块的两个支点。</b>
+          「术后 7 天访视」实际是「第 5~10 天之间做完」——没有窗口就没有「超窗」这个概念，
+          晚一天和晚三个月在系统看来一样。<br>
+          不良事件、并发症是<b>流程外阶段</b>：不在时间轴上，由事件触发，可能发生零次也可能发生五次。
+          它们<b>不计入随访完成率的分母</b>——把从未发生的不良事件算成「未完成」，完成率永远上不去；
+          同理尚未到期的访视也不进分母，否则早期完成率永远很低。两种错法都让这个数失去意义，
+          而管理层恰恰只看这个数。
         </div>
-        <div class="rows" id="planWrap"><div class="loading">加载中…</div></div>
+        <div class="tabs">
+          <button class="tab active" data-ftab="flow">流程库 <span id="tabFlowN">0</span></button>
+          <button class="tab" data-ftab="visit">访视看板 <span id="tabVisitN">0</span></button>
+          <button class="tab" data-ftab="plan">简易计划 (M5) <span id="tabPlanN">0</span></button>
+        </div>
+        <div id="ftabFlow">
+          <div class="rows" id="flowWrap"><div class="loading">加载中…</div></div>
+          <div class="card panel" style="margin-top:16px">
+            <div class="panel-head"><h3>方案 §3.3 逐条对照</h3></div>
+            <div class="table-wrap"><table><thead><tr><th>要求</th><th>状态</th><th>说明</th></tr></thead><tbody>
+              <tr><td>固定频次均匀随访</td><td><span class="tag green">已建</span></td><td>等间隔 offset 即可</td></tr>
+              <tr><td>非均匀随访</td><td><span class="tag green">已建</span></td><td>每个访视各自的 offset，如 7/30/90/180 天</td></tr>
+              <tr><td>三级以上多级流程，各级名称可自定义</td><td><span class="tag green">已建</span></td><td>层级名是<b>数据不是代码</b>——肿瘤科叫「周期/访视/项目」，术后康复叫「阶段/复查/检查项」</td></tr>
+              <tr><td>不良事件、并发症等流程外阶段单独配置</td><td><span class="tag green">已建</span></td><td>不在时间轴上，事件触发，可重复发生，不进完成率分母</td></tr>
+              <tr><td>访视窗口与超窗管理</td><td><span class="tag green">已建</span></td><td>方案 §4.5(4) 要的超窗预警建立在这个之上</td></tr>
+              <tr><td>按入组时间触发 / 固定日期触发</td><td><span class="tag green">已建</span></td><td>anchor = enroll 或 fixed_date</td></tr>
+              <tr><td>事件触发终止 / 手动终止</td><td><span class="tag green">已建</span></td><td>终止后未完成的访视置为<b>取消而不是删除</b>——删了就看不出本来还有几次没做</td></tr>
+              <tr><td>流程库：公开共享 / 私有自建 / 整体复用 / 复制修改</td><td><span class="tag green">已建</span></td><td>复制生成独立新流程的第 1 版</td></tr>
+              <tr><td>不固定频次「随到随访」</td><td><span class="tag amber">部分</span></td><td>可以用流程外阶段表达（患者来了就触发一次），但没有专门的模式开关</td></tr>
+              <tr><td>AI 按诊断分型自动生成全周期计划</td><td><span class="tag grey">未建设</span></td><td>需要病种→随访节点的知识库；当前靠人配或复制现成流程</td></tr>
+              <tr><td>提醒策略与推送</td><td><span class="tag amber">部分</span></td><td>节点上可配提醒参数，推送通道未接</td></tr>
+            </tbody></table></div>
+          </div>
+        </div>
+        <div id="ftabVisit" style="display:none">
+          <div class="stats" id="visitStats"></div>
+          <div class="card panel">
+            <div class="panel-head"><h3>访视看板</h3>
+              <div class="head-tools">
+                <select id="vsFilter" class="mini">
+                  <option value="">全部</option><option value="overdue">已超窗</option>
+                  <option value="due">窗口内待完成</option><option value="pending">未到期</option>
+                  <option value="done">已完成</option></select>
+                <button class="link" id="vsRefresh">刷新状态</button>
+              </div></div>
+            <div class="table-wrap"><table id="visitTable"></table></div>
+          </div>
+        </div>
+        <div id="ftabPlan" style="display:none">
+          <div class="card panel" style="margin-bottom:14px">
+            <div class="panel-head"><div><h3>简易计划（M5，早于流程引擎）</h3>
+              <small>只有「固定频次 / 一次性」两种模式，任务由 next_due 现算不落地。新项目建议用上面的流程库——它有访视窗口、多级层级和流程外阶段。这里保留是因为已有计划还挂在上面。</small></div></div>
+          </div>
+          <div class="rows" id="planWrap"><div class="loading">加载中…</div></div>
+        </div>
       </section>
 
       <!-- ===================== 统计分析 (M6) ===================== -->
@@ -793,7 +846,7 @@ const S = {
   qcFindings: [], qcQueries: [], cmpData: null,
   crfs: [], crfFill: null, crfDraft: null,
   edu: [], eduDraft: null,
-  cohorts: [],
+  cohorts: [], flows: [], visits: [],
   docs: [], consents: [], docMeta: null,
   sqFields: null, sqConds: [], sqResult: null,
 };
@@ -806,7 +859,7 @@ function goto(page) {
   document.getElementById('sidebar').classList.remove('open');
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (page === 'execute') { loadAlarms(); loadTasks(); }
-  if (page === 'plans') loadPlans();
+  if (page === 'plans') { loadFlows(); loadPlans(); }
   if (page === 'cohorts') loadCohorts();
   if (page === 'analytics') { loadAnalytics(); loadSearchFields().then(renderSqRows).catch(() => {}); }
   if (page === 'settings') fillSettings();
@@ -2606,6 +2659,301 @@ document.getElementById('sqExport').onclick = () => {
   a.click();
   URL.revokeObjectURL(a.href);
   toast('已导出 ' + d.count + ' 人' + (d.total > d.count ? '（共命中 ' + d.total + ' 人，文件末尾有说明）' : ''), 6000);
+};
+
+/* ================================================================ M19 随访流程 (方案 §3.3) */
+const VISIT_TAG = { pending:'tag grey', due:'tag orange', done:'tag green',
+                    overdue:'tag red', skipped:'tag grey', cancelled:'tag grey' };
+const FLOW_ITEM_LABEL = { scale:'量表', crf:'CRF 表单', lab:'检验复查',
+                          interview:'问诊', edu:'宣教推送', other:'其他' };
+
+document.querySelectorAll('[data-ftab]').forEach(b => b.onclick = () => {
+  const t = b.dataset.ftab;
+  document.querySelectorAll('[data-ftab]').forEach(x => x.classList.toggle('active', x === b));
+  document.getElementById('ftabFlow').style.display = t === 'flow' ? '' : 'none';
+  document.getElementById('ftabVisit').style.display = t === 'visit' ? '' : 'none';
+  document.getElementById('ftabPlan').style.display = t === 'plan' ? '' : 'none';
+  if (t === 'visit') loadVisits();
+  if (t === 'plan') loadPlans();
+});
+
+async function loadFlows() {
+  const wrap = document.getElementById('flowWrap');
+  try {
+    const d = await getJSON('/api/platform/flows?limit=100');
+    S.flows = d.flows || [];
+    document.getElementById('tabFlowN').textContent = S.flows.length;
+    wrap.innerHTML = S.flows.length ? S.flows.map(f =>
+      '<div class="row-card row-plan">'+
+        '<div><span class="strong">'+esc(f.name)+'</span><span class="sub">'+esc(f.code)+' v'+esc(f.version)+'</span></div>'+
+        '<div>'+esc(f.category || '未分类')+'<span class="sub">'+
+          (f.scope === 'shared' ? '院内共享' : '私有')+(f.owner ? ' · '+esc(f.owner) : '')+'</span></div>'+
+        '<div><b style="font-size:16px">'+(f.visit_count == null ? '--' : f.visit_count)+'</b> 次访视'+
+          '<span class="sub">'+f.node_count+' 个节点</span></div>'+
+        '<div>'+(f.running_patients ? '<b>'+f.running_patients+'</b> 人在随' : '<span style="color:#9ca3af">尚无患者</span>')+
+          '<span class="sub"><span class="tag '+(f.status === 'active' ? 'green' : 'grey')+'">'+
+          ({draft:'草稿',active:'已启用',archived:'已归档'}[f.status] || f.status)+'</span></span></div>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+          '<button class="secondary" onclick="viewFlow(\''+esc(f.code)+'\')">查看</button>'+
+          '<button class="link" onclick="instantiateFlow(\''+esc(f.code)+'\')">分配患者</button>'+
+          '<button class="link" onclick="copyFlow(\''+esc(f.code)+'\')">复制</button>'+
+        '</div></div>').join('')
+      : emptyBox('⌘', '流程库是空的', '点右上角「新建流程」。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+
+/* 节点树渲染。层级名来自 definition.levels —— 不同科室叫法不同, 写死在代码里
+   等于逼所有人接受同一套术语。 */
+function flowTreeHtml(defn) {
+  const levels = defn.levels || [];
+  const walk = (nodes, depth) => (nodes || []).map(n => {
+    const leaf = !(n.children && n.children.length);
+    const lv = levels[depth] || ('第 ' + (depth + 1) + ' 级');
+    return '<div style="margin-left:'+(depth * 18)+'px;padding:6px 0;border-bottom:1px solid #f4f6f7">'+
+      '<span class="tag grey">'+esc(lv)+'</span> <b>'+esc(n.name)+'</b>'+
+      (leaf ? '<span style="color:#82909c;font-size:12px;margin-left:8px">'+
+        (n.date ? '固定日期 '+esc(n.date)
+                : '第 '+(n.offset_days)+' 天')+
+        (n.window ? '　窗口 '+n.window[0]+' ~ +'+n.window[1]+' 天'
+                  : '　<span style="color:#d74c55">未设窗口</span>')+'</span>' : '')+
+      ((n.items || []).length ? '<div class="qc-meta" style="margin-left:4px">'+
+        n.items.map(it => '<span>'+esc(FLOW_ITEM_LABEL[it.type] || it.type)+
+          (it.ref ? ' '+esc(it.ref) : it.name ? ' '+esc(it.name) : '')+'</span>').join('')+'</div>' : '')+
+      '</div>' + walk(n.children, depth + 1);
+  }).join('');
+  let h = walk(defn.nodes, 0);
+  if ((defn.offschedule || []).length) {
+    h += '<h4 style="margin:16px 0 6px;color:#3c4a52">流程外阶段（事件触发，不进完成率分母）</h4>'+
+      defn.offschedule.map(o => '<div style="padding:6px 0;border-bottom:1px solid #f4f6f7">'+
+        '<span class="tag orange">流程外</span> <b>'+esc(o.name)+'</b>'+
+        ((o.items || []).length ? '<div class="qc-meta">'+o.items.map(it =>
+          '<span>'+esc(FLOW_ITEM_LABEL[it.type] || it.type)+(it.ref ? ' '+esc(it.ref) : '')+'</span>').join('')+'</div>' : '')+
+        '</div>').join('');
+  }
+  return h;
+}
+
+async function viewFlow(code) {
+  try {
+    const d = await getJSON('/api/platform/flows?code=' + encodeURIComponent(code) + '&allVersions=1');
+    const list = d.flows || [];
+    if (!list.length) { toast('流程不存在'); return; }
+    const f = list[0];
+    let h = '<div class="detail-card">'+
+      '<div class="detail-row"><span>编码 · 版本</span><b>'+esc(f.code)+' v'+esc(f.version)+'</b></div>'+
+      '<div class="detail-row"><span>层级</span><b>'+esc((f.definition.levels || []).join(' / '))+'</b></div>'+
+      '<div class="detail-row"><span>计划内访视</span><b>'+f.visit_count+' 次</b></div>'+
+      '<div class="detail-row"><span>流程外阶段</span><b>'+(f.definition.offschedule || []).length+' 类</b></div>'+
+      '<div class="detail-row"><span>在随患者</span><b>'+f.running_patients+' 人</b></div></div>';
+    if (list.length > 1) {
+      h += '<div class="note-strip" style="margin-top:12px">这条流程有 <b>'+list.length+
+        '</b> 个版本。每个患者的访视表钉在实例化时的版本上——改流程不会把在随患者的日程重排。</div>';
+    }
+    h += '<h4 style="margin:16px 0 8px">流程结构</h4>' + flowTreeHtml(f.definition);
+    openDrawer(f.name, f.code + ' · ' + (f.category || '未分类'), h,
+      '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+      '<button class="primary" onclick="instantiateFlow(\''+esc(code)+'\')">分配患者</button>');
+  } catch (e) { toast('加载失败：' + e.message, 5000); }
+}
+
+async function instantiateFlow(code) {
+  if (!S.patients.length) await loadPatients().catch(() => {});
+  closeDrawer();
+  const today = new Date().toISOString().slice(0, 10);
+  openModal('把流程分配给患者', '所有访视日期从「锚点日」按 offset 推算',
+    '<div class="field"><label>门诊号</label><input id="fiPno" list="fiPnoList" placeholder="输入或选择">'+
+      '<datalist id="fiPnoList">'+(S.patients || []).map(p =>
+        '<option value="'+esc(p.patient_no)+'">'+esc(p.name || '')+'</option>').join('')+'</datalist></div>'+
+    '<div class="field"><label>锚点日<span class="sub">入组日/手术日等；所有访视按它 + offset 排</span></label>'+
+      '<input id="fiAnchor" type="date" value="'+today+'"></div>'+
+    '<div class="err" style="margin-top:4px">流程外阶段（不良事件等）<b>不会预先生成</b>——'+
+      '它们由事件触发，可能发生零次也可能多次，预生成会让完成率的分母失真。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="fiGo">生成访视表</button>');
+  document.getElementById('fiGo').onclick = async () => {
+    const pno = document.getElementById('fiPno').value.trim();
+    if (!pno) { toast('请填写门诊号'); return; }
+    const btn = document.getElementById('fiGo'); btn.disabled = true; btn.textContent = '生成中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/flow/instantiate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flow_code: code, patient_no: pno,
+          anchor_date: document.getElementById('fiAnchor').value,
+          operator: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      toast(d.created ? ('已生成 ' + d.visits + ' 次访视') : d.hint, d.created ? 5000 : 8000);
+      await loadFlows();
+      if (d.created) document.querySelector('[data-ftab="visit"]').click();
+    } catch (e) { btn.disabled = false; btn.textContent = '生成访视表'; toast('失败：' + e.message, 6000); }
+  };
+}
+
+function copyFlow(code) {
+  const f = (S.flows || []).find(x => x.code === code) || {};
+  openModal('复制流程', '复制生成一条独立的新流程（第 1 版），不是原流程的新版本',
+    '<div class="form-row"><div class="field"><label>新编码</label>'+
+      '<input id="fcCode" value="'+esc(code)+'_COPY"></div>'+
+      '<div class="field"><label>新名称</label><input id="fcName" value="'+esc((f.name||'')+' (副本)')+'"></div></div>'+
+    '<div class="field"><label>可见范围</label><select id="fcScope">'+
+      '<option value="private">私有</option><option value="shared">院内共享</option></select></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="fcGo">复制</button>');
+  document.getElementById('fcGo').onclick = async () => {
+    const btn = document.getElementById('fcGo'); btn.disabled = true; btn.textContent = '复制中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/flow/copy', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code, new_code: document.getElementById('fcCode').value.trim(),
+          new_name: document.getElementById('fcName').value.trim(),
+          scope: document.getElementById('fcScope').value,
+          owner: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); toast('已复制为 ' + d.code + ' v' + d.version); await loadFlows();
+    } catch (e) { btn.disabled = false; btn.textContent = '复制'; toast('复制失败：' + e.message, 6000); }
+  };
+}
+
+async function loadVisits() {
+  try {
+    const f = document.getElementById('vsFilter').value;
+    const [v, c] = await Promise.all([
+      getJSON('/api/platform/visits?limit=500' + (f ? '&status=' + f : '')),
+      getJSON('/api/platform/flow/completion').catch(() => null),
+    ]);
+    S.visits = v.visits || [];
+    document.getElementById('tabVisitN').textContent = S.visits.length;
+    const cell = (label, n, icon, bg, hint) =>
+      '<div class="card stat"><div class="stat-head"><span>'+label+'</span>'+
+      '<span class="stat-icon" style="background:'+bg+'">'+icon+'</span></div>'+
+      '<strong>'+n+'</strong><span class="trend">'+hint+'</span></div>';
+    const row = c && c.by_flow && c.by_flow[0];
+    document.getElementById('visitStats').innerHTML =
+      cell('已超窗', S.visits.filter(x => x.status === 'overdue').length, '⚠', '#fff0f1', '需立即跟进') +
+      cell('窗口内待完成', S.visits.filter(x => x.status === 'due').length, '◷', '#fff4e8', '在可接受区间内') +
+      cell('流程外事件', S.visits.filter(x => x.is_offschedule).length, '⚡', '#eef2ff', '不进完成率分母') +
+      cell('随访完成率', row ? (row.completion_rate == null ? '--' : row.completion_rate + '%') : '--',
+           '✓', '#eaf7f4', row ? ('分母 ' + row.denominator + ' 次已到期访视') : '暂无数据');
+    document.getElementById('visitTable').innerHTML =
+      '<thead><tr><th>患者</th><th>访视</th><th>类型</th><th>计划日</th><th>窗口</th>'+
+      '<th>状态</th><th>内容</th><th></th></tr></thead><tbody>'+
+      (S.visits.length ? S.visits.map(x =>
+        '<tr><td>'+esc(x.patient_name || x.patient_no)+'<br><span style="color:#9ca3af;font-size:11px">'+
+          esc(x.patient_no)+'</span></td>'+
+        '<td>'+esc(x.name)+'<br><span style="color:#9ca3af;font-size:11px">'+esc(x.node_path || '')+'</span></td>'+
+        '<td>'+(x.is_offschedule ? '<span class="tag orange">流程外</span>' : '<span class="tag grey">计划内</span>')+'</td>'+
+        '<td>'+esc(x.planned_date || '--')+'</td>'+
+        '<td style="white-space:nowrap">'+esc(x.window_start || '--')+' ~ '+esc(x.window_end || '--')+'</td>'+
+        '<td><span class="'+(VISIT_TAG[x.status] || 'tag grey')+'">'+esc(x.status_label)+'</span>'+
+          (x.days_overdue ? '<br><span style="color:#d74c55;font-size:11px">超 '+x.days_overdue+' 天</span>' : '')+'</td>'+
+        '<td style="font-size:12px">'+((x.items||[]).map(i =>
+          esc(FLOW_ITEM_LABEL[i.type] || i.type) + (i.ref ? ' '+esc(i.ref) : '')).join('、') || '--')+'</td>'+
+        '<td>'+(['done','skipped','cancelled'].indexOf(x.status) < 0
+          ? '<button class="link" onclick="visitGo('+x.id+',\'done\')">完成</button>'+
+            '<button class="link" onclick="visitGo('+x.id+',\'skip\')">跳过</button>'
+          : '<button class="link" onclick="visitGo('+x.id+',\'reopen\')">撤销</button>')+'</td></tr>').join('')
+        : '<tr><td colspan="8" style="color:#9ca3af;text-align:center;padding:24px">'+
+          '没有访视。先在流程库里把流程分配给患者。</td></tr>')+'</tbody>';
+  } catch (e) { document.getElementById('visitTable').innerHTML = '<tbody><tr><td>'+errBox(e)+'</td></tr></tbody>'; }
+}
+document.getElementById('vsFilter').onchange = loadVisits;
+document.getElementById('vsRefresh').onclick = async () => {
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/flow/refresh',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast('已按今天重算 ' + d.refreshed + ' 条访视状态');
+    await loadVisits();
+  } catch (e) { toast('刷新失败：' + e.message, 5000); }
+};
+
+async function visitGo(id, action) {
+  let note = '';
+  if (action === 'skip') {
+    note = prompt('跳过原因（必填）——一次没做的访视是数据缺失，得说清楚为什么：', '') || '';
+    if (!note.trim()) { toast('必须写明原因'); return; }
+  }
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/visit/transition', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visit_id: id, action: action, note: note.trim() || null,
+                             operator: localStorage.getItem(LS_OP) || null }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast(d.warning ? ('已记为完成。⚠ ' + d.warning) : ('已更新为「' + (d.to) + '」'),
+          d.warning ? 9000 : 4000);
+    await loadVisits();
+  } catch (e) { toast(e.message, 6000); }
+}
+
+/* 新建流程: 用表单收集节点, 不做拖拽编辑器 —— 拖拽好看但这一版的重点是
+   把窗口/层级/流程外阶段这几个概念立住, 编辑手感可以后面再补。 */
+document.getElementById('newFlowBtn').onclick = () => {
+  openModal('新建随访流程', '一行一个访视，格式：阶段名 | 访视名 | 第几天 | 提前,延后',
+    '<div class="form-row">'+
+      '<div class="field"><label>流程编码</label><input id="nfCode" placeholder="如 POSTOP1"></div>'+
+      '<div class="field"><label>流程名称</label><input id="nfName" placeholder="如 术后康复随访"></div></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>场景分类</label><select id="nfCat">'+
+        '<option>慢病管理</option><option>术后康复</option><option>肿瘤随访</option><option>临床研究</option></select></div>'+
+      '<div class="field"><label>层级名<span class="sub">逗号分隔，至少两级</span></label>'+
+        '<input id="nfLevels" value="阶段,访视"></div></div>'+
+    '<div class="field"><label>访视节点<span class="sub">一行一个：阶段名 | 访视名 | 第几天 | 提前,延后</span></label>'+
+      '<textarea id="nfNodes" style="height:120px" placeholder="术后早期 | 术后7天 | 7 | 2,3&#10;术后早期 | 术后1月 | 30 | 5,7&#10;术后中期 | 术后3月 | 90 | 7,14"></textarea></div>'+
+    '<div class="field"><label>流程外阶段<span class="sub">一行一个，事件触发，不进完成率分母</span></label>'+
+      '<textarea id="nfOff" style="height:60px" placeholder="不良事件&#10;并发症"></textarea></div>'+
+    '<div class="err" style="margin-top:4px">窗口写「2,3」表示可提前 2 天、延后 3 天完成。'+
+      '<b>不设窗口就没有「超窗」可言</b>——晚一天和晚三个月在系统看来一样。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="nfGo">创建</button>');
+  document.getElementById('nfGo').onclick = async () => {
+    const code = document.getElementById('nfCode').value.trim();
+    const name = document.getElementById('nfName').value.trim();
+    if (!code || !name) { toast('编码和名称必填'); return; }
+    const levels = document.getElementById('nfLevels').value.split(/[,，]/).map(x => x.trim()).filter(Boolean);
+    const stages = {};
+    const order = [];
+    let bad = null;
+    document.getElementById('nfNodes').value.split('\n').map(x => x.trim()).filter(Boolean).forEach((line, i) => {
+      const parts = line.split('|').map(x => x.trim());
+      if (parts.length < 3) { bad = bad || ('第 ' + (i + 1) + ' 行格式不对：' + line); return; }
+      const [stage, vname, off, win] = parts;
+      const d = Number(off);
+      if (isNaN(d)) { bad = bad || ('第 ' + (i + 1) + ' 行的天数不是数字：' + off); return; }
+      const node = { id: 'v' + i, name: vname, offset_days: d, items: [] };
+      if (win) {
+        const w = win.split(/[,，]/).map(x => Math.abs(Number(x.trim())) || 0);
+        node.window = [-(w[0] || 0), w[1] || 0];
+      }
+      if (!stages[stage]) { stages[stage] = { id: 's' + order.length, name: stage, children: [] }; order.push(stage); }
+      stages[stage].children.push(node);
+    });
+    if (bad) { toast(bad, 6000); return; }
+    if (!order.length) { toast('至少要有一个访视节点'); return; }
+    const defn = { levels: levels, anchor: 'enroll', nodes: order.map(s => stages[s]),
+      offschedule: document.getElementById('nfOff').value.split('\n').map(x => x.trim()).filter(Boolean)
+        .map((n, i) => ({ id: 'o' + i, name: n, items: [] })) };
+    const btn = document.getElementById('nfGo'); btn.disabled = true; btn.textContent = '创建中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/flow', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code, name: name,
+          category: document.getElementById('nfCat').value, definition: defn,
+          status: 'active', owner: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      if ((d.advisories || []).length) {
+        openDrawer('流程已创建，但有几处建议', d.code + ' v' + d.version,
+          '<div class="err">'+d.advisories.map(a => '· ' + esc(a.detail)).join('<br><br>')+'</div>', '');
+      } else toast('已创建 ' + d.code + '：' + d.visits + ' 次访视，' + d.offschedule + ' 类流程外阶段', 6000);
+      await loadFlows();
+    } catch (e) { btn.disabled = false; btn.textContent = '创建'; toast('创建失败：' + e.message, 8000); }
+  };
 };
 
 /* ================================================================ M18 纳排与分组 (方案 §3.2)

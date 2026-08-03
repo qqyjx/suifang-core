@@ -38,6 +38,9 @@ def clean():
        ("DELETE FROM platform_edu_material WHERE code LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_crf WHERE code LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_scale WHERE code LIKE %s",(PFX+'%',)),
+       ("DELETE FROM platform_visit WHERE patient_no LIKE %s",(PFX+'%',)),
+       ("DELETE FROM platform_flow_instance WHERE patient_no LIKE %s",(PFX+'%',)),
+       ("DELETE FROM platform_flow WHERE code LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_patient WHERE patient_no LIKE %s",(PFX+'%',)))
 clean()
 
@@ -95,7 +98,21 @@ hs.upload_document.__globals__['DOC_DIR']=DOCTMP
 hs.upload_document({'code':PFX+'D','title':'XX研究知情同意书','doc_type':'consent',
                     'filename':'知情同意书.pdf','content_base64':base64.b64encode(PDF).decode(),
                     'uploader':'医生甲'})
-print('  数据已备好: 4 患者 / 1 量表(4 份填报) / 1 CRF / 1 宣教稿 / 1 知情同意书')
+# M19: 一条带窗口与流程外阶段的流程
+FLOW={'levels':['阶段','访视'],'anchor':'enroll',
+      'nodes':[{'id':'s1','name':'术后早期','children':[
+                 {'id':'v7','name':'术后7天','offset_days':7,'window':[-2,3],
+                  'items':[{'type':'scale','ref':PFX+'S'}]},
+                 {'id':'v30','name':'术后1月','offset_days':30,'window':[-5,7],'items':[]}]},
+               {'id':'s2','name':'术后中期','children':[
+                 {'id':'v90','name':'术后3月','offset_days':90,'window':[-7,14],'items':[]}]}],
+      'offschedule':[{'id':'ae','name':'不良事件','items':[]}]}
+hs.upsert_flow({'code':PFX+'F','name':'术后康复随访','category':'术后康复',
+                'definition':FLOW,'status':'active','owner':'演示医生','scope':'shared'})
+hs.flow_instantiate({'flow_code':PFX+'F','patient_no':PFX+'001',
+                     'anchor_date':(today-datetime.timedelta(days=30)).strftime('%Y-%m-%d')})
+hs.trigger_offschedule({'patient_no':PFX+'001','flow_code':PFX+'F','node_id':'ae','note':'演示不良事件'})
+print('  数据已备好: 4 患者 / 1 量表(4 份填报) / 1 CRF / 1 宣教稿 / 1 知情同意书 / 1 流程(已分配)')
 
 srv, API = start_backend({'PLATFORM_DOC_DIR': DOCTMP, 'PLATFORM_TOKEN': TOKEN},
                          log_path='/tmp/suifang_ui_srv.log')
@@ -288,6 +305,33 @@ try:
               page.evaluate("!Array.from(document.querySelectorAll('script[src],link[rel=stylesheet],img[src]'))"
                             ".some(e=>/^https?:/.test(e.src||e.href||''))"))
 
+        section('11b. 随访流程 (M19)')
+        page.click('[data-page="plans"]'); page.wait_for_timeout(2200)
+        t = page.inner_text('#plans')
+        check('说清了访视窗口的意义', '没有窗口就没有' in t)
+        check('说清了流程外阶段不进分母', '不计入随访完成率的分母' in t or '不进完成率' in t)
+        check('点明两种错法的后果', '永远上不去' in t and '永远很低' in t)
+        check('流程出现在流程库', '术后康复随访' in page.inner_text('#flowWrap'),
+              page.inner_text('#flowWrap')[:120])
+        page.click('#flowWrap button:has-text("查看")'); page.wait_for_timeout(1500)
+        v = page.inner_text('#drBody')
+        check('流程结构按层级展开', '术后早期' in v and '术后7天' in v, v[:120])
+        check('层级名来自定义而不是写死', '阶段 / 访视' in v, v[:150])
+        check('访视显示窗口', '窗口' in v)
+        check('流程外阶段单独一栏并标明不进分母', '不进完成率分母' in v)
+        page.click('#drClose'); page.wait_for_timeout(400)
+        page.click('[data-ftab="visit"]'); page.wait_for_timeout(2200)
+        t = page.inner_text('#ftabVisit')
+        check('访视看板有数据', '术后7天' in t, t[:150])
+        check('超窗的访视标出来了', '已超窗' in t)
+        check('流程外事件单独计数且注明不进分母', '不进完成率分母' in t)
+        check('给出随访完成率', '随访完成率' in t)
+        check('说明了分母是什么', '已到期访视' in t, [l for l in t.split('\n') if '分母' in l][:2])
+        page.select_option('#vsFilter', 'overdue'); page.wait_for_timeout(1500)
+        rows = page.inner_text('#visitTable')
+        check('按超窗筛后只剩超窗的', '未到期' not in rows, rows[:150])
+        page.select_option('#vsFilter', ''); page.wait_for_timeout(1200)
+
         section('12. 系统管理')
         page.click('[data-page="settings"]'); page.wait_for_timeout(1500)
         check('设置页有连接配置', page.query_selector('#cfgApi') is not None)
@@ -296,7 +340,7 @@ try:
         # 曾经有个 opacity .04 的 130px "AI" 水印伪元素盖在所有 hero 按钮上,
         # 肉眼完全看不出来, 只有真去点才发现整排按钮全点不动。
         for pg, sel in [('patients', '#newPatientBtn'), ('execute', '#vitalIngestBtn'),
-                        ('plans', '#newPlanBtn'), ('analytics', '#exportBtn'),
+                        ('plans', '#newPlanBtn'), ('plans', '#newFlowBtn'), ('analytics', '#exportBtn'),
                         ('analytics', '#searchBtn'), ('cohorts', '#newCohortBtn'),
                         ('assets', '#scaleParseBtn'), ('assets', '#scaleGenBtn'),
                         ('assets', '#crfGenBtn'), ('assets', '#crfExcelBtn'),

@@ -7066,6 +7066,800 @@ def query_enrollments(cohort_code=None, group_code=None, status=None, limit=500)
         conn.close()
 
 
+# ============ 随访平台 1.1 M19 (个性化随访流程, 方案 §3.3) ============
+#
+# M5 只有"固定频次/一次性"两种, §3.3 要的是完整的流程编排。三个新概念:
+#
+# 1) **访视窗口**。"术后 7 天访视"实际是 "第 5~10 天之间做完"。没有窗口就没有
+#    "超窗"这个概念, 而方案 §4.5(4) 的访视超窗管理整个建立在它上面。M5 的
+#    next_due 是个光秃秃的日期, 早一天晚一天都无从判断。
+#
+# 2) **流程外阶段**(不良事件、并发症)。它们**不在时间轴上** —— 由事件触发,
+#    可以发生零次也可以发生五次。必须和计划内访视分开存, 因为:
+#
+#    **随访完成率的分母不能包含流程外阶段, 也不能包含尚未到期的访视。**
+#
+#    把从未发生的不良事件访视算进分母, 完成率永远上不去; 把三个月后才到期的
+#    访视算进分母, 早期的完成率永远很低。两种错法都让这个数失去意义 ——
+#    而管理层恰恰只看这个数。
+#
+# 3) **多级层级且层级名可自定义**。方案要"三级以上", 且"各级流程名称可自定义" ——
+#    肿瘤科叫"周期/访视/项目", 术后康复叫"阶段/复查/检查项"。所以层级名是数据不是代码。
+
+FLOW_ITEM_TYPES = {'scale': '量表', 'crf': 'CRF 表单', 'lab': '检验复查',
+                   'interview': '问诊', 'edu': '宣教推送', 'other': '其他'}
+FLOW_ANCHORS = {'enroll': '按入组时间', 'fixed_date': '固定日期'}
+FLOW_TRIGGERS = {'schedule': '按计划到期', 'event': '事件触发'}
+FLOW_END_REASONS = {'completed': '正常完成', 'event': '事件触发终止',
+                    'manual': '手动终止', 'withdrawn': '受试者退出'}
+VISIT_STATUSES = {'pending': '未到期', 'due': '窗口内待完成', 'done': '已完成',
+                  'overdue': '已超窗', 'skipped': '已跳过', 'cancelled': '已取消'}
+FLOW_MAX_DEPTH = 5
+FLOW_MAX_NODES = 300
+
+
+def _flow_walk(nodes, depth=0, path=None):
+    """深度优先遍历节点树, 产出 (node, depth, path)。"""
+    for n in nodes or []:
+        if not isinstance(n, dict):
+            continue
+        p = (path or []) + [n.get('name') or n.get('id') or '?']
+        yield n, depth, p
+        for x in _flow_walk(n.get('children'), depth + 1, p):
+            yield x
+
+
+def validate_flow_definition(d):
+    """流程定义校验。返回 errors 列表。"""
+    errs = []
+    if not isinstance(d, dict):
+        return ['definition 必须是对象']
+    levels = d.get('levels')
+    if not isinstance(levels, list) or len(levels) < 2:
+        errs.append('levels 必须是至少 2 个层级名的数组(方案要求三级以上, 这里最低放到 2 级)')
+    elif len(levels) > FLOW_MAX_DEPTH:
+        errs.append('层级最多 {} 级'.format(FLOW_MAX_DEPTH))
+    nodes = d.get('nodes')
+    if not isinstance(nodes, list) or not nodes:
+        return errs + ['nodes 必须是非空数组']
+
+    seen, n_count, max_depth = set(), 0, 0
+    for n, depth, path in _flow_walk(nodes):
+        n_count += 1
+        max_depth = max(max_depth, depth)
+        where = '节点「{}」'.format(' / '.join(path))
+        nid = n.get('id')
+        if not nid:
+            errs.append(where + ' 缺 id')
+        elif nid in seen:
+            errs.append('节点 id 重复: ' + str(nid))
+        else:
+            seen.add(nid)
+        if not n.get('name'):
+            errs.append(where + ' 缺 name')
+        leaf = not (n.get('children') or [])
+        if leaf:
+            # 叶子节点才是真正的"访视" —— 它得有时间落点
+            off = n.get('offset_days')
+            date = n.get('date')
+            if off is None and not date:
+                errs.append(where + ' 是叶子节点(即一次访视), 必须给 offset_days(相对锚点的天数) '
+                                    '或 date(固定日期)')
+            if off is not None:
+                try:
+                    int(off)
+                except (TypeError, ValueError):
+                    errs.append(where + ' 的 offset_days 必须是整数')
+            if date and not re.match(r'^\d{4}-\d{2}-\d{2}$', str(date)):
+                errs.append(where + " 的 date 必须是 'YYYY-MM-DD'")
+            w = n.get('window')
+            if w is not None:
+                if not (isinstance(w, list) and len(w) == 2):
+                    errs.append(where + ' 的 window 必须是 [提前几天, 延后几天]')
+                else:
+                    try:
+                        lo, hi = int(w[0]), int(w[1])
+                        if lo > 0:
+                            errs.append(where + ' 的 window 下限应当是 0 或负数(提前几天)')
+                        if hi < 0:
+                            errs.append(where + ' 的 window 上限应当是 0 或正数(延后几天)')
+                    except (TypeError, ValueError):
+                        errs.append(where + ' 的 window 必须是两个整数')
+            for i, it in enumerate(n.get('items') or []):
+                if not isinstance(it, dict) or it.get('type') not in FLOW_ITEM_TYPES:
+                    errs.append('{} 的第 {} 个随访内容 type 必须是 {} 之一'.format(
+                        where, i + 1, '/'.join(FLOW_ITEM_TYPES)))
+                elif it['type'] in ('scale', 'crf') and not it.get('ref'):
+                    errs.append('{} 的第 {} 个内容是{}, 必须给 ref(量表编码/表单编码)'.format(
+                        where, i + 1, FLOW_ITEM_TYPES[it['type']]))
+    if n_count > FLOW_MAX_NODES:
+        errs.append('节点总数 {} 超过上限 {}'.format(n_count, FLOW_MAX_NODES))
+    if levels and max_depth + 1 > len(levels):
+        errs.append('节点树深度 {} 级, 但只给了 {} 个层级名({}) —— 每一级都要有名字, '
+                    '否则界面上没法称呼它'.format(max_depth + 1, len(levels), '/'.join(levels)))
+
+    anchor = d.get('anchor') or 'enroll'
+    if anchor not in FLOW_ANCHORS:
+        errs.append('anchor 必须是 {} 之一'.format('/'.join(FLOW_ANCHORS)))
+    # 流程外阶段: 不在时间轴上, 所以**不该有** offset_days
+    for i, o in enumerate(d.get('offschedule') or []):
+        w = 'offschedule[{}]'.format(i)
+        if not isinstance(o, dict) or not o.get('id') or not o.get('name'):
+            errs.append(w + ' 需要 id 和 name')
+            continue
+        if o.get('offset_days') is not None or o.get('date'):
+            errs.append(w + '「{}」是流程外阶段(由事件触发, 可能发生零次也可能发生多次), '
+                            '不该有 offset_days/date —— 给了时间落点就说明它其实是计划内访视'.format(o['name']))
+        for j, it in enumerate(o.get('items') or []):
+            if not isinstance(it, dict) or it.get('type') not in FLOW_ITEM_TYPES:
+                errs.append('{} 的第 {} 个内容 type 不合法'.format(w, j + 1))
+    return errs
+
+
+def lint_flow_definition(d):
+    """用法建议, 不阻断保存。"""
+    out = []
+    leaves = [(n, p) for n, _, p in _flow_walk((d or {}).get('nodes')) if not (n.get('children') or [])]
+    if not leaves:
+        out.append({'kind': 'no_leaf', 'detail': '整棵树没有叶子节点 —— 没有叶子就没有访视, '
+                                                 '这个流程实例化之后不会产生任何任务'})
+    nowin = [p for n, p in leaves if n.get('window') is None]
+    if nowin:
+        out.append({'kind': 'no_window',
+                    'detail': '有 {} 个访视没设窗口(如「{}」)。没有窗口就没有"超窗"可言 —— '
+                              '晚一天和晚三个月在系统看来一样, 访视超窗管理会失效。'
+                              '建议按方案给每个访视一个可接受区间'.format(
+                                  len(nowin), ' / '.join(nowin[0]))})
+    offs = sorted(int(n['offset_days']) for n, _ in leaves if n.get('offset_days') is not None)
+    dup = {x for x in offs if offs.count(x) > 1}
+    if dup:
+        out.append({'kind': 'same_day_visits',
+                    'detail': '有多个访视落在同一天(第 {} 天) —— 患者同一天要跑两次? '
+                              '若确实如此可以忽略, 更多时候是 offset 填错了'.format(
+                                  '、'.join(str(x) for x in sorted(dup)))})
+    if not (d or {}).get('offschedule'):
+        out.append({'kind': 'no_offschedule',
+                    'detail': '没有配置流程外阶段(不良事件/并发症)。计划内访视覆盖不了突发情况, '
+                              '真出了不良事件就只能记在别处 —— 建议至少配一个'})
+    return out
+
+
+def ensure_platform_flow_tables():
+    """M19: 流程模板 + 患者流程实例 + 访视 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_flow (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(64) NOT NULL,
+                version VARCHAR(32) NOT NULL DEFAULT '1',
+                name VARCHAR(128) NOT NULL,
+                category VARCHAR(64) DEFAULT NULL COMMENT '慢病管理/术后康复/肿瘤随访/临床研究',
+                scope ENUM('private','shared') DEFAULT 'private' COMMENT '§3.3(3) 公开流程共享/私有自建',
+                owner VARCHAR(64) DEFAULT NULL,
+                source VARCHAR(24) DEFAULT 'manual' COMMENT 'manual/ai/copy',
+                copied_from VARCHAR(191) DEFAULT NULL,
+                definition JSON NOT NULL COMMENT '层级名 + 节点树 + 锚点 + 触发 + 流程外阶段',
+                node_count INT DEFAULT NULL,
+                visit_count INT DEFAULT NULL COMMENT '叶子节点数 = 一轮完整随访有几次访视',
+                status ENUM('draft','active','archived') DEFAULT 'draft',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_flow (code, version),
+                INDEX idx_scope (scope), INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M19 随访流程模板(流程库)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_flow_instance (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                flow_code VARCHAR(64) NOT NULL,
+                flow_version VARCHAR(32) NOT NULL COMMENT '钉住实例化时的版本 —— 流程改版不影响在随的人',
+                patient_no VARCHAR(64) NOT NULL,
+                cohort_code VARCHAR(64) DEFAULT NULL,
+                group_code VARCHAR(64) DEFAULT NULL,
+                anchor_date DATE NOT NULL COMMENT '锚点日: 入组日或指定日, 所有 offset 从这里算',
+                status ENUM('running','ended') DEFAULT 'running',
+                end_reason VARCHAR(24) DEFAULT NULL,
+                end_note VARCHAR(500) DEFAULT NULL,
+                ended_at DATETIME DEFAULT NULL,
+                operator VARCHAR(64) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_instance (flow_code, patient_no),
+                INDEX idx_patient (patient_no), INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M19 患者流程实例'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_visit (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                instance_id BIGINT NOT NULL,
+                patient_no VARCHAR(64) NOT NULL,
+                node_id VARCHAR(64) NOT NULL,
+                node_path VARCHAR(300) DEFAULT NULL COMMENT '多级路径, 如 术后早期/术后7天',
+                name VARCHAR(128) NOT NULL,
+                kind ENUM('scheduled','offschedule') DEFAULT 'scheduled'
+                    COMMENT 'offschedule=流程外阶段(不良事件等); **完成率分母不含它**',
+                planned_date DATE DEFAULT NULL,
+                window_start DATE DEFAULT NULL,
+                window_end DATE DEFAULT NULL,
+                items JSON DEFAULT NULL COMMENT '本次访视要做的量表/CRF/检验/问诊',
+                status ENUM('pending','due','done','overdue','skipped','cancelled') DEFAULT 'pending',
+                done_at DATETIME DEFAULT NULL,
+                operator VARCHAR(64) DEFAULT NULL,
+                note VARCHAR(500) DEFAULT NULL,
+                seq INT DEFAULT 0 COMMENT '流程外阶段可重复发生, 用它区分第几次',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_visit (instance_id, node_id, seq),
+                INDEX idx_patient (patient_no, planned_date),
+                INDEX idx_status (status), INDEX idx_window (window_end)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M19 访视'
+        """)
+        print('[启动] platform_flow / platform_flow_instance / platform_visit 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_flow_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def upsert_flow(body):
+    """建/改流程模板。已有在随实例时改动 -> 开新版 (同 M14 的道理)。"""
+    code = re.sub(r'[^0-9A-Za-z_\-]', '', str(body.get('code') or ''))[:64]
+    name = str(body.get('name') or '').strip()
+    if not code or not name:
+        return None, 'code 和 name 必填'
+    d = body.get('definition')
+    if isinstance(d, str):
+        try:
+            d = json.loads(d)
+        except ValueError:
+            return None, 'definition 不是合法 JSON'
+    errs = validate_flow_definition(d)
+    if errs:
+        return None, '流程定义有 {} 处问题: {}'.format(len(errs), '; '.join(errs[:6]))
+    scope = body.get('scope') or 'private'
+    if scope not in CRF_SCOPES:
+        return None, 'scope 必须是 private 或 shared'
+
+    leaves = [n for n, _, _ in _flow_walk(d.get('nodes')) if not (n.get('children') or [])]
+    n_count = sum(1 for _ in _flow_walk(d.get('nodes')))
+
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        version = str(body.get('version') or '').strip()
+        note = None
+        if not version:
+            cur.execute('SELECT version FROM platform_flow WHERE code=%s ORDER BY id DESC LIMIT 1', (code,))
+            row = cur.fetchone()
+            if row:
+                cur.execute("SELECT COUNT(*) FROM platform_flow_instance WHERE flow_code=%s "
+                            "AND flow_version=%s AND status='running'", (code, row[0]))
+                running = cur.fetchone()[0]
+                if running:
+                    version = _bump_version(row[0])
+                    note = ('该版本有 {} 名患者正在随访, 已自动开新版 {} —— '
+                            '在随患者的访视表已经按旧版排好, 改流程不该把他们的日程重排'.format(
+                                running, version))
+                else:
+                    version = row[0]
+            else:
+                version = '1'
+        cur.execute("""
+            INSERT INTO platform_flow (code, version, name, category, scope, owner, source,
+                                       copied_from, definition, node_count, visit_count, status)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE name=VALUES(name), category=VALUES(category),
+              scope=VALUES(scope), owner=VALUES(owner), definition=VALUES(definition),
+              node_count=VALUES(node_count), visit_count=VALUES(visit_count), status=VALUES(status)
+        """, (code, version, name, body.get('category') or None, scope,
+              body.get('owner') or None, body.get('source') or 'manual',
+              body.get('copied_from') or None, json.dumps(d, ensure_ascii=False),
+              n_count, len(leaves), body.get('status') or 'draft'))
+        cur.close()
+        return {'code': code, 'version': version, 'nodes': n_count, 'visits': len(leaves),
+                'offschedule': len(d.get('offschedule') or []),
+                'levels': d.get('levels'), 'note': note,
+                'advisories': lint_flow_definition(d)}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def _visit_status(planned, win_start, win_end, today):
+    """按今天和窗口算访视状态。没设窗口时退化为"当天即窗口"。"""
+    ws = win_start or planned
+    we = win_end or planned
+    if today < ws:
+        return 'pending'
+    if today <= we:
+        return 'due'
+    return 'overdue'
+
+
+def flow_instantiate(body):
+    """把流程实例化到患者身上, 生成访视表。
+
+    {flow_code, patient_no, anchor_date?, flow_version?, cohort_code?, group_code?, operator?}
+
+    幂等: 同 (flow_code, patient_no) 只有一个实例。已存在则返回现状, **不重排** ——
+    重排会把患者已经完成的访视记录冲掉。
+    """
+    code = str(body.get('flow_code') or '').strip()
+    no = str(body.get('patient_no') or '').strip()
+    if not code or not no:
+        return None, 'flow_code 和 patient_no 必填'
+    anchor = str(body.get('anchor_date') or '').strip() or datetime.date.today().strftime('%Y-%m-%d')
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', anchor):
+        return None, "anchor_date 必须是 'YYYY-MM-DD'"
+
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if body.get('flow_version'):
+            cur.execute('SELECT version, definition FROM platform_flow WHERE code=%s AND version=%s',
+                        (code, str(body['flow_version'])))
+        else:
+            cur.execute("SELECT version, definition FROM platform_flow WHERE code=%s "
+                        "AND status='active' ORDER BY id DESC LIMIT 1", (code,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '流程不存在或未启用: {}'.format(code)
+        version, d = row
+        if isinstance(d, str):
+            d = json.loads(d)
+
+        cur.execute('SELECT id, status FROM platform_flow_instance WHERE flow_code=%s AND patient_no=%s',
+                    (code, no))
+        exist = cur.fetchone()
+        if exist:
+            cur.execute('SELECT COUNT(*) FROM platform_visit WHERE instance_id=%s', (exist[0],))
+            n_exist = cur.fetchone()[0]
+            cur.close()
+            return {'ok': True, 'created': False, 'instance_id': exist[0],
+                    'visits': n_exist,
+                    'hint': '该患者已在此流程中(实例 #{}, 状态 {}), 未做任何改动 —— '
+                            '重新实例化会把已完成的访视记录冲掉'.format(exist[0], exist[1])}, None
+
+        cur.execute("""INSERT INTO platform_flow_instance
+                       (flow_code, flow_version, patient_no, cohort_code, group_code,
+                        anchor_date, status, operator)
+                       VALUES (%s,%s,%s,%s,%s,%s,'running',%s)""",
+                    (code, version, no, body.get('cohort_code') or None,
+                     body.get('group_code') or None, anchor, body.get('operator') or None))
+        iid = cur.lastrowid
+        a = datetime.datetime.strptime(anchor, '%Y-%m-%d').date()
+        today = datetime.date.today()
+        rows = []
+        for n, depth, path in _flow_walk(d.get('nodes')):
+            if n.get('children'):
+                continue                      # 非叶子是分组层级, 不产生访视
+            if n.get('date'):
+                planned = datetime.datetime.strptime(str(n['date']), '%Y-%m-%d').date()
+            else:
+                planned = a + datetime.timedelta(days=int(n.get('offset_days') or 0))
+            w = n.get('window') or [0, 0]
+            ws = planned + datetime.timedelta(days=int(w[0]))
+            we = planned + datetime.timedelta(days=int(w[1]))
+            rows.append((iid, no, n['id'], ' / '.join(path)[:300], n.get('name'), 'scheduled',
+                         planned, ws, we, json.dumps(n.get('items') or [], ensure_ascii=False),
+                         _visit_status(planned, ws, we, today), 0))
+        if rows:
+            cur.executemany("""INSERT INTO platform_visit
+                (instance_id, patient_no, node_id, node_path, name, kind, planned_date,
+                 window_start, window_end, items, status, seq)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", rows)
+        cur.close()
+        return {'ok': True, 'created': True, 'instance_id': iid, 'flow_version': version,
+                'anchor_date': anchor, 'visits': len(rows),
+                'offschedule_available': len(d.get('offschedule') or []),
+                'note': '流程外阶段(不良事件等)不预先生成 —— 它们由事件触发, '
+                        '可能发生零次也可能多次, 预生成会让完成率的分母失真'}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def flow_refresh_status(patient_no=None):
+    """按今天重算访视状态(pending -> due -> overdue)。已完成/跳过/取消的不动。"""
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ["v.status IN ('pending','due','overdue')"], []
+        if patient_no:
+            where.append('v.patient_no=%s'); params.append(patient_no)
+        # 已终止的实例不再推进状态 —— 人都退出了还在那儿累积"超窗"没有意义
+        where.append("EXISTS (SELECT 1 FROM platform_flow_instance i "
+                     "WHERE i.id=v.instance_id AND i.status='running')")
+        cur.execute("""UPDATE platform_visit v SET v.status = CASE
+                         WHEN CURDATE() < COALESCE(v.window_start, v.planned_date) THEN 'pending'
+                         WHEN CURDATE() <= COALESCE(v.window_end, v.planned_date) THEN 'due'
+                         ELSE 'overdue' END
+                       WHERE {}""".format(' AND '.join(where)), params)
+        n = cur.rowcount
+        cur.close()
+        return {'ok': True, 'refreshed': n}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def visit_transition(body):
+    """推进一次访视 {visit_id, action: done|skip|cancel|reopen, operator?, note?}"""
+    try:
+        vid = int(body.get('visit_id'))
+    except (TypeError, ValueError):
+        return None, 'visit_id 必填且为整数'
+    action = str(body.get('action') or '').strip()
+    if action not in ('done', 'skip', 'cancel', 'reopen'):
+        return None, 'action 必须是 done/skip/cancel/reopen'
+    note = str(body.get('note') or '').strip()
+    if action in ('skip', 'cancel') and not note:
+        return None, '{} 必须写明原因 —— 一次没做的访视是数据缺失, 得说清楚为什么'.format(
+            '跳过' if action == 'skip' else '取消')
+
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, planned_date, window_start, window_end FROM platform_visit WHERE id=%s', (vid,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '访视不存在: {}'.format(vid)
+        cur_status, planned, ws, we = row
+        today = datetime.date.today()
+        if action == 'done':
+            new = 'done'
+            in_window = (ws or planned) <= today <= (we or planned)
+        elif action == 'reopen':
+            new = _visit_status(planned, ws, we, today)
+            in_window = None
+        else:
+            new = 'skipped' if action == 'skip' else 'cancelled'
+            in_window = None
+        cur.execute("""UPDATE platform_visit SET status=%s,
+                       done_at=%s, operator=%s, note=%s WHERE id=%s""",
+                    (new, datetime.datetime.now() if action == 'done' else None,
+                     body.get('operator') or None, note[:500] or None, vid))
+        cur.close()
+        out = {'ok': True, 'visit_id': vid, 'from': cur_status, 'to': new}
+        if action == 'done' and in_window is False:
+            out['warning'] = ('这次访视是在窗口({} ~ {})之外完成的, 已如实记为完成但请注意: '
+                              '超窗完成在临床研究里通常要记方案偏离'.format(ws or planned, we or planned))
+        return out, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def trigger_offschedule(body):
+    """事件触发一次流程外阶段(不良事件/并发症)。
+
+    {patient_no, flow_code, node_id, date?, operator?, note?}
+    同一个流程外阶段可以发生多次, 用 seq 区分。
+    """
+    no = str(body.get('patient_no') or '').strip()
+    code = str(body.get('flow_code') or '').strip()
+    nid = str(body.get('node_id') or '').strip()
+    if not no or not code or not nid:
+        return None, 'patient_no / flow_code / node_id 必填'
+    when = str(body.get('date') or '').strip() or datetime.date.today().strftime('%Y-%m-%d')
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', when):
+        return None, "date 必须是 'YYYY-MM-DD'"
+
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, flow_version, status FROM platform_flow_instance "
+                    "WHERE flow_code=%s AND patient_no=%s", (code, no))
+        inst = cur.fetchone()
+        if not inst:
+            cur.close()
+            return None, '该患者不在此流程中'
+        if inst[2] != 'running':
+            cur.close()
+            return None, '该患者的流程已终止, 不能再触发流程外阶段'
+        cur.execute('SELECT definition FROM platform_flow WHERE code=%s AND version=%s', (code, inst[1]))
+        d = cur.fetchone()[0]
+        if isinstance(d, str):
+            d = json.loads(d)
+        node = next((o for o in (d.get('offschedule') or []) if o.get('id') == nid), None)
+        if node is None:
+            cur.close()
+            return None, '流程外阶段不存在: {} (本流程有: {})'.format(
+                nid, '、'.join(o.get('id', '?') for o in (d.get('offschedule') or [])) or '无')
+        cur.execute("SELECT COALESCE(MAX(seq),0)+1 FROM platform_visit WHERE instance_id=%s AND node_id=%s",
+                    (inst[0], nid))
+        seq = cur.fetchone()[0]
+        wd = datetime.datetime.strptime(when, '%Y-%m-%d').date()
+        cur.execute("""INSERT INTO platform_visit
+            (instance_id, patient_no, node_id, node_path, name, kind, planned_date,
+             window_start, window_end, items, status, seq, operator, note)
+            VALUES (%s,%s,%s,%s,%s,'offschedule',%s,%s,%s,%s,'due',%s,%s,%s)""",
+                    (inst[0], no, nid, '流程外 / ' + str(node.get('name'))[:200], node.get('name'),
+                     wd, wd, wd, json.dumps(node.get('items') or [], ensure_ascii=False),
+                     seq, body.get('operator') or None, (body.get('note') or '')[:500] or None))
+        vid = cur.lastrowid
+        cur.close()
+        return {'ok': True, 'visit_id': vid, 'node_id': nid, 'name': node.get('name'),
+                'seq': seq, 'date': when,
+                'note': '流程外阶段不计入随访完成率的分母 —— 它是突发事件不是计划任务, '
+                        '算进去会让完成率永远上不去'}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def flow_end(body):
+    """终止一个患者的流程 {patient_no, flow_code, reason, note?, operator?}
+
+    终止后未完成的计划内访视一律置 cancelled(而不是删掉) —— 删了就看不出
+    "这个人本来还有 5 次随访没做完"。
+    """
+    no = str(body.get('patient_no') or '').strip()
+    code = str(body.get('flow_code') or '').strip()
+    reason = body.get('reason') or 'manual'
+    if not no or not code:
+        return None, 'patient_no 和 flow_code 必填'
+    if reason not in FLOW_END_REASONS:
+        return None, 'reason 必须是 {} 之一'.format('/'.join(FLOW_END_REASONS))
+    note = str(body.get('note') or '').strip()
+    if reason in ('manual', 'event') and not note:
+        return None, '{} 必须写明原因'.format(FLOW_END_REASONS[reason])
+
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, status FROM platform_flow_instance WHERE flow_code=%s AND patient_no=%s",
+                    (code, no))
+        inst = cur.fetchone()
+        if not inst:
+            cur.close()
+            return None, '该患者不在此流程中'
+        if inst[1] == 'ended':
+            cur.close()
+            return None, '该流程已经终止'
+        cur.execute("""UPDATE platform_flow_instance SET status='ended', end_reason=%s,
+                       end_note=%s, ended_at=NOW() WHERE id=%s""", (reason, note[:500] or None, inst[0]))
+        cur.execute("""UPDATE platform_visit SET status='cancelled',
+                       note=CONCAT(COALESCE(note,''), ' [流程终止: ', %s, ']')
+                       WHERE instance_id=%s AND status IN ('pending','due','overdue')""",
+                    (FLOW_END_REASONS[reason], inst[0]))
+        n = cur.rowcount
+        cur.close()
+        return {'ok': True, 'instance_id': inst[0], 'reason': reason,
+                'reason_label': FLOW_END_REASONS[reason], 'cancelled_visits': n,
+                'note': '未完成的 {} 次访视已置为取消而不是删除 —— 删了就看不出'
+                        '这个人本来还有几次随访没做完'.format(n)}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_visits(patient_no=None, flow_code=None, status=None, due_within=None,
+                 overdue_only=False, limit=500):
+    """访视列表。due_within=N 取未来 N 天内到期的。"""
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if patient_no:
+            where.append('v.patient_no=%s'); params.append(patient_no)
+        if flow_code:
+            where.append('i.flow_code=%s'); params.append(flow_code)
+        if status:
+            where.append('v.status=%s'); params.append(status)
+        if overdue_only:
+            where.append("v.status='overdue'")
+        if due_within is not None:
+            where.append('v.window_end >= CURDATE() AND v.window_start <= DATE_ADD(CURDATE(), INTERVAL %s DAY)')
+            params.append(int(due_within))
+        params.append(int(limit))
+        cur.execute("""
+            SELECT v.id, v.patient_no, p.name, i.flow_code, v.node_id, v.node_path, v.name,
+                   v.kind, v.planned_date, v.window_start, v.window_end, v.items,
+                   v.status, v.done_at, v.operator, v.note, v.seq,
+                   DATEDIFF(CURDATE(), v.window_end) AS days_overdue
+            FROM platform_visit v
+            JOIN platform_flow_instance i ON i.id=v.instance_id
+            LEFT JOIN platform_patient p ON p.patient_no=v.patient_no
+            WHERE {} ORDER BY v.planned_date, v.patient_no LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'patient_no', 'patient_name', 'flow_code', 'node_id', 'node_path', 'name',
+                'kind', 'planned_date', 'window_start', 'window_end', 'items', 'status',
+                'done_at', 'operator', 'note', 'seq', 'days_overdue']
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            for k in ('planned_date', 'window_start', 'window_end'):
+                if r.get(k) is not None and hasattr(r[k], 'strftime'):
+                    r[k] = r[k].strftime('%Y-%m-%d')
+            if r.get('done_at') is not None and hasattr(r['done_at'], 'strftime'):
+                r['done_at'] = r['done_at'].strftime('%Y-%m-%d %H:%M:%S')
+            if isinstance(r.get('items'), str):
+                try:
+                    r['items'] = json.loads(r['items'])
+                except ValueError:
+                    pass
+            r['status_label'] = VISIT_STATUSES.get(r['status'], r['status'])
+            r['is_offschedule'] = r['kind'] == 'offschedule'
+            if r['status'] != 'overdue':
+                r['days_overdue'] = None
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'visits': out, 'statuses': VISIT_STATUSES}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def flow_completion(flow_code=None, cohort_code=None):
+    """随访完成率。
+
+    **分母的定义是这块最容易做错的地方**, 两种错法都让这个数失去意义:
+      · 把流程外阶段(不良事件)算进分母 -> 从未发生的事件被当成"未完成", 完成率永远上不去
+      · 把尚未到期的访视算进分母 -> 三个月后才做的访视现在就算"没做", 早期完成率永远很低
+    所以分母 = **已到窗口期的计划内访视**(due/overdue/done/skipped), 不含 pending,
+    不含 offschedule, 不含因流程终止而取消的。
+    """
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ["v.kind='scheduled'", "v.status IN ('due','overdue','done','skipped')"], []
+        if flow_code:
+            where.append('i.flow_code=%s'); params.append(flow_code)
+        if cohort_code:
+            where.append('i.cohort_code=%s'); params.append(cohort_code)
+        cur.execute("""
+            SELECT i.flow_code, COUNT(*) AS denom,
+                   SUM(v.status='done') AS done,
+                   SUM(v.status='overdue') AS overdue,
+                   SUM(v.status='skipped') AS skipped,
+                   SUM(v.status='due') AS due
+            FROM platform_visit v JOIN platform_flow_instance i ON i.id=v.instance_id
+            WHERE {} GROUP BY i.flow_code
+        """.format(' AND '.join(where)), params)
+        rows = []
+        for fc, denom, done, overdue, skipped, due in cur.fetchall():
+            # MySQL 的 SUM() 回来是 Decimal, 直接和 float 相乘会 TypeError。
+            # 先统一转 int, 别在算式里混着两种数值类型。
+            denom, done = int(denom or 0), int(done or 0)
+            rows.append({'flow_code': fc, 'denominator': denom, 'done': done,
+                         'overdue': int(overdue or 0), 'skipped': int(skipped or 0),
+                         'due': int(due or 0),
+                         'completion_rate': round(done * 100.0 / denom, 1) if denom else None})
+        # 单独给出被排除在分母外的那些, 免得有人以为它们丢了
+        cur.execute("""SELECT SUM(v.kind='offschedule'), SUM(v.kind='scheduled' AND v.status='pending'),
+                              SUM(v.status='cancelled')
+                       FROM platform_visit v JOIN platform_flow_instance i ON i.id=v.instance_id
+                       {}""".format('WHERE i.flow_code=%s' if flow_code else ''),
+                    ([flow_code] if flow_code else []))
+        off, pend, canc = cur.fetchone()
+        cur.close()
+        return {'ok': True, 'by_flow': rows,
+                'excluded': {'offschedule': int(off or 0), 'not_yet_due': int(pend or 0),
+                             'cancelled': int(canc or 0)},
+                'denominator_note': ('分母 = 已到窗口期的计划内访视。不含流程外阶段({} 次)、'
+                                     '尚未到期的访视({} 次)、因流程终止而取消的({} 次) —— '
+                                     '把前两类算进分母会让完成率永远上不去'.format(
+                                         int(off or 0), int(pend or 0), int(canc or 0)))}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_flows(code=None, scope=None, category=None, all_versions=False,
+                with_definition=False, limit=100):
+    """流程库列表 (§3.3(3))。"""
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if code:
+            where.append('f.code=%s'); params.append(code)
+        if scope:
+            where.append('f.scope=%s'); params.append(scope)
+        if category:
+            where.append('f.category=%s'); params.append(category)
+        if not (all_versions or code):
+            where.append('f.updated_at = (SELECT MAX(x.updated_at) FROM platform_flow x WHERE x.code=f.code)')
+        cols = ('f.id, f.code, f.version, f.name, f.category, f.scope, f.owner, f.source, '
+                'f.copied_from, f.node_count, f.visit_count, f.status, f.created_at, f.updated_at, '
+                '(SELECT COUNT(*) FROM platform_flow_instance i WHERE i.flow_code=f.code '
+                "  AND i.status='running') AS running_patients")
+        if with_definition or code:
+            cols += ', f.definition'
+        params.append(int(limit))
+        cur.execute('SELECT {} FROM platform_flow f WHERE {} ORDER BY f.category, f.code, '
+                    'f.updated_at DESC LIMIT %s'.format(cols, ' AND '.join(where)), params)
+        names = [d[0] for d in cur.description]
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(names, row))
+            for k in ('created_at', 'updated_at'):
+                if r.get(k) is not None and hasattr(r[k], 'strftime'):
+                    r[k] = r[k].strftime('%Y-%m-%d %H:%M:%S')
+            if isinstance(r.get('definition'), str):
+                try:
+                    r['definition'] = json.loads(r['definition'])
+                except ValueError:
+                    pass
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'flows': out,
+                'item_types': FLOW_ITEM_TYPES, 'anchors': FLOW_ANCHORS,
+                'end_reasons': FLOW_END_REASONS, 'visit_statuses': VISIT_STATUSES}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def copy_flow(body):
+    """复制流程 (§3.3(3) 已配置流程可整体复用、复制修改)。同 M14: 新 code 的第 1 版。"""
+    src = str(body.get('code') or '').strip()
+    new = re.sub(r'[^0-9A-Za-z_\-]', '', str(body.get('new_code') or ''))[:64]
+    if not src or not new:
+        return None, 'code(源) 和 new_code(新) 必填'
+    if src == new:
+        return None, 'new_code 不能与源相同 —— 复制要生成一条独立的流程'
+    ensure_platform_flow_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT name, category, version, definition FROM platform_flow WHERE code=%s '
+                    'ORDER BY id DESC LIMIT 1', (src,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '源流程不存在: {}'.format(src)
+        cur.execute('SELECT 1 FROM platform_flow WHERE code=%s LIMIT 1', (new,))
+        if cur.fetchone():
+            cur.close()
+            return None, 'new_code 已存在: {}'.format(new)
+        name, cat, ver, d = row
+        cur.close()
+        return upsert_flow({'code': new, 'name': body.get('new_name') or (name + ' (副本)'),
+                            'category': cat, 'version': '1', 'scope': body.get('scope') or 'private',
+                            'owner': body.get('owner'), 'source': 'copy',
+                            'copied_from': '{}@{}'.format(src, ver),
+                            'definition': json.loads(d) if isinstance(d, str) else d,
+                            'status': 'draft'})
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -8188,6 +8982,35 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/flows':
+            result, err = query_flows(
+                code=(query.get('code') or [None])[0],
+                scope=(query.get('scope') or [None])[0],
+                category=(query.get('category') or [None])[0],
+                all_versions=(query.get('allVersions') or ['0'])[0] in ('1', 'true'),
+                with_definition=(query.get('withDefinition') or ['0'])[0] in ('1', 'true'),
+                limit=min(int((query.get('limit') or ['100'])[0] or 100), 200))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/visits':
+            st = (query.get('status') or [None])[0]
+            if st and st not in VISIT_STATUSES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 {} 之一'.format('/'.join(VISIT_STATUSES))}); return
+            dw = (query.get('dueWithin') or [None])[0]
+            result, err = query_visits(
+                patient_no=(query.get('patientNo') or [None])[0],
+                flow_code=(query.get('flow') or [None])[0], status=st,
+                due_within=int(dw) if dw is not None else None,
+                overdue_only=(query.get('overdue') or ['0'])[0] in ('1', 'true'),
+                limit=min(int((query.get('limit') or ['500'])[0] or 500), 2000))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/flow/completion':
+            result, err = flow_completion((query.get('flow') or [None])[0],
+                                          (query.get('cohort') or [None])[0])
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/cohorts':
             result, err = query_cohorts(
                 code=(query.get('code') or [None])[0],
@@ -8565,6 +9388,16 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/flows': '随访平台 M19: 流程库 (?code=&scope=shared&allVersions=1)',
+                    'POST /api/platform/flow': '随访平台 M19: 建/改流程模板(多级节点树+访视窗口+流程外阶段)',
+                    'POST /api/platform/flow/copy': '随访平台 M19: 复制流程 ({code,new_code})',
+                    'POST /api/platform/flow/instantiate': '随访平台 M19: 把流程实例化到患者, 生成访视表',
+                    'POST /api/platform/flow/refresh': '随访平台 M19: 按今天重算访视状态(pending/due/overdue)',
+                    'POST /api/platform/flow/end': '随访平台 M19: 终止患者流程 ({patient_no,flow_code,reason})',
+                    'GET  /api/platform/visits': '随访平台 M19: 访视列表 (?patientNo=&status=&overdue=1&dueWithin=7)',
+                    'POST /api/platform/visit/transition': '随访平台 M19: 完成/跳过/取消访视',
+                    'POST /api/platform/visit/offschedule': '随访平台 M19: 事件触发流程外阶段(不良事件等)',
+                    'GET  /api/platform/flow/completion': '随访平台 M19: 随访完成率(分母不含流程外阶段与未到期访视)',
                     'GET  /api/platform/cohorts': '随访平台 M18: 纳排方案与分组 (?code=&withLog=1)',
                     'POST /api/platform/cohort': '随访平台 M18: 建/改纳排方案 ({code,name,include_rule,exclude_rule})',
                     'POST /api/platform/group': '随访平台 M18: 建/改分组 ({cohort_code,code,name,kind,match_rule,priority})',
@@ -8765,6 +9598,36 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/flow':
+                result, err = upsert_flow(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/flow/copy':
+                result, err = copy_flow(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/flow/instantiate':
+                result, err = flow_instantiate(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/flow/refresh':
+                result, err = flow_refresh_status(body.get('patient_no'))
+                self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/flow/end':
+                result, err = flow_end(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/visit/transition':
+                result, err = visit_transition(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/visit/offschedule':
+                result, err = trigger_offschedule(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/cohort':
                 result, err = upsert_cohort(body)
@@ -9094,6 +9957,8 @@ if __name__ == '__main__':
         ensure_platform_doc_tables()
         # M18: 纳排方案 + 分组 + 入组归属 (idempotent)
         ensure_platform_cohort_tables()
+        # M19: 随访流程 + 实例 + 访视 (idempotent)
+        ensure_platform_flow_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -9145,6 +10010,13 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/flows                    随访平台 M19: 流程库')
+    print('[端点] POST /api/platform/flow                     随访平台 M19: 建/改流程模板')
+    print('[端点] POST /api/platform/flow/instantiate         随访平台 M19: 实例化到患者')
+    print('[端点] GET  /api/platform/visits                   随访平台 M19: 访视列表')
+    print('[端点] POST /api/platform/visit/transition         随访平台 M19: 完成/跳过访视')
+    print('[端点] POST /api/platform/visit/offschedule        随访平台 M19: 事件触发流程外阶段')
+    print('[端点] GET  /api/platform/flow/completion          随访平台 M19: 随访完成率')
     print('[端点] GET  /api/platform/cohorts                  随访平台 M18: 纳排方案与分组')
     print('[端点] POST /api/platform/cohort                   随访平台 M18: 建/改纳排方案')
     print('[端点] POST /api/platform/group                    随访平台 M18: 建/改分组')
