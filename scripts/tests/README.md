@@ -53,3 +53,25 @@ DB_PASSWORD=xxx python3 scripts/tests/test_m18_cohort.py
 check('隐藏的题不参与必填校验 —— 否则表单永远交不上去, 且报错指向看不见的题', ...)
 check('一路同档两次一样不误报 —— 筛查量表上这是常态, 报了就天天误报', ...)
 ```
+
+## 生产环境依赖
+
+平台有几个功能是"库在就启用, 库不在就明确拒绝"的。当前生产(192.168.4.104)状态:
+
+| 依赖 | 用途 | 状态 |
+|---|---|---|
+| `segno` | 筛查自助填报链接的二维码 | ✅ 1.6.6 已装 |
+| `pyzipper` | 导出文件 AES-256 加密 | ✅ 0.4.0 已装 |
+| `openpyxl` | Excel → CRF 建表 | ❌ 未装(接口会给出装法) |
+| `pdf-inspector` | PDF → 量表解析 | ✅ 已装 |
+| anthropic SDK | 量表/CRF 生成走大模型 | ❌ 未装(回落本地模板) |
+| `DEEPSEEK_API_KEY` | 健康咨询 | ✅ 已配(在 /opt/suifang/wx.env) |
+
+**这几个都不会静默降级。** 库不在时接口返回明确说明与安装命令, 尤其是加密导出 ——
+勾了加密而库不在时**拒绝产出文件**, 绝不给一份明文冒充加密件。
+
+装法(生产):
+```bash
+ssh root@192.168.4.104 'pip3 install segno pyzipper openpyxl'
+systemctl restart suifang     # 重启后接口才会认到新库
+```

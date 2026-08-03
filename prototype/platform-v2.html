@@ -490,7 +490,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
             <tr><td>受试者高级检索（多条件柔性组合）</td><td><span class="tag green">已建</span></td><td>患者属性／量表总分与单题／体征日均值／预警数／CRF 字段／随访超窗，可 AND/OR 嵌套。字段走白名单、值全参数化——这是个让人自己拼查询的接口，打的是患者库</td></tr>
             <tr><td>单指标与多指标组合统计</td><td><span class="tag green">已建</span></td><td>一次最多 6 个维度，统计范围跟着检索条件走</td></tr>
             <tr><td>自动生成柱状图/饼图/折线图</td><td><span class="tag amber">部分</span></td><td>图表类型由<b>规则</b>决定（分类→饼图/柱图、时间→折线），不是模型选的。方案写的是「AI 自动生成」，我们做到的是这一层，不把它说成别的</td></tr>
-            <tr><td>导出文件加密</td><td><span class="tag amber">部分</span></td><td>代码已就绪（AES-256），但服务器没装 pyzipper。<b>勾了加密而库不在时会拒绝产出文件</b>——给一份明文冒充加密件，比不提供这个选项危险得多。装 pyzipper 即可启用</td></tr>
+            <tr><td>导出文件加密</td><td><span class="tag green">已建</span></td><td>AES-256（pyzipper 已装于生产）。生产实测：错口令读不出、对口令读得出。设计上<b>勾了加密而库不在时会拒绝产出文件</b>——给一份明文冒充加密件，比不提供这个选项危险得多</td></tr>
             <tr><td>密码通过短信/邮件发送</td><td><span class="tag grey">未建设</span></td><td>通道未接（同 §4.5）</td></tr>
             <tr><td>大样本异步后台导出</td><td><span class="tag green">已建</span></td><td>转后台跑，完成后到导出记录下载。同步导出会把请求占住几十秒，期间整个服务只能排队</td></tr>
             <tr><td>导出记录留存、随时下载</td><td><span class="tag green">已建</span></td><td><b>这是这块最要紧的产出</b>——每一次导出都是一次患者数据出境。记录里有导出条件、患者数、行数、内容哈希、谁下载过几次、从哪个 IP。文件保留 48 小时，下载前重算哈希比对</td></tr>
