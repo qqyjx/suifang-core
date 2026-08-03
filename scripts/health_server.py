@@ -6435,6 +6435,637 @@ def query_consents(patient_no=None, doc_code=None, status=None,
         conn.close()
 
 
+# ============ 随访平台 1.1 M18 (纳排规则与分组配置, 方案 §3.2) ============
+#
+# 纳排条件直接复用 M16 的条件树(build_search_sql) —— 不另起一套。好处不只是省事:
+# M16 那套的字段白名单和参数化是唯一的注入防线, 再写一套等于再开一个口子。
+#
+# 这块的支点是方案 §3.2(2) 那句 "分组条件变更时, 可自主配置是否保留既有患者"。
+# 它背后是一件比听起来严重得多的事:
+#
+#   **把一个已入组患者从试验组挪到对照组, 不是数据更新, 是方案偏离。**
+#
+# 患者已经按原分组接受了干预、填了基线、走了几次随访。悄悄改掉他的组别, 那些数据
+# 就挂到了错误的臂上, 而分析时没有任何迹象能看出来 —— 这是能让整个研究作废的事。
+# 所以这里的默认行为是**保留**: 规则改了只影响此后新入组的人, 既有患者纹丝不动;
+# 要动他们必须显式 regroup_existing=true, 并且每一次移动都单独记一条留痕带原因。
+# 所有会移动人的操作默认 dry_run, 先告诉你会动几个人再说。
+
+GROUP_KINDS = {'control': '对照组', 'experiment': '试验组',
+               'routine': '常规管理组', 'other': '其他分组'}
+ENROLL_STATUSES = {'enrolled': '已入组', 'screened_out': '筛查排除', 'withdrawn': '已退出'}
+
+
+def ensure_platform_cohort_tables():
+    """M18: 纳排方案 + 分组 + 入组归属 + 留痕 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_cohort (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(64) NOT NULL UNIQUE,
+                name VARCHAR(128) NOT NULL,
+                disease VARCHAR(64) DEFAULT NULL COMMENT '病种/科研项目',
+                include_rule JSON DEFAULT NULL COMMENT '纳入条件(M16 条件树)',
+                exclude_rule JSON DEFAULT NULL COMMENT '排除条件(M16 条件树)',
+                owner VARCHAR(64) DEFAULT NULL,
+                status ENUM('draft','running','closed') DEFAULT 'draft',
+                note VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M18 纳排方案'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_group (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                cohort_code VARCHAR(64) NOT NULL,
+                code VARCHAR(64) NOT NULL,
+                name VARCHAR(128) NOT NULL,
+                kind VARCHAR(16) DEFAULT 'other',
+                match_rule JSON DEFAULT NULL COMMENT '分组条件; 为空 = 兜底组(前面都不匹配的落这里)',
+                priority INT NOT NULL DEFAULT 100 COMMENT '数字小的先判; 一个患者只落第一个命中的组',
+                plan_template VARCHAR(64) DEFAULT NULL COMMENT '入组后随访流程(留给 §3.3)',
+                screen_note VARCHAR(500) DEFAULT NULL COMMENT '入组前筛查阶段说明',
+                push_policy JSON DEFAULT NULL COMMENT '面向分组的消息推送策略',
+                target_n INT DEFAULT NULL COMMENT '计划样本量',
+                active TINYINT(1) DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_group (cohort_code, code),
+                INDEX idx_cohort (cohort_code, priority)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M18 分组'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_enrollment (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                cohort_code VARCHAR(64) NOT NULL,
+                patient_no VARCHAR(64) NOT NULL,
+                group_code VARCHAR(64) DEFAULT NULL,
+                status ENUM('enrolled','screened_out','withdrawn') DEFAULT 'enrolled',
+                assigned_by ENUM('auto','manual') DEFAULT 'auto',
+                assign_reason VARCHAR(300) DEFAULT NULL,
+                enrolled_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_enroll (cohort_code, patient_no),
+                INDEX idx_group (cohort_code, group_code),
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M18 入组归属 (一个方案里一个患者只有一条)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_enrollment_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                cohort_code VARCHAR(64) NOT NULL,
+                patient_no VARCHAR(64) DEFAULT NULL,
+                action VARCHAR(24) NOT NULL COMMENT 'enroll/regroup/screen_out/withdraw/rule_change',
+                from_group VARCHAR(64) DEFAULT NULL,
+                to_group VARCHAR(64) DEFAULT NULL,
+                operator VARCHAR(64) DEFAULT NULL,
+                reason VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_cohort (cohort_code, id),
+                INDEX idx_patient (patient_no)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+              COMMENT='随访平台 M18 入组与改组留痕 (只增不改; 改组=方案偏离, 必须查得到)'
+        """)
+        print('[启动] platform_cohort / platform_group / platform_enrollment 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_cohort_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def _rule_eq(a, b):
+    """比两份规则是否相同。
+
+    MySQL 的 JSON 列取回来可能是 str 也可能已经是 dict(看驱动版本), 直接拿
+    json.dumps 比会永远判成"改过了" —— 那样每次保存都报一次"规则已变更",
+    真正改了的时候反而没人信。这里先归一化再比。
+    """
+    def norm(x):
+        if isinstance(x, str):
+            try:
+                x = json.loads(x) if x.strip() else None
+            except ValueError:
+                pass
+        return json.dumps(x, sort_keys=True, ensure_ascii=False) if x else ''
+    return norm(a) == norm(b)
+
+
+def _validate_rule(rule, label):
+    """条件树在**保存时**就校验, 不等到跑的时候才炸。
+
+    存一份引用了不存在字段的规则进去, 表面上一切正常, 直到某天有人点"执行入组"
+    才报错 —— 那时候方案可能已经挂在墙上了。
+    """
+    if rule in (None, {}, []):
+        return None
+    try:
+        build_search_sql(rule)
+    except ValueError as e:
+        return '{}有问题: {}'.format(label, e)
+    return None
+
+
+def upsert_cohort(body):
+    """建/改纳排方案。{code, name, disease?, include_rule?, exclude_rule?, owner?, status?}"""
+    code = re.sub(r'[^0-9A-Za-z_\-]', '', str(body.get('code') or ''))[:64]
+    name = str(body.get('name') or '').strip()
+    if not code or not name:
+        return None, 'code 和 name 必填 (code 只接受字母数字下划线连字符)'
+    status = body.get('status') or 'draft'
+    if status not in ('draft', 'running', 'closed'):
+        return None, 'status 必须是 draft/running/closed'
+    for rule, label in ((body.get('include_rule'), '纳入条件'), (body.get('exclude_rule'), '排除条件')):
+        err = _validate_rule(rule, label)
+        if err:
+            return None, err
+
+    ensure_platform_cohort_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT include_rule, exclude_rule FROM platform_cohort WHERE code=%s', (code,))
+        old = cur.fetchone()
+        cur.execute("""
+            INSERT INTO platform_cohort (code, name, disease, include_rule, exclude_rule, owner, status, note)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE name=VALUES(name), disease=VALUES(disease),
+              include_rule=VALUES(include_rule), exclude_rule=VALUES(exclude_rule),
+              owner=VALUES(owner), status=VALUES(status), note=VALUES(note)
+        """, (code, name, body.get('disease') or None,
+              json.dumps(body.get('include_rule') or None, ensure_ascii=False)
+              if body.get('include_rule') else None,
+              json.dumps(body.get('exclude_rule') or None, ensure_ascii=False)
+              if body.get('exclude_rule') else None,
+              body.get('owner') or None, status, body.get('note') or None))
+        changed = bool(old) and (not _rule_eq(old[0], body.get('include_rule'))
+                                 or not _rule_eq(old[1], body.get('exclude_rule')))
+        if changed:
+            cur.execute("""INSERT INTO platform_enrollment_log (cohort_code, action, operator, reason)
+                           VALUES (%s,'rule_change',%s,%s)""",
+                        (code, body.get('owner') or None, '纳排条件被修改'))
+        cur.execute("SELECT COUNT(*) FROM platform_enrollment WHERE cohort_code=%s AND status='enrolled'",
+                    (code,))
+        enrolled = cur.fetchone()[0]
+        cur.close()
+        out = {'code': code, 'name': name, 'status': status, 'enrolled_count': enrolled}
+        if changed and enrolled:
+            out['warning'] = ('纳排条件已改, 而本方案已有 {} 人在组。**既有患者不受影响** —— '
+                              '新条件只作用于此后的入组评估。要重新评估既有患者, '
+                              '请显式执行入组并带 regroup_existing=true'.format(enrolled))
+        return out, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def upsert_group(body):
+    """建/改分组。{cohort_code, code, name, kind?, match_rule?, priority?, ...}
+
+    match_rule 为空 = 兜底组: 前面所有分组都不匹配的人落到这里。
+    一个方案里应当只有一个兜底组, 多了就说明规则没想清楚 —— 这里会报出来。
+    """
+    cohort = str(body.get('cohort_code') or '').strip()
+    code = re.sub(r'[^0-9A-Za-z_\-]', '', str(body.get('code') or ''))[:64]
+    name = str(body.get('name') or '').strip()
+    if not cohort or not code or not name:
+        return None, 'cohort_code / code / name 必填'
+    kind = body.get('kind') or 'other'
+    if kind not in GROUP_KINDS:
+        return None, 'kind 必须是 {} 之一'.format('/'.join(GROUP_KINDS))
+    err = _validate_rule(body.get('match_rule'), '分组条件')
+    if err:
+        return None, err
+    try:
+        priority = int(body.get('priority') if body.get('priority') is not None else 100)
+    except (TypeError, ValueError):
+        return None, 'priority 必须是整数'
+
+    ensure_platform_cohort_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT 1 FROM platform_cohort WHERE code=%s', (cohort,))
+        if not cur.fetchone():
+            cur.close()
+            return None, '纳排方案不存在: {}'.format(cohort)
+        cur.execute('SELECT match_rule FROM platform_group WHERE cohort_code=%s AND code=%s',
+                    (cohort, code))
+        old = cur.fetchone()
+        cur.execute("""
+            INSERT INTO platform_group (cohort_code, code, name, kind, match_rule, priority,
+                                        plan_template, screen_note, push_policy, target_n, active)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE name=VALUES(name), kind=VALUES(kind),
+              match_rule=VALUES(match_rule), priority=VALUES(priority),
+              plan_template=VALUES(plan_template), screen_note=VALUES(screen_note),
+              push_policy=VALUES(push_policy), target_n=VALUES(target_n), active=VALUES(active)
+        """, (cohort, code, name, kind,
+              json.dumps(body.get('match_rule'), ensure_ascii=False) if body.get('match_rule') else None,
+              priority, body.get('plan_template') or None, body.get('screen_note') or None,
+              json.dumps(body.get('push_policy') or None, ensure_ascii=False)
+              if body.get('push_policy') else None,
+              body.get('target_n'), 0 if body.get('active') in (0, False, '0') else 1))
+
+        warnings = []
+        cur.execute("SELECT code, name FROM platform_group WHERE cohort_code=%s "
+                    "AND match_rule IS NULL AND active=1", (cohort,))
+        fallbacks = cur.fetchall()
+        if len(fallbacks) > 1:
+            warnings.append('本方案有 {} 个兜底组({}) —— 兜底组不设条件, 谁在前面谁把人全收走, '
+                            '后面的永远分不到人。应当只保留一个'.format(
+                                len(fallbacks), '、'.join(x[1] for x in fallbacks)))
+        cur.execute("SELECT priority, COUNT(*) FROM platform_group WHERE cohort_code=%s AND active=1 "
+                    "GROUP BY priority HAVING COUNT(*)>1", (cohort,))
+        dup = cur.fetchall()
+        if dup:
+            warnings.append('有 {} 组分组的 priority 相同 —— 同优先级时谁先命中取决于数据库返回顺序, '
+                            '也就是说同一个患者可能这次分到 A 组、下次分到 B 组。请把优先级改成互不相同'.format(len(dup)))
+        rule_changed = bool(old) and not _rule_eq(old[0], body.get('match_rule'))
+        if rule_changed:
+            # 当场的警告只有正在操作的人看得见。留痕是给三个月后查"这些人为什么换组"的人看的。
+            cur.execute("""INSERT INTO platform_enrollment_log
+                           (cohort_code, action, from_group, to_group, operator, reason)
+                           VALUES (%s,'rule_change',%s,%s,%s,%s)""",
+                        (cohort, code, code, body.get('owner') or body.get('operator') or None,
+                         '分组「{}」的匹配条件被修改'.format(name)))
+            cur.execute("SELECT COUNT(*) FROM platform_enrollment WHERE cohort_code=%s "
+                        "AND group_code=%s AND status='enrolled'", (cohort, code))
+            n = cur.fetchone()[0]
+            if n:
+                warnings.append('分组条件已改, 本组现有 {} 人。**他们不会被自动挪走** —— '
+                                '把已入组患者从一个臂挪到另一个臂是方案偏离, 不是数据更新。'
+                                '确需重新分组请执行入组时带 regroup_existing=true'.format(n))
+        cur.close()
+        return {'cohort_code': cohort, 'code': code, 'name': name, 'priority': priority,
+                'warnings': warnings}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def _cohort_eligible_sql(inc, exc):
+    """纳入 AND NOT 排除。返回 (where, params)。"""
+    parts, params = [], []
+    if inc:
+        s, p = build_search_sql(inc); parts.append(s); params += p
+    if exc:
+        s, p = build_search_sql(exc); parts.append('NOT (' + s + ')'); params += p
+    return (' AND '.join(parts) if parts else '1=1'), params
+
+
+def cohort_evaluate(cohort_code, limit=500):
+    """算一遍谁符合纳排条件, 以及他们各自会落到哪个分组。**只算不写。**"""
+    ensure_platform_cohort_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT name, include_rule, exclude_rule FROM platform_cohort WHERE code=%s',
+                    (cohort_code,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '纳排方案不存在: {}'.format(cohort_code)
+        name, inc, exc = row
+        if isinstance(inc, str):
+            inc = json.loads(inc) if inc else None
+        if isinstance(exc, str):
+            exc = json.loads(exc) if exc else None
+        try:
+            where, params = _cohort_eligible_sql(inc, exc)
+        except ValueError as e:
+            cur.close()
+            return None, '纳排条件有问题: {}'.format(e)
+
+        cur.execute('SELECT p.patient_no, p.name, p.gender, p.age, p.group_tag '
+                    'FROM platform_patient p WHERE {} ORDER BY p.patient_no LIMIT %s'.format(where),
+                    params + [int(limit)])
+        eligible = [{'patient_no': a, 'name': b, 'gender': c, 'age': d, 'group_tag': e}
+                    for a, b, c, d, e in cur.fetchall()]
+
+        cur.execute('SELECT code, name, kind, match_rule, priority FROM platform_group '
+                    'WHERE cohort_code=%s AND active=1 ORDER BY priority, code', (cohort_code,))
+        groups = []
+        for g_code, g_name, kind, rule, pri in cur.fetchall():
+            if isinstance(rule, str):
+                rule = json.loads(rule) if rule else None
+            groups.append({'code': g_code, 'name': g_name, 'kind': kind,
+                           'rule': rule, 'priority': pri})
+
+        # 逐个分组算命中集合, 按优先级"先到先得" —— 一个患者只落第一个命中的组。
+        # 不这么做的话一个人会同时出现在多个臂里, 而这在临床研究里没有任何意义。
+        assigned, by_group = {}, {}
+        for g in groups:
+            if g['rule']:
+                try:
+                    gw, gp = build_search_sql(g['rule'])
+                except ValueError as e:
+                    cur.close()
+                    return None, '分组「{}」的条件有问题: {}'.format(g['name'], e)
+                cur.execute('SELECT p.patient_no FROM platform_patient p WHERE ({}) AND ({})'.format(
+                    where, gw), params + gp)
+                hits = [r[0] for r in cur.fetchall()]
+            else:
+                hits = [p['patient_no'] for p in eligible]      # 兜底组
+            fresh = [h for h in hits if h not in assigned]
+            for h in fresh:
+                assigned[h] = g['code']
+            by_group[g['code']] = {'code': g['code'], 'name': g['name'], 'kind': g['kind'],
+                                   'kind_label': GROUP_KINDS.get(g['kind'], g['kind']),
+                                   'priority': g['priority'], 'is_fallback': not g['rule'],
+                                   'matched': len(hits), 'assigned': len(fresh)}
+
+        for p in eligible:
+            p['group_code'] = assigned.get(p['patient_no'])
+        unassigned = [p['patient_no'] for p in eligible if not p.get('group_code')]
+
+        cur.execute("SELECT patient_no, group_code FROM platform_enrollment "
+                    "WHERE cohort_code=%s AND status='enrolled'", (cohort_code,))
+        existing = dict(cur.fetchall())
+        cur.close()
+
+        would_move = [{'patient_no': k, 'from': v, 'to': assigned.get(k)}
+                      for k, v in existing.items()
+                      if assigned.get(k) and assigned[k] != v]
+        return {'ok': True, 'cohort_code': cohort_code, 'cohort_name': name,
+                'eligible': len(eligible), 'patients': eligible,
+                'groups': [by_group[g['code']] for g in groups],
+                'unassigned': len(unassigned),
+                'already_enrolled': len(existing),
+                'would_move': would_move,
+                'move_warning': ('按当前规则重新评估, 会有 {} 名**已入组**患者被挪到别的组。'
+                                 '把患者从一个臂挪到另一个臂是方案偏离 —— 他们已经按原分组接受了干预、'
+                                 '填了基线、走了随访, 挪组会让那些数据挂到错误的臂上, 而分析时看不出来。'
+                                 '默认不会动他们'.format(len(would_move))) if would_move else None}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def cohort_enroll(body):
+    """执行入组。{cohort_code, dry_run?, regroup_existing?, operator?, reason?}
+
+    dry_run 默认 **true** —— 这个操作会改变几十上百人的组别归属, 先看清楚再说。
+    regroup_existing 默认 false —— 已入组患者不动, 见本节开头。
+    """
+    code = str(body.get('cohort_code') or '').strip()
+    if not code:
+        return None, 'cohort_code 必填'
+    dry = body.get('dry_run')
+    dry = True if dry is None else bool(dry)
+    regroup = bool(body.get('regroup_existing'))
+    if regroup and not dry and not str(body.get('reason') or '').strip():
+        return None, ('regroup_existing=true 时必须写 reason —— 把已入组患者挪组是方案偏离, '
+                      '得说清楚为什么, 这条会进留痕')
+
+    ev, err = cohort_evaluate(code, limit=5000)
+    if err:
+        return None, err
+
+    if dry:
+        return {'ok': True, 'dry_run': True, 'cohort_code': code,
+                'eligible': ev['eligible'], 'groups': ev['groups'],
+                'already_enrolled': ev['already_enrolled'],
+                'would_newly_enroll': ev['eligible'] - ev['already_enrolled'],
+                'would_move': ev['would_move'], 'move_warning': ev['move_warning'],
+                'unassigned': ev['unassigned'],
+                'hint': '这是试算, 没有写库。确认无误后带 dry_run=false 执行'}, None
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT patient_no, group_code FROM platform_enrollment "
+                    "WHERE cohort_code=%s AND status='enrolled'", (code,))
+        existing = dict(cur.fetchall())
+        new_n = moved_n = kept_n = 0
+        for p in ev['patients']:
+            no, g = p['patient_no'], p.get('group_code')
+            if no not in existing:
+                cur.execute("""INSERT INTO platform_enrollment
+                               (cohort_code, patient_no, group_code, status, assigned_by, assign_reason)
+                               VALUES (%s,%s,%s,'enrolled','auto',%s)
+                               ON DUPLICATE KEY UPDATE group_code=VALUES(group_code),
+                                 status='enrolled', assigned_by='auto'""",
+                            (code, no, g, '按纳排规则自动入组'))
+                cur.execute("""INSERT INTO platform_enrollment_log
+                               (cohort_code, patient_no, action, from_group, to_group, operator, reason)
+                               VALUES (%s,%s,'enroll',NULL,%s,%s,%s)""",
+                            (code, no, g, body.get('operator') or None, '按纳排规则自动入组'))
+                new_n += 1
+            elif existing[no] != g:
+                if not regroup:
+                    kept_n += 1
+                    continue
+                cur.execute("UPDATE platform_enrollment SET group_code=%s, assign_reason=%s "
+                            "WHERE cohort_code=%s AND patient_no=%s",
+                            (g, (body.get('reason') or '')[:300], code, no))
+                cur.execute("""INSERT INTO platform_enrollment_log
+                               (cohort_code, patient_no, action, from_group, to_group, operator, reason)
+                               VALUES (%s,%s,'regroup',%s,%s,%s,%s)""",
+                            (code, no, existing[no], g, body.get('operator') or None,
+                             (body.get('reason') or '')[:500]))
+                moved_n += 1
+        cur.close()
+        return {'ok': True, 'dry_run': False, 'cohort_code': code,
+                'newly_enrolled': new_n, 'regrouped': moved_n,
+                'kept_unchanged': kept_n, 'groups': ev['groups'],
+                'note': ('有 {} 名已入组患者按新规则本应换组, 但因为 regroup_existing 没打开而保持原样 —— '
+                         '这是默认且安全的行为'.format(kept_n)) if kept_n else None}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def enrollment_transition(body):
+    """手工调整单个患者 {cohort_code, patient_no, action: regroup|screen_out|withdraw|reenroll,
+       group_code?, operator?, reason?}"""
+    code = str(body.get('cohort_code') or '').strip()
+    no = str(body.get('patient_no') or '').strip()
+    action = str(body.get('action') or '').strip()
+    reason = str(body.get('reason') or '').strip()
+    if not code or not no:
+        return None, 'cohort_code 和 patient_no 必填'
+    if action not in ('regroup', 'screen_out', 'withdraw', 'reenroll'):
+        return None, 'action 必须是 regroup/screen_out/withdraw/reenroll'
+    if not reason:
+        return None, 'reason 必填 —— 手工调整归属必须说明依据, 这条会进留痕'
+    if action == 'regroup' and not body.get('group_code'):
+        return None, 'regroup 必须给 group_code'
+
+    ensure_platform_cohort_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT group_code, status FROM platform_enrollment '
+                    'WHERE cohort_code=%s AND patient_no=%s', (code, no))
+        row = cur.fetchone()
+        if not row and action != 'reenroll':
+            cur.close()
+            return None, '该患者不在本方案的入组名单里'
+        cur_group = row[0] if row else None
+        new_status = {'regroup': 'enrolled', 'screen_out': 'screened_out',
+                      'withdraw': 'withdrawn', 'reenroll': 'enrolled'}[action]
+        to_group = body.get('group_code') if action in ('regroup', 'reenroll') else cur_group
+        if row:
+            cur.execute("UPDATE platform_enrollment SET group_code=%s, status=%s, "
+                        "assigned_by='manual', assign_reason=%s WHERE cohort_code=%s AND patient_no=%s",
+                        (to_group, new_status, reason[:300], code, no))
+        else:
+            cur.execute("""INSERT INTO platform_enrollment
+                           (cohort_code, patient_no, group_code, status, assigned_by, assign_reason)
+                           VALUES (%s,%s,%s,%s,'manual',%s)""",
+                        (code, no, to_group, new_status, reason[:300]))
+        cur.execute("""INSERT INTO platform_enrollment_log
+                       (cohort_code, patient_no, action, from_group, to_group, operator, reason)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (code, no, action, cur_group, to_group,
+                     body.get('operator') or None, reason[:500]))
+        cur.close()
+        return {'ok': True, 'cohort_code': code, 'patient_no': no,
+                'from_group': cur_group, 'to_group': to_group, 'status': new_status}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_cohorts(code=None, with_groups=True, with_log=False, limit=100):
+    """纳排方案列表 / 单个详情(含分组与入组统计)。"""
+    ensure_platform_cohort_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if code:
+            where.append('c.code=%s'); params.append(code)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT c.id, c.code, c.name, c.disease, c.include_rule, c.exclude_rule,
+                   c.owner, c.status, c.note, c.created_at, c.updated_at,
+                   (SELECT COUNT(*) FROM platform_enrollment e
+                     WHERE e.cohort_code=c.code AND e.status='enrolled') AS enrolled,
+                   (SELECT COUNT(*) FROM platform_group g WHERE g.cohort_code=c.code AND g.active=1) AS group_n
+            FROM platform_cohort c WHERE {} ORDER BY c.updated_at DESC LIMIT %s
+        """.format(' AND '.join(where)), params)
+        names = [d[0] for d in cur.description]
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(names, row))
+            for k in ('created_at', 'updated_at'):
+                if r.get(k) is not None and hasattr(r[k], 'strftime'):
+                    r[k] = r[k].strftime('%Y-%m-%d %H:%M:%S')
+            for k in ('include_rule', 'exclude_rule'):
+                if isinstance(r.get(k), str):
+                    try:
+                        r[k] = json.loads(r[k])
+                    except ValueError:
+                        pass
+            out.append(r)
+        if with_groups and out:
+            codes = [r['code'] for r in out]
+            cur.execute("""
+                SELECT g.cohort_code, g.code, g.name, g.kind, g.match_rule, g.priority,
+                       g.plan_template, g.screen_note, g.push_policy, g.target_n, g.active,
+                       (SELECT COUNT(*) FROM platform_enrollment e
+                         WHERE e.cohort_code=g.cohort_code AND e.group_code=g.code
+                           AND e.status='enrolled') AS n
+                FROM platform_group g WHERE g.cohort_code IN ({})
+                ORDER BY g.cohort_code, g.priority, g.code
+            """.format(','.join(['%s'] * len(codes))), codes)
+            gmap = {}
+            for (ck, gc, gn, kind, rule, pri, tpl, sn, push, tgt, act, n) in cur.fetchall():
+                if isinstance(rule, str):
+                    try:
+                        rule = json.loads(rule) if rule else None
+                    except ValueError:
+                        pass
+                if isinstance(push, str):
+                    try:
+                        push = json.loads(push) if push else None
+                    except ValueError:
+                        pass
+                gmap.setdefault(ck, []).append({
+                    'code': gc, 'name': gn, 'kind': kind,
+                    'kind_label': GROUP_KINDS.get(kind, kind), 'match_rule': rule,
+                    'is_fallback': rule is None, 'priority': pri, 'plan_template': tpl,
+                    'screen_note': sn, 'push_policy': push, 'target_n': tgt,
+                    'active': act, 'enrolled': n,
+                    'progress': (round(n * 100.0 / tgt, 1) if tgt else None)})
+            for r in out:
+                r['groups'] = gmap.get(r['code'], [])
+        if with_log and code and out:
+            cur.execute("""SELECT patient_no, action, from_group, to_group, operator, reason, created_at
+                           FROM platform_enrollment_log WHERE cohort_code=%s
+                           ORDER BY id DESC LIMIT 200""", (code,))
+            out[0]['log'] = [{'patient_no': a, 'action': b, 'from': c, 'to': d, 'operator': e,
+                              'reason': f,
+                              'at': g.strftime('%Y-%m-%d %H:%M:%S') if hasattr(g, 'strftime') else g}
+                             for a, b, c, d, e, f, g in cur.fetchall()]
+        cur.close()
+        return {'ok': True, 'count': len(out), 'cohorts': out, 'kinds': GROUP_KINDS,
+                'statuses': ENROLL_STATUSES}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_enrollments(cohort_code=None, group_code=None, status=None, limit=500):
+    """入组名单。"""
+    ensure_platform_cohort_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if cohort_code:
+            where.append('e.cohort_code=%s'); params.append(cohort_code)
+        if group_code:
+            where.append('e.group_code=%s'); params.append(group_code)
+        if status:
+            where.append('e.status=%s'); params.append(status)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT e.id, e.cohort_code, e.patient_no, p.name, p.gender, p.age,
+                   e.group_code, g.name, g.kind, e.status, e.assigned_by,
+                   e.assign_reason, e.enrolled_at
+            FROM platform_enrollment e
+            LEFT JOIN platform_patient p ON p.patient_no=e.patient_no
+            LEFT JOIN platform_group g ON g.cohort_code=e.cohort_code AND g.code=e.group_code
+            WHERE {} ORDER BY e.cohort_code, e.group_code, e.patient_no LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'cohort_code', 'patient_no', 'patient_name', 'gender', 'age',
+                'group_code', 'group_name', 'group_kind', 'status', 'assigned_by',
+                'assign_reason', 'enrolled_at']
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            if r.get('enrolled_at') is not None and hasattr(r['enrolled_at'], 'strftime'):
+                r['enrolled_at'] = r['enrolled_at'].strftime('%Y-%m-%d %H:%M:%S')
+            r['status_label'] = ENROLL_STATUSES.get(r['status'], r['status'])
+            r['group_kind_label'] = GROUP_KINDS.get(r.get('group_kind'), r.get('group_kind'))
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'enrollments': out}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -7557,6 +8188,30 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/cohorts':
+            result, err = query_cohorts(
+                code=(query.get('code') or [None])[0],
+                with_groups=(query.get('withGroups') or ['1'])[0] in ('1', 'true'),
+                with_log=(query.get('withLog') or ['0'])[0] in ('1', 'true'),
+                limit=min(int((query.get('limit') or ['100'])[0] or 100), 200))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/enrollments':
+            st = (query.get('status') or [None])[0]
+            if st and st not in ENROLL_STATUSES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 {} 之一'.format('/'.join(ENROLL_STATUSES))}); return
+            result, err = query_enrollments(
+                cohort_code=(query.get('cohort') or [None])[0],
+                group_code=(query.get('group') or [None])[0], status=st,
+                limit=min(int((query.get('limit') or ['500'])[0] or 500), 2000))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/cohort/evaluate':
+            result, err = cohort_evaluate((query.get('code') or [None])[0],
+                                          limit=min(int((query.get('limit') or ['500'])[0] or 500), 2000))
+            self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/documents':
             dt = (query.get('type') or [None])[0]
             if dt and dt not in DOC_TYPES:
@@ -7910,6 +8565,13 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/cohorts': '随访平台 M18: 纳排方案与分组 (?code=&withLog=1)',
+                    'POST /api/platform/cohort': '随访平台 M18: 建/改纳排方案 ({code,name,include_rule,exclude_rule})',
+                    'POST /api/platform/group': '随访平台 M18: 建/改分组 ({cohort_code,code,name,kind,match_rule,priority})',
+                    'GET  /api/platform/cohort/evaluate': '随访平台 M18: 试算谁符合纳排、各落哪个组 (只算不写)',
+                    'POST /api/platform/cohort/enroll': '随访平台 M18: 执行入组 (dry_run 默认 true; 既有患者默认不改组)',
+                    'GET  /api/platform/enrollments': '随访平台 M18: 入组名单 (?cohort=&group=&status=)',
+                    'POST /api/platform/enrollment/transition': '随访平台 M18: 手工改组/筛除/退出 ({patient_no,action,reason})',
                     'GET  /api/platform/documents': '随访平台 M17: 项目资料列表 (?type=consent|protocol|ethics|sop|guideline)',
                     'POST /api/platform/document': '随访平台 M17: 上传资料 ({title, doc_type, filename, content_base64}); 同 code 再传=新版本',
                     'GET  /api/platform/document/download': '随访平台 M17: 下载资料 (?code=&version=) —— 需 X-Platform-Token, 见代码注释',
@@ -8103,6 +8765,24 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/cohort':
+                result, err = upsert_cohort(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/group':
+                result, err = upsert_group(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/cohort/enroll':
+                result, err = cohort_enroll(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/enrollment/transition':
+                result, err = enrollment_transition(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/document':
                 result, err = upload_document(body)
@@ -8412,6 +9092,8 @@ if __name__ == '__main__':
         ensure_platform_vital_daily()
         # M17: 项目资料 + 知情签署 + 留痕 (idempotent)
         ensure_platform_doc_tables()
+        # M18: 纳排方案 + 分组 + 入组归属 (idempotent)
+        ensure_platform_cohort_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -8463,6 +9145,13 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/cohorts                  随访平台 M18: 纳排方案与分组')
+    print('[端点] POST /api/platform/cohort                   随访平台 M18: 建/改纳排方案')
+    print('[端点] POST /api/platform/group                    随访平台 M18: 建/改分组')
+    print('[端点] GET  /api/platform/cohort/evaluate          随访平台 M18: 入组试算(只算不写)')
+    print('[端点] POST /api/platform/cohort/enroll            随访平台 M18: 执行入组')
+    print('[端点] GET  /api/platform/enrollments              随访平台 M18: 入组名单')
+    print('[端点] POST /api/platform/enrollment/transition    随访平台 M18: 手工改组/筛除/退出')
     print('[端点] GET  /api/platform/documents                随访平台 M17: 项目资料列表')
     print('[端点] POST /api/platform/document                 随访平台 M17: 上传资料(同 code 再传=新版本)')
     print('[端点] GET  /api/platform/document/download        随访平台 M17: 下载资料(需口令)')

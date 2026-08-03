@@ -20,6 +20,7 @@
     随访执行中心 真实   M2 报警闭环 + M7 体征阈值/趋势预警 + M5 今日任务
     患者管理     真实   M1 建档/绑定/体征 + M4 佩戴依从性 + M8 待建档发现
     数据质控     部分   M13 自动质控+历次对比+质疑闭环已通; 留痕回退与 OCR 采集未建设
+    纳排与分组   真实   M18 纳排/分组/入组已通; AI 推荐纳排与模型分组未建(刻意)
     统计分析     部分   M6 导出 + M16 高级检索与分布统计已通; CDISC/变量挑选/异步导出未建设
     系统管理     真实   API 配置 / 服务自检 (多角色权限体系未建设)
 -->
@@ -143,6 +144,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
     <a class="nav-item active" data-page="dashboard">⌂ <span>运营驾驶舱</span></a>
     <div class="nav-title">随访全流程</div>
     <a class="nav-item" data-page="assets">▣ <span>随访资料准备</span></a>
+    <a class="nav-item" data-page="cohorts">⊞ <span>纳排与分组</span></a>
     <a class="nav-item" data-page="plans">⌘ <span>随访计划编排</span></a>
     <a class="nav-item" data-page="execute">▶ <span>随访执行中心</span><i class="badge" id="navAlarmBadge" style="display:none">0</i></a>
     <div class="nav-title">业务管理</div>
@@ -300,6 +302,42 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         </div>
         <div id="etabTasks" style="display:none">
           <div class="rows" id="taskWrap"><div class="loading">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ===================== 纳排与分组 (M18, 方案 §3.2) ===================== -->
+      <section class="module-page" id="cohorts">
+        <div class="module-hero">
+          <div><h2>纳排规则与分组配置</h2><p>方案 §3.2：纳入／排除条件 · 多分组分层 · 入组归属与留痕</p></div>
+          <div class="hero-actions">
+            <button class="white-btn" id="newCohortBtn">＋ 新建纳排方案</button>
+          </div>
+        </div>
+        <div class="note-strip">
+          <b>改分组规则，已入组的患者不会被自动挪走。</b>
+          把一个已入组患者从试验组挪到对照组<b>不是数据更新，是方案偏离</b>——
+          他已经按原分组接受了干预、填了基线、走了几次随访，挪组会让那些数据挂到错误的臂上，
+          而分析时看不出来。所以默认只影响此后新入组的人；确需重新分组要显式打开开关并写明原因，
+          每一次移动都单独留痕。<br>
+          纳排与分组条件复用「统计分析」里那套条件树——字段白名单、值全参数化，
+          而且<b>在保存时就校验</b>：存一份引用了不存在字段的规则进去，表面一切正常，
+          直到某天点「执行入组」才炸，那时方案可能已经挂在墙上了。
+        </div>
+        <div class="rows" id="cohortWrap"><div class="loading">加载中…</div></div>
+        <div class="card panel" style="margin-top:16px">
+          <div class="panel-head"><h3>方案 §3.2 逐条对照</h3></div>
+          <div class="table-wrap"><table><thead><tr><th>要求</th><th>状态</th><th>说明</th></tr></thead><tbody>
+            <tr><td>纳入/排除条件，字段选择 + 且/或 + 时间条件</td><td><span class="tag green">已建</span></td><td>复用 M16 条件树：患者属性／量表／体征／预警／CRF／随访超窗，可嵌套</td></tr>
+            <tr><td>全量数据范围内复杂条件组合检索</td><td><span class="tag green">已建</span></td><td>「试算」只算不写，先看清会纳入谁</td></tr>
+            <tr><td>基于检索结果动态调整纳排规则</td><td><span class="tag green">已建</span></td><td>改完再试算，反复直到满意</td></tr>
+            <tr><td>对照组／试验组／常规管理组等多分组</td><td><span class="tag green">已建</span></td><td>按优先级先到先得，一个患者只落一个组；未设条件的组是兜底组</td></tr>
+            <tr><td>单个分组配置多条分组规则</td><td><span class="tag green">已建</span></td><td>一个分组的条件本身就是 AND/OR 树，多条规则写成一棵树</td></tr>
+            <tr><td>分组条件变更时可配置是否保留既有患者</td><td><span class="tag green">已建</span></td><td>默认保留。这是本模块最要紧的一条，见上方说明</td></tr>
+            <tr><td>入组前筛查阶段 / 入组后随访流程</td><td><span class="tag amber">部分</span></td><td>字段已留（筛查说明、流程模板），但多级随访流程引擎是 §3.3，尚未建设</td></tr>
+            <tr><td>面向分组配置消息推送策略</td><td><span class="tag amber">部分</span></td><td>策略可存，但推送通道未接</td></tr>
+            <tr><td>AI 基于基线数据自动分组与亚分组</td><td><span class="tag grey">未建设</span></td><td>当前是<b>规则</b>分组不是模型分组。分组规则必须可解释、可复现、能写进方案报伦理——这一条是刻意没做成模型的</td></tr>
+            <tr><td>AI 推荐纳排条件</td><td><span class="tag grey">未建设</span></td><td>需要诊断编码与检验项字典做对照</td></tr>
+          </tbody></table></div>
         </div>
       </section>
 
@@ -755,6 +793,7 @@ const S = {
   qcFindings: [], qcQueries: [], cmpData: null,
   crfs: [], crfFill: null, crfDraft: null,
   edu: [], eduDraft: null,
+  cohorts: [],
   docs: [], consents: [], docMeta: null,
   sqFields: null, sqConds: [], sqResult: null,
 };
@@ -768,6 +807,7 @@ function goto(page) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (page === 'execute') { loadAlarms(); loadTasks(); }
   if (page === 'plans') loadPlans();
+  if (page === 'cohorts') loadCohorts();
   if (page === 'analytics') { loadAnalytics(); loadSearchFields().then(renderSqRows).catch(() => {}); }
   if (page === 'settings') fillSettings();
   if (page === 'assets') { loadScales(); loadResponses(); loadCrfs(); loadEdu(); loadDocs(); }
@@ -2567,6 +2607,392 @@ document.getElementById('sqExport').onclick = () => {
   URL.revokeObjectURL(a.href);
   toast('已导出 ' + d.count + ' 人' + (d.total > d.count ? '（共命中 ' + d.total + ' 人，文件末尾有说明）' : ''), 6000);
 };
+
+/* ================================================================ M18 纳排与分组 (方案 §3.2)
+
+   条件编辑器直接复用 M16 那套(sqFieldOptions / condText) —— 界面上长得一样,
+   底下也是同一个白名单。分成两套的话, 迟早有一边支持了另一边不支持的字段。   */
+const GROUP_KIND_LABEL = { control:'对照组', experiment:'试验组',
+                           routine:'常规管理组', other:'其他分组' };
+const ENROLL_ACTION_LABEL = { enroll:'入组', regroup:'改组', screen_out:'筛查排除',
+                              withdraw:'退出', reenroll:'重新入组', rule_change:'规则变更' };
+
+async function loadCohorts() {
+  const wrap = document.getElementById('cohortWrap');
+  try {
+    await loadSearchFields().catch(() => {});
+    const d = await getJSON('/api/platform/cohorts?withGroups=1');
+    S.cohorts = d.cohorts || [];
+    wrap.innerHTML = S.cohorts.length ? S.cohorts.map(c => {
+      const groups = (c.groups || []).map(g =>
+        '<div style="display:flex;gap:8px;align-items:center;padding:6px 0;font-size:13px;flex-wrap:wrap">'+
+          '<span class="tag '+(g.kind === 'experiment' ? 'blue' : g.kind === 'control' ? 'grey' : 'orange')+'">'+
+            esc(g.kind_label)+'</span>'+
+          '<b>'+esc(g.name)+'</b>'+
+          (g.is_fallback ? '<span class="tag grey">兜底组（前面都不匹配的落这里）</span>' : '')+
+          '<span style="color:#82909c">优先级 '+g.priority+'</span>'+
+          '<span style="margin-left:auto"><b>'+g.enrolled+'</b>'+
+            (g.target_n ? ' / '+g.target_n+' 人（'+(g.progress == null ? '--' : g.progress)+'%）' : ' 人')+'</span>'+
+        '</div>'+
+        (g.match_rule ? '<div class="qc-basis" style="margin:0 0 8px">条件：'+esc(condText(g.match_rule))+'</div>' : '')
+      ).join('');
+      return '<div class="card panel" style="margin-bottom:14px">'+
+        '<div class="panel-head"><div><h3>'+esc(c.name)+'</h3>'+
+          '<small>'+esc(c.code)+(c.disease ? ' · '+esc(c.disease) : '')+
+          ' · <b>'+c.enrolled+'</b> 人在组 · '+c.group_n+' 个分组</small></div>'+
+          '<div class="head-tools">'+
+            '<span class="tag '+(c.status === 'running' ? 'green' : 'grey')+'">'+
+              ({draft:'草稿',running:'进行中',closed:'已结束'}[c.status] || c.status)+'</span>'+
+            '<button class="link" onclick="editCohort(\''+esc(c.code)+'\')">改纳排</button>'+
+            '<button class="link" onclick="addGroup(\''+esc(c.code)+'\')">加分组</button>'+
+            '<button class="link" onclick="cohortLog(\''+esc(c.code)+'\')">留痕</button>'+
+          '</div></div>'+
+        '<div class="qc-basis" style="margin-bottom:4px">纳入：'+
+          esc(c.include_rule ? condText(c.include_rule) : '（未设，全部患者）')+'</div>'+
+        '<div class="qc-basis" style="margin-bottom:10px">排除：'+
+          esc(c.exclude_rule ? condText(c.exclude_rule) : '（未设）')+'</div>'+
+        (groups || '<div style="color:#9ca3af;font-size:13px;padding:6px 0">还没有分组</div>')+
+        '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'+
+          '<button class="secondary" onclick="cohortDryRun(\''+esc(c.code)+'\')">试算入组</button>'+
+          '<button class="link" onclick="viewEnrollments(\''+esc(c.code)+'\')">查看名单</button>'+
+        '</div></div>';
+    }).join('')
+      : emptyBox('⊞', '还没有纳排方案', '点右上角「新建纳排方案」。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+
+/* 条件编辑器: 复用 M16 的字段目录, 但条件树独立一份(纳入/排除/分组各一棵) */
+function ruleEditorHtml(id, conds) {
+  return '<div class="head-tools" style="margin:4px 0 8px">'+
+    '<select id="'+id+'Root" class="mini"><option value="and">全部满足（AND）</option>'+
+    '<option value="or">任一满足（OR）</option></select>'+
+    '<button class="link" onclick="ruleAdd(\''+id+'\')">+ 加条件</button>'+
+    '<button class="link" onclick="ruleClear(\''+id+'\')">清空</button></div>'+
+    '<div id="'+id+'Rows"></div>';
+}
+const RULES = {};
+function ruleInit(id, existing) {
+  RULES[id] = [];
+  // 已存的树摊平回条件行。只摊一层 —— 界面就是一层, 嵌套树是接口能力不是界面能力,
+  // 界面上假装能编辑嵌套只会让人以为改动生效了其实没有。
+  if (existing) {
+    const root = existing.op ? existing : { op: 'and', children: [existing] };
+    document.getElementById(id + 'Root').value = root.op || 'and';
+    (root.children || []).forEach(c => {
+      if (c.field) RULES[id].push({ field: c.field, operator: c.operator,
+                                    value: c.value, params: c.params || {} });
+    });
+  }
+  ruleRender(id);
+}
+function ruleRender(id) {
+  const wrap = document.getElementById(id + 'Rows');
+  const list = RULES[id] || [];
+  if (!list.length) {
+    wrap.innerHTML = '<div style="color:#9ca3af;font-size:12px;padding:4px 0">未设条件</div>';
+    return;
+  }
+  wrap.innerHTML = list.map((c, i) => {
+    const spec = (S.sqFields.fields || []).find(f => f.field === c.field) || {};
+    const ops = spec.ops || ['eq'];
+    if (ops.indexOf(c.operator) < 0) c.operator = ops[0];
+    let val;
+    if (c.operator === 'empty' || c.operator === 'filled') val = '<span style="color:#9ca3af;font-size:12px">（无需填值）</span>';
+    else if (spec.options)
+      val = '<select class="mini" data-rv="'+id+':'+i+'">'+spec.options.map(o =>
+        '<option value="'+esc(o.value)+'"'+(String(o.value) === String(c.value) ? ' selected' : '')+'>'+
+        esc(o.label)+'</option>').join('')+'</select>';
+    else val = '<input class="mini" data-rv="'+id+':'+i+'" value="'+esc(c.value == null ? '' : c.value)+'" style="width:110px">';
+    const needs = (spec.needs || []).map(n =>
+      '<input class="mini" data-rp="'+id+':'+i+':'+esc(n)+'" placeholder="'+esc(n)+'" value="'+
+      esc((c.params || {})[n] || '')+'" style="width:110px">').join('');
+    return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:5px 0">'+
+      '<select class="mini" data-rf="'+id+':'+i+'" style="min-width:140px">'+sqFieldOptions(c.field)+'</select>'+
+      '<select class="mini" data-ro="'+id+':'+i+'">'+ops.map(o =>
+        '<option value="'+o+'"'+(o === c.operator ? ' selected' : '')+'>'+esc(SQ_OP_LABEL[o] || o)+'</option>').join('')+'</select>'+
+      val + needs +
+      '<button class="link" onclick="ruleDel(\''+id+'\','+i+')">删</button></div>';
+  }).join('');
+  wrap.querySelectorAll('[data-rf]').forEach(el => el.onchange = () => {
+    const [k, i] = el.dataset.rf.split(':');
+    const spec = S.sqFields.fields.find(f => f.field === el.value);
+    RULES[k][i] = { field: el.value, operator: spec.ops[0], value: '', params: {} };
+    ruleRender(k);
+  });
+  wrap.querySelectorAll('[data-ro]').forEach(el => el.onchange = () => {
+    const [k, i] = el.dataset.ro.split(':');
+    RULES[k][i].operator = el.value; ruleRender(k);
+  });
+  wrap.querySelectorAll('[data-rv]').forEach(el => el.oninput = el.onchange = () => {
+    const [k, i] = el.dataset.rv.split(':'); RULES[k][i].value = el.value;
+  });
+  wrap.querySelectorAll('[data-rp]').forEach(el => el.oninput = () => {
+    const [k, i, n] = el.dataset.rp.split(':');
+    RULES[k][i].params = RULES[k][i].params || {};
+    RULES[k][i].params[n] = el.value;
+  });
+}
+function ruleAdd(id) {
+  const f = S.sqFields.fields[0];
+  RULES[id].push({ field: f.field, operator: f.ops[0], value: '', params: {} });
+  ruleRender(id);
+}
+function ruleDel(id, i) { RULES[id].splice(i, 1); ruleRender(id); }
+function ruleClear(id) { RULES[id] = []; ruleRender(id); }
+function ruleBuild(id) {
+  const list = (RULES[id] || []).filter(c => c.field).map(c => {
+    const n = { field: c.field, operator: c.operator };
+    if (c.operator !== 'empty' && c.operator !== 'filled') n.value = c.value;
+    if (c.params && Object.keys(c.params).length) n.params = c.params;
+    return n;
+  });
+  if (!list.length) return null;
+  if (list.length === 1) return list[0];
+  return { op: document.getElementById(id + 'Root').value, children: list };
+}
+
+function cohortForm(c) {
+  c = c || {};
+  return '<div class="form-row">'+
+      '<div class="field"><label>方案编码</label><input id="chCode" value="'+esc(c.code || '')+'"'+
+        (c.code ? ' readonly' : '')+' placeholder="字母数字，如 HTN2026"></div>'+
+      '<div class="field"><label>方案名称</label><input id="chName" value="'+esc(c.name || '')+'"></div></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>病种 / 项目</label><input id="chDisease" value="'+esc(c.disease || '')+'"></div>'+
+      '<div class="field"><label>状态</label><select id="chStatus">'+
+        ['draft','running','closed'].map(x => '<option value="'+x+'"'+(c.status === x ? ' selected' : '')+'>'+
+          ({draft:'草稿',running:'进行中',closed:'已结束'}[x])+'</option>').join('')+'</select></div></div>'+
+    '<h4 style="margin:16px 0 4px">纳入条件</h4>'+ruleEditorHtml('inc')+
+    '<h4 style="margin:16px 0 4px">排除条件<span style="font-weight:400;color:#9ca3af;font-size:12px">'+
+      '　最终 = 符合纳入 <b>且不符合</b> 排除</span></h4>'+ruleEditorHtml('exc');
+}
+
+document.getElementById('newCohortBtn').onclick = async () => {
+  await loadSearchFields();
+  openModal('新建纳排方案', '条件在保存时就会校验，不会等到执行入组才报错',
+    cohortForm(null),
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="chGo">保存</button>');
+  ruleInit('inc', null); ruleInit('exc', null);
+  document.getElementById('chGo').onclick = () => saveCohort();
+};
+
+async function editCohort(code) {
+  await loadSearchFields();
+  const c = (S.cohorts || []).find(x => x.code === code);
+  if (!c) return;
+  openModal('修改纳排方案', '改完不会自动动已入组的人',
+    cohortForm(c),
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="chGo">保存</button>');
+  ruleInit('inc', c.include_rule); ruleInit('exc', c.exclude_rule);
+  document.getElementById('chGo').onclick = () => saveCohort();
+}
+
+async function saveCohort() {
+  const btn = document.getElementById('chGo'); btn.disabled = true; btn.textContent = '保存中…';
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/cohort', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: document.getElementById('chCode').value.trim(),
+        name: document.getElementById('chName').value.trim(),
+        disease: document.getElementById('chDisease').value.trim() || null,
+        status: document.getElementById('chStatus').value,
+        include_rule: ruleBuild('inc'), exclude_rule: ruleBuild('exc'),
+        owner: localStorage.getItem(LS_OP) || null }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    closeModal();
+    toast('已保存 ' + d.code + (d.warning ? '　⚠ ' + d.warning : ''), d.warning ? 9000 : 4000);
+    await loadCohorts();
+  } catch (e) { btn.disabled = false; btn.textContent = '保存'; toast('保存失败：' + e.message, 7000); }
+}
+
+async function addGroup(cohortCode, existing) {
+  await loadSearchFields();
+  const g = existing || {};
+  openModal(existing ? '修改分组' : '新建分组',
+    '优先级数字小的先判，一个患者只落第一个命中的组；不设条件 = 兜底组',
+    '<div class="form-row">'+
+      '<div class="field"><label>分组编码</label><input id="gpCode" value="'+esc(g.code || '')+'"'+
+        (existing ? ' readonly' : '')+'></div>'+
+      '<div class="field"><label>分组名称</label><input id="gpName" value="'+esc(g.name || '')+'"></div></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>分组类型</label><select id="gpKind">'+
+        Object.keys(GROUP_KIND_LABEL).map(k => '<option value="'+k+'"'+(g.kind === k ? ' selected' : '')+'>'+
+          GROUP_KIND_LABEL[k]+'</option>').join('')+'</select></div>'+
+      '<div class="field"><label>优先级<span class="sub">越小越先判，务必互不相同</span></label>'+
+        '<input id="gpPri" type="number" value="'+(g.priority == null ? 100 : g.priority)+'"></div></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>计划样本量<span class="sub">选填</span></label>'+
+        '<input id="gpTarget" type="number" value="'+(g.target_n == null ? '' : g.target_n)+'"></div>'+
+      '<div class="field"><label>入组前筛查说明<span class="sub">选填</span></label>'+
+        '<input id="gpScreen" value="'+esc(g.screen_note || '')+'"></div></div>'+
+    '<h4 style="margin:16px 0 4px">分组条件<span style="font-weight:400;color:#9ca3af;font-size:12px">'+
+      '　留空 = 兜底组</span></h4>'+ruleEditorHtml('grp'),
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="gpGo">保存</button>');
+  ruleInit('grp', g.match_rule);
+  document.getElementById('gpGo').onclick = async () => {
+    const btn = document.getElementById('gpGo'); btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/group', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cohort_code: cohortCode,
+          code: document.getElementById('gpCode').value.trim(),
+          name: document.getElementById('gpName').value.trim(),
+          kind: document.getElementById('gpKind').value,
+          priority: Number(document.getElementById('gpPri').value),
+          target_n: Number(document.getElementById('gpTarget').value) || null,
+          screen_note: document.getElementById('gpScreen').value.trim() || null,
+          match_rule: ruleBuild('grp'),
+          owner: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      if ((d.warnings || []).length) {
+        openDrawer('分组已保存，但有几处要留意', d.cohort_code + ' · ' + d.name,
+          '<div class="err">'+d.warnings.map(w => '· ' + esc(w)).join('<br><br>')+'</div>', '');
+      } else toast('已保存分组 ' + d.name);
+      await loadCohorts();
+    } catch (e) { btn.disabled = false; btn.textContent = '保存'; toast('保存失败：' + e.message, 7000); }
+  };
+}
+
+async function cohortDryRun(code) {
+  toast('试算中…');
+  try {
+    const res = await fetch(API_BASE + '/api/platform/cohort/enroll', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cohort_code: code }),      // dry_run 默认 true
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    let h = '<div class="detail-card">'+
+      '<div class="detail-row"><span>符合纳排</span><b>'+d.eligible+' 人</b></div>'+
+      '<div class="detail-row"><span>已在组</span><b>'+d.already_enrolled+' 人</b></div>'+
+      '<div class="detail-row"><span>本次将新入组</span><b>'+d.would_newly_enroll+' 人</b></div>'+
+      (d.unassigned ? '<div class="detail-row"><span>无组可落</span><b style="color:#d74c55">'+
+        d.unassigned+' 人（没有兜底组）</b></div>' : '')+'</div>';
+    h += '<h4 style="margin:16px 0 8px">各组分配</h4><div class="rows">'+
+      d.groups.map(g => '<div class="qc-item" style="border-left:3px solid #e3e8ea">'+
+        '<div class="qc-head"><span class="tag blue">'+esc(g.kind_label)+'</span><b>'+esc(g.name)+'</b>'+
+        (g.is_fallback ? '<span class="tag grey">兜底组</span>' : '')+
+        '<span style="margin-left:auto"><b>'+g.assigned+'</b> 人</span></div>'+
+        (g.matched !== g.assigned
+          ? '<div class="qc-meta"><span>命中 '+g.matched+' 人，其中 '+(g.matched - g.assigned)+
+            ' 人已被更高优先级的组先挑走</span></div>' : '')+
+        '</div>').join('')+'</div>';
+    if (d.move_warning) {
+      h += '<div class="err" style="margin-top:14px"><b>⚠ 会动到已入组的人</b><br>'+esc(d.move_warning)+
+        '<br><br>涉及：'+d.would_move.slice(0, 12).map(m =>
+          esc(m.patient_no)+'（'+esc(m.from || '无')+' → '+esc(m.to)+'）').join('、')+
+        (d.would_move.length > 12 ? ' 等 '+d.would_move.length+' 人' : '')+'</div>';
+    }
+    h += '<div class="note-strip" style="margin-top:14px">'+esc(d.hint)+'</div>';
+    const foot = '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+      '<button class="primary" onclick="cohortApply(\''+esc(code)+'\','+(d.would_move.length ? 'true' : 'false')+')">'+
+      '确认执行入组</button>';
+    openDrawer('入组试算 · ' + code, '只算不写', h, foot);
+  } catch (e) { toast('试算失败：' + e.message, 7000); }
+}
+
+async function cohortApply(code, hasMoves) {
+  let regroup = false, reason = '';
+  if (hasMoves) {
+    regroup = confirm('本次会动到已入组的患者。\n\n' +
+      '把患者从一个臂挪到另一个臂是方案偏离——他们已经按原分组接受了干预、填了基线、走了随访，' +
+      '挪组会让那些数据挂到错误的臂上，而分析时看不出来。\n\n' +
+      '点「确定」= 同时重新分组已入组患者（需写明原因）\n' +
+      '点「取消」= 只新增入组，既有患者保持原样（推荐）');
+    if (regroup) {
+      reason = prompt('重新分组的原因（必填，会进留痕）：', '') || '';
+      if (!reason.trim()) { toast('必须写明原因'); return; }
+    }
+  }
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/cohort/enroll', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cohort_code: code, dry_run: false,
+        regroup_existing: regroup, reason: reason.trim() || null,
+        operator: localStorage.getItem(LS_OP) || null }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    closeDrawer();
+    toast('新入组 ' + d.newly_enrolled + ' 人' +
+      (d.regrouped ? '，重新分组 ' + d.regrouped + ' 人' : '') +
+      (d.kept_unchanged ? '，' + d.kept_unchanged + ' 人保持原样' : ''), 7000);
+    await loadCohorts();
+  } catch (e) { toast('执行失败：' + e.message, 7000); }
+}
+
+async function viewEnrollments(code) {
+  try {
+    const d = await getJSON('/api/platform/enrollments?cohort=' + encodeURIComponent(code) + '&limit=1000');
+    const rows = d.enrollments || [];
+    openDrawer('入组名单 · ' + code, '共 ' + rows.length + ' 条',
+      rows.length ? '<div class="table-wrap"><table><thead><tr><th>门诊号</th><th>姓名</th>'+
+        '<th>性别</th><th>年龄</th><th>分组</th><th>状态</th><th>来源</th><th>入组时间</th><th></th></tr></thead><tbody>'+
+        rows.map(r => '<tr><td>'+esc(r.patient_no)+'</td><td>'+esc(r.patient_name || '--')+'</td>'+
+          '<td>'+({M:'男',F:'女'}[r.gender] || '--')+'</td><td>'+(r.age == null ? '--' : r.age)+'</td>'+
+          '<td>'+esc(r.group_name || r.group_code || '--')+'</td>'+
+          '<td>'+esc(r.status_label)+'</td>'+
+          '<td>'+(r.assigned_by === 'manual' ? '手工' : '规则')+'</td>'+
+          '<td>'+esc((r.enrolled_at || '').slice(0, 10))+'</td>'+
+          '<td><button class="link" onclick="enrollAdjust(\''+esc(code)+'\',\''+esc(r.patient_no)+'\')">调整</button></td>'+
+          '</tr>').join('')+'</tbody></table></div>'
+        : emptyBox('◇', '名单是空的', '先做一次试算并执行入组。'), '');
+  } catch (e) { toast('加载失败：' + e.message, 5000); }
+}
+
+function enrollAdjust(cohort, patientNo) {
+  const c = (S.cohorts || []).find(x => x.code === cohort) || {};
+  openModal('调整归属 · ' + patientNo, '手工调整必须写明依据，会进留痕',
+    '<div class="field"><label>操作</label><select id="eaAct">'+
+      '<option value="regroup">改到别的组</option>'+
+      '<option value="screen_out">标为筛查排除</option>'+
+      '<option value="withdraw">标为退出</option>'+
+      '<option value="reenroll">重新入组</option></select></div>'+
+    '<div class="field"><label>目标分组<span class="sub">仅改组/重新入组需要</span></label>'+
+      '<select id="eaGroup">'+(c.groups || []).map(g =>
+        '<option value="'+esc(g.code)+'">'+esc(g.name)+'（'+esc(g.kind_label)+'）</option>').join('')+'</select></div>'+
+    '<div class="field"><label>依据（必填）</label><textarea id="eaReason" style="height:70px"></textarea></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="eaGo">确认</button>');
+  document.getElementById('eaGo').onclick = async () => {
+    const reason = document.getElementById('eaReason').value.trim();
+    if (!reason) { toast('必须写明依据'); return; }
+    const btn = document.getElementById('eaGo'); btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/enrollment/transition', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cohort_code: cohort, patient_no: patientNo,
+          action: document.getElementById('eaAct').value,
+          group_code: document.getElementById('eaGroup').value,
+          reason: reason, operator: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); closeDrawer();
+      toast('已调整：' + patientNo + ' → ' + (d.to_group || '无组') + '（' + d.status + '）', 5000);
+      await loadCohorts();
+    } catch (e) { btn.disabled = false; btn.textContent = '确认'; toast(e.message, 6000); }
+  };
+}
+
+async function cohortLog(code) {
+  try {
+    const d = await getJSON('/api/platform/cohorts?code=' + encodeURIComponent(code) + '&withLog=1');
+    const log = (d.cohorts[0] || {}).log || [];
+    openDrawer('入组留痕 · ' + code, '只增不改 · 最近 200 条',
+      log.length ? '<ul class="qc-log">'+log.map(l =>
+        '<li><b>'+esc(ENROLL_ACTION_LABEL[l.action] || l.action)+'</b>'+
+        (l.patient_no ? ' · '+esc(l.patient_no) : '')+
+        (l.from || l.to ? ' · '+esc(l.from || '无')+' → '+esc(l.to || '无') : '')+
+        ' · '+esc(l.operator || '未署名')+' · '+esc(l.at)+
+        (l.reason ? '<br><span style="color:#82909c">'+esc(l.reason)+'</span>' : '')+'</li>').join('')+'</ul>'
+        : '<div style="color:#9ca3af;padding:20px">暂无记录</div>', '');
+  } catch (e) { toast('加载失败：' + e.message, 5000); }
+}
 
 /* ================================================================ M17 知情同意与项目资料 (方案 §2.4) */
 const DOC_TYPE_LABEL = { consent:'知情同意书', protocol:'研究方案', ethics:'伦理批件',
