@@ -83,6 +83,7 @@ import threading
 import traceback
 import urllib.request
 import urllib.parse
+import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import pymysql
@@ -8940,6 +8941,476 @@ def export_job_fetch(job_no, operator=None, source_ip=None):
         conn.close()
 
 
+# ============ 随访平台 1.1 M22 (大模型健康咨询 + 高风险分诊, 方案 §4.5(1) / §4.4(2)) ============
+#
+# 这是整个平台风险最高的一块 —— 输出直接给患者看, 而患者会照做。
+# 方案自己写了两条硬要求, 正好是这块的骨架:
+#   §4.5(1) "不提供诊断与处方, 所有对话全程留痕可审核"
+#   §4.4(2) "高风险场景下**立即中断常规智能回复**, 触发预警提示、人工干预与转接"
+#
+# 由此定下四条不可让步的规则:
+#
+# 1) **急症分诊前置且确定性, 不经过模型。**
+#    把"我胸口压着痛、左手发麻"发给模型然后指望它说对, 是把一条命押在采样器上 ——
+#    同一个问题问两次可能得到不同答案。所以分诊是代码里的正则, 在调模型**之前**跑;
+#    命中急症/自伤就直接返回固定话术并落预警, **根本不调模型**。
+#
+# 2) **不把患者身份发给第三方。** DeepSeek 是外部服务。发出去之前把门诊号、身份证、
+#    手机号、姓名从问题里剔掉 —— 咨询内容本身对模型有用, 患者是谁对它没用。
+#
+# 3) **模型的回答要再过一遍内容体检。** 复用 M15 那套(剂量数字/可自行停药/不必就医)。
+#    模型答得再流畅, 只要冒出一个剂量数字就得拦下 —— 那正是我们最怕它说的东西。
+#
+# 4) **全程留痕。** 问了什么、分诊判成什么、有没有调模型、答了什么、拦没拦、多久。
+#    这既是合规要求, 也是唯一能事后发现"模型开始乱说了"的途径。
+
+# 分诊等级。数字越小越紧急, 前两级中断常规回复。
+TRIAGE_LEVELS = {
+    'emergency':   (0, '急症', True),
+    'self_harm':   (0, '自伤/自杀风险', True),
+    'deterioration': (1, '病情恶化', False),
+    'med_change':  (2, '用药调整请求', False),
+    'diagnosis':   (2, '求诊断', False),
+    'normal':      (9, '一般咨询', False),
+}
+
+# 分诊规则。判断依据是"患者照着模型的回答做, 最坏会发生什么"。
+# 这些正则宁可多报不可漏报 —— 误判成急症的代价是让人多跑一趟医院,
+# 漏判的代价是有人在家里等着。
+TRIAGE_RULES = [
+    ('self_harm', r'(自杀|轻生|不想活|活不下去|不想活了|结束(自己的)?生命|了结自己|'
+                  r'伤害自己|自残|割腕|跳楼|一了百了|活着没(有)?意思|活着没(有)?意义|想死)'),
+
+    # 急症。**部位和症状之间允许插字** —— 原先写死"胸口痛", 结果"胸口很痛""胸口有点疼"
+    # 全漏了, 而那恰恰是中文里说胸痛最自然的说法。漏一句的后果是有人在家里等着。
+    ('emergency',
+     r'('
+     r'(胸口|胸部|胸前|心口|心前区|前胸)[^。！？，,]{0,4}(痛|疼|闷|压|憋|难受|不适)'
+     r'|胸痛|胸闷|心绞痛'
+     r'|(呼吸|喘气|气)[^。！？，,]{0,3}(困难|费力|不上来|不过来)|喘不(上|过)(来|气)|上不来气'
+     r'|(意识|神志)[^。！？，,]{0,3}(不清|模糊|丧失)|昏迷|晕倒|昏过去|不省人事'
+     r'|抽搐|惊厥|抽风'
+     r'|(出|流)血[^。！？，,]{0,4}(止不住|不止|停不下)|(鼻|牙龈|伤口)?血[^。！？，,]{0,3}止不住'
+     r'|吐血|咯血|呕血|便血|大出血'
+     r'|(剧烈|突然|从没这么|特别厉害的?)[^。！？，,]{0,3}(头痛|头疼)'
+     r'|(头痛|头疼)[^。！？，,]{0,4}(剧烈|欲裂|要裂|裂开|从没这么|受不了|厉害得)'
+     r'|(半边|一侧|左边|右边|左半|右半|一边)[^。！？，,]{0,5}(麻|无力|没(有)?力气|不能动|动不了|抬不起|瘫)'
+     r'|偏瘫|嘴(角)?歪|口角歪斜|说话[^。！？，,]{0,3}(不清|说不出|含糊)|突然(失明|失语|看不见)'
+     r'|高(热|烧)[^。！？，,]{0,3}不退|体温[^。！？]{0,4}4[01]'
+     r'|血压[^。！？]{0,4}(2[0-9][0-9]|1[89][0-9])'
+     r')'),
+
+    ('deterioration', r'(越来越(严重|重|厉害|差|不好)|(持续|一直)[^。！？，,]{0,3}(加重|不缓解|不见好|没好)|'
+                      r'比(以前|之前|上次)[^。！？，,]{0,4}(差|重|严重)|反复发作|加重了|恶化)'),
+
+    # 用药调整。同样按结构匹配 —— 写死"能不能停药"会漏掉"能不能把药停了""这药还要吃吗"。
+    # 宁可多报: 误报的代价只是让人去问医生, 那本来就是对的。
+    ('med_change', r'((停|减|加|换|不吃|少吃|多吃|不用吃|别吃)[^。！？]{0,6}药|'
+                   r'药[^。！？]{0,6}(停|减|加|换|不吃|少吃|多吃|停了|减半|加倍)|'
+                   r'(剂量|用量)[^。！？]{0,6}(改|调|加|减|变)|'
+                   r'还(要|需要|得)(不要)?(继续)?吃|'
+                   r'吃(多少|几片|几粒|几次|多久)|加到多少|减到多少)'),
+
+    # 求诊断。"我这是不是糖尿病"里没有"什么病"三个字, 原来的写法抓不到。
+    ('diagnosis', r'((我|这)[^。！？，,]{0,4}是不是[^。！？，,]{0,8}(病|症|癌|炎|梗|瘤|综合征)|'
+                  r'我这是(什么|啥)|(帮|给)我(看看|诊断|判断)(一下)?(是什么|什么病|是不是)?|'
+                  r'我(得|患)了(什么|啥)|确诊(了)?(吗|没)|我是不是(有|得了|患了))'),
+]
+
+
+# 急症/自伤的固定话术。**不经过模型** —— 这几句必须每次一模一样。
+# 求助方式只写 120 和本院随访医生这两个确定有效的; 心理援助热线号码由院方在
+# CRISIS_HOTLINE 里配 —— 硬编码一个可能已经停用的号码, 会让正在危机中的人打到空号。
+CRISIS_HOTLINE = os.environ.get('PLATFORM_CRISIS_HOTLINE') or ''
+TRIAGE_REPLIES = {
+    'emergency': (
+        '您描述的情况可能需要**立即就医**，我不能替代急诊判断。\n\n'
+        '请现在就做这两件事：\n'
+        '1. 拨打 **120**，或让身边的人立刻送您去最近医院的急诊；\n'
+        '2. 如果身边有人，请告诉他们您现在的不舒服。\n\n'
+        '我已经把这条消息标记出来并通知了随访团队。在见到医生之前，请不要自行用药。'),
+    'self_harm': (
+        '我看到您现在很难受。这样的念头出现的时候，人是真的很痛苦，您愿意说出来，这本身很不容易。\n\n'
+        '请您现在联系一个能马上到您身边的人 —— 家人、朋友，或者拨打 **120**。\n'
+        '{hotline}'
+        '如果此刻有立即伤害自己的想法，请立刻拨打 120 或到最近医院的急诊。\n\n'
+        '我已经通知了您的随访团队，会有人尽快联系您。您不需要一个人扛着。'),
+    'med_change': (
+        '用药怎么调整，我不能给建议 —— 剂量因人而异，还要看您最近的检查结果和其他在用的药，'
+        '这些只有您的医生手上有。\n\n'
+        '请**不要自行停药或改剂量**：有些药突然停用会让病情反弹，有些会有停药反应。\n\n'
+        '请联系您的随访医生。如果是因为有不舒服才想停药，把那个不舒服描述给我，我可以先帮您了解一般情况。'),
+    'diagnosis': (
+        '我不能做诊断 —— 诊断要结合体格检查、化验和影像，还要医生当面看，这些我都做不到，'
+        '猜一个反而会耽误您。\n\n'
+        '如果您想了解某个症状一般和哪些情况有关、什么时候该去看医生，我可以说明；'
+        '但"您是不是得了某个病"这个问题，请交给您的医生。'),
+}
+
+CONSULT_DISCLAIMER = ('本回答由 AI 生成，仅供健康科普参考，**不构成诊断、处方或治疗建议**。'
+                      '用药与治疗方案请遵医嘱；若症状加重或出现新的不适，请及时联系随访医生或就近就医。')
+
+CONSULT_SYSTEM_PROMPT = """你是一家医院随访平台上的健康科普助手，回答对象是正在随访中的患者本人。
+
+绝对不能做的事：
+1. 不做诊断。不要说"你这是XX病""考虑是XX"。
+2. 不给处方、不给具体剂量、不建议增减停换任何药物。不要写出任何"数字+mg/片/粒"的用法。
+3. 不要说"不用去医院""observe即可""不必就医"这类会让人延误就诊的话。
+4. 不要做绝对承诺（"一定能好""保证没事""无副作用"）。
+
+要做的事：
+- 用通俗的中文解释症状一般与什么有关、日常可以注意什么。
+- 每次回答结尾，明确写出"出现哪些情况需要联系随访医生或就医"。
+- 不确定的就说不确定，并建议问医生。宁可少说，不要编。
+- 简洁，控制在 400 字以内，不要用夸张语气。
+
+你面对的是真实患者，他们会照着你的话做。"""
+
+CONSULT_MAX_CHARS = 800
+CONSULT_TIMEOUT = 25
+
+
+def _scrub_identifiers(text):
+    """把患者身份从要发给第三方的文本里剔掉。返回 (清洗后文本, 命中的类型列表)。
+
+    咨询内容本身对模型有用, "患者是谁"对它没有任何用处 —— 发出去只是白白扩大暴露面。
+    """
+    hits = []
+    out = text or ''
+    subs = [
+        ('身份证号', r'\b[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b', '[身份证已隐去]'),
+        ('手机号', r'\b1[3-9]\d{9}\b', '[手机号已隐去]'),
+        ('门诊号', r'\b[A-Z]{0,3}\d{6,12}\b', '[编号已隐去]'),
+        ('邮箱', r'\b[\w.+-]+@[\w-]+\.[\w.]+\b', '[邮箱已隐去]'),
+    ]
+    for label, pat, repl in subs:
+        new = re.sub(pat, repl, out)
+        if new != out:
+            hits.append(label)
+            out = new
+    return out, hits
+
+
+def triage_message(text):
+    """确定性分诊。**在调模型之前跑**, 命中前两级就中断。
+
+    返回 {level, label, interrupt, matched, reply}。
+    宁可多报不可漏报: 误判成急症的代价是让人多跑一趟医院, 漏判的代价是有人在家里等着。
+    """
+    t = str(text or '')
+    for level, pat in TRIAGE_RULES:
+        m = re.search(pat, t)
+        if m:
+            rank, label, interrupt = TRIAGE_LEVELS[level]
+            reply = TRIAGE_REPLIES.get(level)
+            if level == 'self_harm':
+                hot = ('如果愿意，也可以拨打心理援助热线 **{}**。\n'.format(CRISIS_HOTLINE)
+                       if CRISIS_HOTLINE else '')
+                reply = reply.format(hotline=hot)
+            return {'level': level, 'rank': rank, 'label': label, 'interrupt': interrupt,
+                    'matched': m.group(0), 'reply': reply}
+    return {'level': 'normal', 'rank': 9, 'label': '一般咨询', 'interrupt': False,
+            'matched': None, 'reply': None}
+
+
+def _call_deepseek(question, history=None):
+    """调 DeepSeek。返回 (answer, meta, error)。没配 key 时优雅降级, 不抛异常。"""
+    key = os.environ.get('DEEPSEEK_API_KEY') or ''
+    if not key:
+        return None, None, ('未配置 DEEPSEEK_API_KEY, 健康咨询暂不可用。'
+                            '密钥应写进 /opt/suifang/wx.env(600 权限), 不要写进代码或仓库')
+    base = os.environ.get('DEEPSEEK_BASE_URL') or 'https://api.deepseek.com'
+    model = os.environ.get('DEEPSEEK_MODEL') or 'deepseek-chat'
+    msgs = [{'role': 'system', 'content': CONSULT_SYSTEM_PROMPT}]
+    for h in (history or [])[-6:]:
+        if h.get('role') in ('user', 'assistant') and h.get('content'):
+            msgs.append({'role': h['role'], 'content': str(h['content'])[:1500]})
+    msgs.append({'role': 'user', 'content': question})
+    payload = json.dumps({'model': model, 'messages': msgs,
+                          'temperature': 0.3, 'max_tokens': 900,
+                          'stream': False}).encode('utf-8')
+    req = urllib.request.Request(base.rstrip('/') + '/chat/completions', data=payload,
+                                 headers={'Content-Type': 'application/json',
+                                          'Authorization': 'Bearer ' + key})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=CONSULT_TIMEOUT) as r:
+            data = json.loads(r.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode('utf-8', 'replace')[:200]
+        except Exception:
+            pass
+        return None, None, 'DeepSeek 返回 HTTP {}: {}'.format(e.code, body)
+    except Exception as e:
+        return None, None, 'DeepSeek 调用失败: {}'.format(e)
+    try:
+        answer = data['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        return None, None, 'DeepSeek 返回格式异常: {}'.format(str(data)[:200])
+    usage = data.get('usage') or {}
+    return answer, {'model': data.get('model') or model,
+                    'prompt_tokens': usage.get('prompt_tokens'),
+                    'completion_tokens': usage.get('completion_tokens'),
+                    'elapsed_ms': int((time.time() - t0) * 1000)}, None
+
+
+def ensure_platform_consult_tables():
+    """M22: 咨询留痕 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_consult (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                session_id VARCHAR(40) DEFAULT NULL,
+                patient_no VARCHAR(64) DEFAULT NULL,
+                question MEDIUMTEXT NOT NULL COMMENT '患者原话(库里留原文, 发给第三方的是清洗过的)',
+                sent_text MEDIUMTEXT DEFAULT NULL COMMENT '实际发给模型的文本(已剔除身份信息)',
+                scrubbed JSON DEFAULT NULL COMMENT '剔掉了哪几类身份信息',
+                triage_level VARCHAR(24) DEFAULT 'normal',
+                triage_matched VARCHAR(120) DEFAULT NULL,
+                interrupted TINYINT(1) DEFAULT 0 COMMENT '是否中断了常规回复(急症/自伤)',
+                answer MEDIUMTEXT DEFAULT NULL,
+                answer_source VARCHAR(16) DEFAULT NULL COMMENT 'triage(固定话术)/model/blocked',
+                blocked_findings JSON DEFAULT NULL COMMENT '模型回答被内容体检拦下的条目',
+                model VARCHAR(64) DEFAULT NULL,
+                prompt_tokens INT DEFAULT NULL,
+                completion_tokens INT DEFAULT NULL,
+                elapsed_ms INT DEFAULT NULL,
+                error VARCHAR(500) DEFAULT NULL,
+                reviewed_by VARCHAR(64) DEFAULT NULL,
+                review_note VARCHAR(500) DEFAULT NULL,
+                reviewed_at DATETIME DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_patient (patient_no, created_at),
+                INDEX idx_triage (triage_level),
+                INDEX idx_session (session_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+              COMMENT='随访平台 M22 健康咨询留痕 (方案 §4.5(1) 要求全程可审核)'
+        """)
+        print('[启动] platform_consult 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_consult_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def _consult_alarm(patient_no, level, question):
+    """高风险落一条预警, 让随访团队看得到。幂等靠 dedup_key。"""
+    if not patient_no:
+        return
+    try:
+        import hashlib
+        key = 'consult:{}:{}:{}'.format(level, patient_no,
+                                        hashlib.md5(question.encode('utf-8')).hexdigest()[:12])
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO platform_alarm
+                       (patient_no, alarm_type, severity, payload_json, source_chain, dedup_key,
+                        status, occurred_at)
+                       VALUES (%s,%s,'crit',%s,'consult',%s,'new',NOW())
+                       ON DUPLICATE KEY UPDATE id=id""",
+                    (patient_no, 'consult_' + level,
+                     json.dumps({'rule': 'triage', 'level': level,
+                                 'excerpt': question[:120]}, ensure_ascii=False), key))
+        cur.close(); conn.close()
+    except Exception:
+        traceback.print_exc()
+
+
+def consult_ask(body):
+    """患者提问 -> 分诊 -> (必要时)调模型 -> 内容体检 -> 落痕。
+
+    {question, patient_no?, session_id?, history?[]}
+    """
+    q = str(body.get('question') or '').strip()
+    if not q:
+        return None, '问题不能为空'
+    if len(q) > CONSULT_MAX_CHARS:
+        return None, '问题过长(超过 {} 字), 请拆成几次问'.format(CONSULT_MAX_CHARS)
+    patient_no = str(body.get('patient_no') or '').strip() or None
+    session_id = str(body.get('session_id') or '').strip() or \
+        datetime.datetime.now().strftime('C%Y%m%d%H%M%S%f')[:22]
+
+    ensure_platform_consult_tables()
+    tri = triage_message(q)
+    sent, scrubbed = _scrub_identifiers(q)
+
+    answer = source = model = err = None
+    ptok = ctok = ms = None
+    blocked = []
+
+    if tri['interrupt']:
+        # §4.4(2): 高风险立即中断常规智能回复。**不调模型。**
+        answer, source = tri['reply'], 'triage'
+        _consult_alarm(patient_no, tri['level'], q)
+    elif tri['level'] in ('med_change', 'diagnosis'):
+        # 这两类不是急症, 但也不该让模型去回答 —— 它一旦顺着答, 就是在给处方/下诊断
+        answer, source = TRIAGE_REPLIES[tri['level']], 'triage'
+    else:
+        raw, meta, err = _call_deepseek(sent, body.get('history'))
+        if err:
+            answer, source = None, None
+        else:
+            findings = scan_edu_content(raw)
+            blocked = [f for f in findings if f['level'] == 'block']
+            if blocked:
+                # 模型答得再流畅, 冒出剂量数字或"可自行停药"就得拦 —— 那正是最怕它说的
+                answer = ('这个问题涉及用药剂量或治疗调整，我不能回答 —— '
+                          '这类建议必须由了解您完整病情的医生给出。请联系您的随访医生。\n\n'
+                          '如果您想了解的是"这个药一般是干什么的""有哪些常见不适"，可以换个说法再问我。')
+                source = 'blocked'
+            else:
+                answer, source = raw, 'model'
+            model = (meta or {}).get('model')
+            ptok, ctok, ms = ((meta or {}).get('prompt_tokens'),
+                              (meta or {}).get('completion_tokens'),
+                              (meta or {}).get('elapsed_ms'))
+        if tri['level'] == 'deterioration' and answer:
+            # 病情恶化不中断, 但把就医提示顶到最前面, 并落预警
+            answer = ('您提到症状在加重 —— 这种情况建议尽快联系随访医生或到院复诊，'
+                      '不要只靠自行观察。下面是一些一般性说明，供您参考：\n\n' + answer)
+            _consult_alarm(patient_no, tri['level'], q)
+
+    if answer:
+        answer = answer.rstrip() + '\n\n---\n' + CONSULT_DISCLAIMER
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO platform_consult
+            (session_id, patient_no, question, sent_text, scrubbed, triage_level, triage_matched,
+             interrupted, answer, answer_source, blocked_findings, model,
+             prompt_tokens, completion_tokens, elapsed_ms, error)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (session_id, patient_no, q, sent if source == 'model' or blocked else None,
+                     json.dumps(scrubbed, ensure_ascii=False) if scrubbed else None,
+                     tri['level'], tri['matched'], 1 if tri['interrupt'] else 0,
+                     answer, source, json.dumps(blocked, ensure_ascii=False) if blocked else None,
+                     model, ptok, ctok, ms, (err or '')[:500] or None))
+        cid = cur.lastrowid
+        cur.close()
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+    if err:
+        return {'ok': False, 'id': cid, 'session_id': session_id,
+                'triage': {'level': tri['level'], 'label': tri['label']},
+                'error': err,
+                'fallback': ('健康咨询暂时不可用。如果是紧急情况请拨打 120；'
+                             '其他问题请联系您的随访医生。')}, None
+    return {'ok': True, 'id': cid, 'session_id': session_id,
+            'answer': answer,
+            'answer_source': source,
+            'triage': {'level': tri['level'], 'label': tri['label'],
+                       'interrupted': tri['interrupt'], 'matched': tri['matched']},
+            'scrubbed': scrubbed,
+            'blocked_findings': blocked,
+            'model': model, 'elapsed_ms': ms,
+            'note': ('高风险内容已中断常规回复并通知随访团队' if tri['interrupt']
+                     else ('模型回答含高危表述, 已拦下并改为转人工' if source == 'blocked'
+                           else None))}, None
+
+
+def query_consults(patient_no=None, level=None, session_id=None, unreviewed=False, limit=200):
+    """咨询留痕。方案 §4.5(1) 要求"全程留痕可审核" —— 这是它的落点。"""
+    ensure_platform_consult_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if patient_no:
+            where.append('patient_no=%s'); params.append(patient_no)
+        if level:
+            where.append('triage_level=%s'); params.append(level)
+        if session_id:
+            where.append('session_id=%s'); params.append(session_id)
+        if unreviewed:
+            where.append('reviewed_at IS NULL')
+        params.append(int(limit))
+        cur.execute("""SELECT id, session_id, patient_no, question, sent_text, scrubbed,
+                              triage_level, triage_matched, interrupted, answer, answer_source,
+                              blocked_findings, model, prompt_tokens, completion_tokens,
+                              elapsed_ms, error, reviewed_by, review_note, reviewed_at, created_at
+                       FROM platform_consult WHERE {} ORDER BY id DESC LIMIT %s""".format(
+                           ' AND '.join(where)), params)
+        cols = ['id', 'session_id', 'patient_no', 'question', 'sent_text', 'scrubbed',
+                'triage_level', 'triage_matched', 'interrupted', 'answer', 'answer_source',
+                'blocked_findings', 'model', 'prompt_tokens', 'completion_tokens',
+                'elapsed_ms', 'error', 'reviewed_by', 'review_note', 'reviewed_at', 'created_at']
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            for k in ('reviewed_at', 'created_at'):
+                if d.get(k) is not None and hasattr(d[k], 'strftime'):
+                    d[k] = d[k].strftime('%Y-%m-%d %H:%M:%S')
+            for k in ('scrubbed', 'blocked_findings'):
+                if isinstance(d.get(k), str):
+                    try:
+                        d[k] = json.loads(d[k])
+                    except ValueError:
+                        pass
+            d['interrupted'] = bool(d['interrupted'])
+            d['triage_label'] = TRIAGE_LEVELS.get(d['triage_level'], (9, d['triage_level'], False))[1]
+            d['source_label'] = {'triage': '固定话术(未调模型)', 'model': '模型回答',
+                                 'blocked': '模型回答被拦'}.get(d['answer_source'], d['answer_source'])
+            out.append(d)
+        cur.execute("SELECT triage_level, COUNT(*) FROM platform_consult GROUP BY triage_level")
+        by_level = {a: int(b) for a, b in cur.fetchall()}
+        cur.execute("SELECT COUNT(*) FROM platform_consult WHERE interrupted=1")
+        n_int = int(cur.fetchone()[0] or 0)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'consults': out, 'by_level': by_level,
+                'interrupted_total': n_int,
+                'levels': {k: v[1] for k, v in TRIAGE_LEVELS.items()},
+                'llm_configured': bool(os.environ.get('DEEPSEEK_API_KEY')),
+                'crisis_hotline': CRISIS_HOTLINE or None,
+                'hotline_note': None if CRISIS_HOTLINE else
+                    ('未配置心理援助热线(PLATFORM_CRISIS_HOTLINE)。自伤风险的回复目前只给 120 '
+                     '和本院随访医生 —— 这两个确定有效。刻意不硬编码一个可能已停用的号码: '
+                     '正在危机中的人打到空号, 比不给号码更糟')}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def consult_review(body):
+    """医护复核一条咨询 {id, operator, note}。"""
+    try:
+        cid = int(body.get('id'))
+    except (TypeError, ValueError):
+        return None, 'id 必填且为整数'
+    op = str(body.get('operator') or '').strip()
+    if not op:
+        return None, '复核必须署名'
+    ensure_platform_consult_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT id FROM platform_consult WHERE id=%s', (cid,))
+        if not cur.fetchone():
+            cur.close()
+            return None, '咨询记录不存在: {}'.format(cid)
+        cur.execute("""UPDATE platform_consult SET reviewed_by=%s, review_note=%s,
+                       reviewed_at=NOW() WHERE id=%s""",
+                    (op, str(body.get('note') or '')[:500] or None, cid))
+        cur.close()
+        return {'ok': True, 'id': cid, 'reviewed_by': op}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -10062,6 +10533,18 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/consults':
+            lv = (query.get('level') or [None])[0]
+            if lv and lv not in TRIAGE_LEVELS:
+                self._send_json(400, {'ok': False,
+                                      'error': 'level 必须是 {} 之一'.format('/'.join(TRIAGE_LEVELS))}); return
+            result, err = query_consults(
+                patient_no=(query.get('patientNo') or [None])[0], level=lv,
+                session_id=(query.get('session') or [None])[0],
+                unreviewed=(query.get('unreviewed') or ['0'])[0] in ('1', 'true'),
+                limit=min(int((query.get('limit') or ['200'])[0] or 200), 500))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/exports':
             st = (query.get('status') or [None])[0]
             if st and st not in EXPORT_JOB_STATUSES:
@@ -10516,6 +10999,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'POST /api/platform/consult': '随访平台 M22: 健康咨询(急症分诊前置, 不调模型直接中断; 不给诊断处方)',
+                    'POST /api/platform/consult/triage': '随访平台 M22: 只跑高风险分诊({text}), 供语音随访等复用',
+                    'GET  /api/platform/consults': '随访平台 M22: 咨询留痕(全程可审核, ?level=&unreviewed=1)',
+                    'POST /api/platform/consult/review': '随访平台 M22: 医护复核一条咨询',
                     'POST /api/platform/export/job': '随访平台 M21: 建导出任务 (kind=full|pick|sdtm; 大样本走后台)',
                     'POST /api/platform/export/preview': '随访平台 M21: 变量挑选预览(不落任务)',
                     'GET  /api/platform/exports': '随访平台 M21: 导出记录(每次导出=一次患者数据出境)',
@@ -10736,6 +11223,22 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/consult':
+                # 患者提问入口。刻意不走写接口门禁 —— 这个接口将来要开给患者端小程序,
+                # 而患者手里不该有平台口令。风险由分诊+内容体检+留痕三道控制, 不靠口令。
+                result, err = consult_ask(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/consult/triage':
+                # 只跑分诊不调模型 —— 给别处(语音随访/问诊)复用同一套急症判定
+                if not body.get('text'):
+                    self._send_json(400, {'ok': False, 'error': '需要 text'}); return
+                self._send_json(200, dict(triage_message(str(body['text'])), ok=True))
+
+            elif pathname == '/api/platform/consult/review':
+                result, err = consult_review(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/export/job':
                 result, err = export_job_create(body)
@@ -11125,6 +11628,8 @@ if __name__ == '__main__':
         ensure_platform_push_tables()
         # M21: 导出任务 + 下载留痕 (idempotent)
         ensure_platform_export_tables()
+        # M22: 健康咨询留痕 (idempotent)
+        ensure_platform_consult_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -11176,6 +11681,9 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] POST /api/platform/consult                  随访平台 M22: 健康咨询(分诊前置)')
+    print('[端点] POST /api/platform/consult/triage           随访平台 M22: 高风险分诊')
+    print('[端点] GET  /api/platform/consults                 随访平台 M22: 咨询留痕')
     print('[端点] POST /api/platform/export/job               随访平台 M21: 建导出任务')
     print('[端点] GET  /api/platform/exports                  随访平台 M21: 导出记录')
     print('[端点] GET  /api/platform/export/download          随访平台 M21: 下载导出件(需口令)')

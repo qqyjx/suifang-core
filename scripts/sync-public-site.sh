@@ -200,6 +200,12 @@ patterns = [
     ('APPSECRET=<value>', re.compile(r'APPSECRET=\S+')),
     ('PLATFORM_TOKEN=<value>', re.compile(r'PLATFORM_TOKEN=\S+')),
     ('ssh-private-key-header', re.compile(r'-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----')),
+    # 大模型服务商的密钥格式几乎都是 sk- 开头的一长串(OpenAI/DeepSeek/Anthropic 同款)。
+    # 2026-08-03 加: 平台开始接 DeepSeek 做健康咨询, 密钥只存服务器 /opt/suifang/wx.env,
+    # 但这道闸门要防的是"有人为了调试把它临时贴进某个文件, 然后忘了删"。
+    ('llm-api-key', re.compile(r'\bsk-[A-Za-z0-9_\-]{20,}')),
+    ('anthropic-key', re.compile(r'\bsk-ant-[A-Za-z0-9_\-]{10,}')),
+    ('DEEPSEEK_API_KEY=<value>', re.compile(r'DEEPSEEK_API_KEY=\S+')),
 ]
 
 hits = []
