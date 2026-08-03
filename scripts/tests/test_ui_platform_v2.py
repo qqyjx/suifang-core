@@ -38,6 +38,8 @@ def clean():
        ("DELETE FROM platform_edu_material WHERE code LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_crf WHERE code LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_scale WHERE code LIKE %s",(PFX+'%',)),
+       ("DELETE FROM platform_push WHERE patient_no LIKE %s",(PFX+'%',)),
+       ("DELETE FROM platform_visit_followup WHERE patient_no LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_visit WHERE patient_no LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_flow_instance WHERE patient_no LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_flow WHERE code LIKE %s",(PFX+'%',)),
@@ -102,7 +104,7 @@ hs.upload_document({'code':PFX+'D','title':'XX研究知情同意书','doc_type':
 FLOW={'levels':['阶段','访视'],'anchor':'enroll',
       'nodes':[{'id':'s1','name':'术后早期','children':[
                  {'id':'v7','name':'术后7天','offset_days':7,'window':[-2,3],
-                  'items':[{'type':'scale','ref':PFX+'S'}]},
+                  'items':[{'type':'scale','ref':PFX+'S'},{'type':'edu','ref':PFX+'P'}]},
                  {'id':'v30','name':'术后1月','offset_days':30,'window':[-5,7],'items':[]}]},
                {'id':'s2','name':'术后中期','children':[
                  {'id':'v90','name':'术后3月','offset_days':90,'window':[-7,14],'items':[]}]}],
@@ -112,6 +114,10 @@ hs.upsert_flow({'code':PFX+'F','name':'术后康复随访','category':'术后康
 hs.flow_instantiate({'flow_code':PFX+'F','patient_no':PFX+'001',
                      'anchor_date':(today-datetime.timedelta(days=30)).strftime('%Y-%m-%d')})
 hs.trigger_offschedule({'patient_no':PFX+'001','flow_code':PFX+'F','node_id':'ae','note':'演示不良事件'})
+# M20: 一份**已发布**的患教材料(推送要用) + 一份草稿(验证推不出去)
+_ok,_ = hs.upsert_edu_material({'code':PFX+'P','title':'已发布患教','body':'规律作息，遵医嘱用药。',
+                                'topic':'disease','owner':'医生甲'})
+hs.edu_transition({'id':_ok['id'],'action':'publish','operator':'主任乙'})
 print('  数据已备好: 4 患者 / 1 量表(4 份填报) / 1 CRF / 1 宣教稿 / 1 知情同意书 / 1 流程(已分配)')
 
 srv, API = start_backend({'PLATFORM_DOC_DIR': DOCTMP, 'PLATFORM_TOKEN': TOKEN},
@@ -331,6 +337,56 @@ try:
         rows = page.inner_text('#visitTable')
         check('按超窗筛后只剩超窗的', '未到期' not in rows, rows[:150])
         page.select_option('#vsFilter', ''); page.wait_for_timeout(1200)
+
+        section('11c. 超窗跟进与推送 (M20)')
+        page.click('[data-ftab="visit"]'); page.wait_for_timeout(1800)
+        t = page.inner_text('#ftabVisit')
+        check('超窗按天数分档展示', '超窗分档' in t, t[:120])
+        check('说清了为什么分档', '还救得回来' in t or '混在一起' in t)
+        check('访视行可勾选', page.query_selector('[data-vsel]') is not None)
+        page.click('#vsSelAll'); page.wait_for_timeout(500)
+        n = page.inner_text('#vsSelN')
+        check('全选后计数更新', n != '0', n)
+        page.click('#vsFollowBtn'); page.wait_for_timeout(1000)
+        check('批量跟进对话框打开', page.query_selector('#fuAct') is not None)
+        page.select_option('#fuAct', 'lost'); page.wait_for_timeout(500)
+        md = page.inner_text('#modal')
+        check('选失访时给出重大判定的警示', '移出分析人群' in md, md[-200:])
+        check('说明会连带终止流程', '终止其整个随访流程' in md)
+        check('说明不能批量一点了事', '不能批量一点了事' in md)
+        page.select_option('#fuAct', 'reschedule'); page.wait_for_timeout(500)
+        check('改约时出现日期输入', page.is_visible('#fuDateWrap'))
+        check('说明窗口会平移保持宽窄', '保持原本宽窄' in page.inner_text('#modal'))
+        page.select_option('#fuAct', 'call'); page.wait_for_timeout(400)
+        page.fill('#fuResult', '已电话联系，约定本周来院')
+        page.click('#fuGo'); page.wait_for_timeout(2800)
+        check('批量跟进执行成功', '电话联系' in page.inner_text('#toast'),
+              page.inner_text('#toast')[:100])
+
+        page.click('[data-ftab="push"]'); page.wait_for_timeout(1800)
+        t = page.inner_text('#ftabPush')
+        check('明说通道没接', '推送通道' in t and '还没接' in t)
+        check('明说状态绝不会显示已发送', '绝不会显示' in t)
+        check('说清了后果', '比不做这个功能更糟' in t)
+        check('说明只有已发布的材料能推', '只有已发布的宣教材料能推' in t)
+        check('点明这是那道闸门的落点', '装饰' in t)
+        page.click('#newPushBtn'); page.wait_for_timeout(1200)
+        check('推送对话框打开', page.query_selector('#pcType') is not None)
+        page.select_option('#pcType', 'edu'); page.wait_for_timeout(600)
+        check('选患教时出现材料下拉', page.is_visible('#pcEduWrap'))
+        check('下拉只列已发布的', '已发布患教' in page.inner_text('#pcEduWrap'),
+              page.inner_text('#pcEduWrap')[:120])
+        check('并说明草稿推不出去', '推不出去' in page.inner_text('#modal'))
+        dlg = []
+        page.on('dialog', lambda d: (dlg.append(d.message), d.dismiss()))
+        page.fill('#pcPno', PFX + '001')
+        page.click('#pcGo'); page.wait_for_timeout(2500)
+        check('试算后弹确认框', dlg and '位患者' in dlg[0], (dlg[:1] or [''])[0][:80])
+        check('确认框里带通道未接的警告', dlg and '没有真的发出去' in dlg[0])
+        st = page.evaluate("(async()=>{const r=await fetch('%s/api/platform/pushes?patientNo=%s001');"
+                           "return (await r.json()).count})()" % (API, PFX))
+        check('取消后没有入队', st == 0, st)
+        page.click('#mdClose'); page.wait_for_timeout(400)
 
         section('12. 系统管理')
         page.click('[data-page="settings"]'); page.wait_for_timeout(1500)

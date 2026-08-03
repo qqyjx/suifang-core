@@ -363,6 +363,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         <div class="tabs">
           <button class="tab active" data-ftab="flow">流程库 <span id="tabFlowN">0</span></button>
           <button class="tab" data-ftab="visit">访视看板 <span id="tabVisitN">0</span></button>
+          <button class="tab" data-ftab="push">推送队列 <span id="tabPushN">0</span></button>
           <button class="tab" data-ftab="plan">简易计划 (M5) <span id="tabPlanN">0</span></button>
         </div>
         <div id="ftabFlow">
@@ -386,6 +387,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         </div>
         <div id="ftabVisit" style="display:none">
           <div class="stats" id="visitStats"></div>
+          <div id="overdueBands" style="margin-bottom:14px"></div>
           <div class="card panel">
             <div class="panel-head"><h3>访视看板</h3>
               <div class="head-tools">
@@ -393,9 +395,38 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
                   <option value="">全部</option><option value="overdue">已超窗</option>
                   <option value="due">窗口内待完成</option><option value="pending">未到期</option>
                   <option value="done">已完成</option></select>
+                <button class="link" id="vsSelAll">全选本页</button>
+                <button class="link" id="vsFollowBtn">批量跟进 <span id="vsSelN">0</span></button>
                 <button class="link" id="vsRefresh">刷新状态</button>
               </div></div>
             <div class="table-wrap"><table id="visitTable"></table></div>
+          </div>
+        </div>
+        <div id="ftabPush" style="display:none">
+          <div class="note-strip">
+            <b>推送通道（短信／微信）还没接。</b>
+            这里做的是推送记录与队列：决定了发什么、发给谁。状态一律是<b>「待发送」，绝不会显示「已发送」</b>——
+            有人看到「已推送 200 条」就会以为患者收到了，那比不做这个功能更糟。接通道后由发送器改状态。<br>
+            <b>只有已发布的宣教材料能推。</b>这是「AI 产出一律草稿，必须署名审核发布后才能被随访计划调用」
+            那道闸门真正起作用的地方——推送接口不校验，前面所有约束都是装饰。
+          </div>
+          <div class="head-tools" style="margin-bottom:12px">
+            <button class="white-btn" id="newPushBtn" style="background:var(--green);color:#fff;border:0">＋ 手动推送</button>
+            <select id="pushStatus" class="mini"><option value="">全部状态</option><option value="queued">待发送</option><option value="sent">已发送</option><option value="failed">失败</option></select>
+            <button class="link" id="pushReload">刷新</button>
+          </div>
+          <div class="card panel"><div class="table-wrap"><table id="pushTable"></table></div></div>
+          <div class="card panel" style="margin-top:16px">
+            <div class="panel-head"><h3>方案 §4.5 逐条对照</h3></div>
+            <div class="table-wrap"><table><thead><tr><th>要求</th><th>状态</th><th>说明</th></tr></thead><tbody>
+              <tr><td>实时统计当日访视人数、超窗人数</td><td><span class="tag green">已建</span></td><td>超窗按 1-7 天／8-30 天／30 天以上分档——还救得回来的和多半已失访的，跟进方式不一样，混在一起看会把前者淹掉</td></tr>
+              <tr><td>对超窗患者自动预警</td><td><span class="tag amber">部分</span></td><td>看板上标红并分档，但没有主动推送给研究者（通道未接）</td></tr>
+              <tr><td>研究者批量跟进处理</td><td><span class="tag green">已建</span></td><td>电话／改约／已到院／豁免／失访。<b>逐条给结果</b>，20 条里坏了 3 条要知道是哪 3 条</td></tr>
+              <tr><td>自动推送（按计划发用药提醒、患教内容）</td><td><span class="tag amber">部分</span></td><td>访视上配的患教内容可一键入队；定时触发器与通道未接</td></tr>
+              <tr><td>手动推送（单患者／分组／全量群发）</td><td><span class="tag amber">部分</span></td><td>三种范围都能算能入队，dry_run 默认开——全量群发点错一次收不回来</td></tr>
+              <tr><td>短信、微信多渠道触达</td><td><span class="tag grey">未建设</span></td><td><b>通道没接</b>。记录入队 ≠ 患者收到</td></tr>
+              <tr><td>专病分组定向宣教</td><td><span class="tag green">已建</span></td><td>按 M18 的分组推，材料按病种/主题检索</td></tr>
+            </tbody></table></div>
           </div>
         </div>
         <div id="ftabPlan" style="display:none">
@@ -846,7 +877,7 @@ const S = {
   qcFindings: [], qcQueries: [], cmpData: null,
   crfs: [], crfFill: null, crfDraft: null,
   edu: [], eduDraft: null,
-  cohorts: [], flows: [], visits: [],
+  cohorts: [], flows: [], visits: [], visitSel: new Set(), pushes: [],
   docs: [], consents: [], docMeta: null,
   sqFields: null, sqConds: [], sqResult: null,
 };
@@ -2672,8 +2703,10 @@ document.querySelectorAll('[data-ftab]').forEach(b => b.onclick = () => {
   document.querySelectorAll('[data-ftab]').forEach(x => x.classList.toggle('active', x === b));
   document.getElementById('ftabFlow').style.display = t === 'flow' ? '' : 'none';
   document.getElementById('ftabVisit').style.display = t === 'visit' ? '' : 'none';
+  document.getElementById('ftabPush').style.display = t === 'push' ? '' : 'none';
   document.getElementById('ftabPlan').style.display = t === 'plan' ? '' : 'none';
   if (t === 'visit') loadVisits();
+  if (t === 'push') loadPushes();
   if (t === 'plan') loadPlans();
 });
 
@@ -2823,6 +2856,7 @@ async function loadVisits() {
       getJSON('/api/platform/visits?limit=500' + (f ? '&status=' + f : '')),
       getJSON('/api/platform/flow/completion').catch(() => null),
     ]);
+    const sum = await getJSON('/api/platform/visit/summary').catch(() => null);
     S.visits = v.visits || [];
     document.getElementById('tabVisitN').textContent = S.visits.length;
     const cell = (label, n, icon, bg, hint) =>
@@ -2836,11 +2870,26 @@ async function loadVisits() {
       cell('流程外事件', S.visits.filter(x => x.is_offschedule).length, '⚡', '#eef2ff', '不进完成率分母') +
       cell('随访完成率', row ? (row.completion_rate == null ? '--' : row.completion_rate + '%') : '--',
            '✓', '#eaf7f4', row ? ('分母 ' + row.denominator + ' 次已到期访视') : '暂无数据');
+    // 超窗分档: 1-7 天还能补, 30 天以上多半已失访 —— 两者跟进方式不同,
+    // 混在一起看会把还救得回来的人淹在里面
+    document.getElementById('overdueBands').innerHTML = (sum && sum.overdue_bands.length)
+      ? '<div class="card panel"><div class="panel-head"><div><h3>超窗分档</h3>'+
+        '<small>'+esc(sum.note)+'</small></div></div><div style="display:flex;gap:18px;flex-wrap:wrap">'+
+        sum.overdue_bands.map(b => '<div><span class="'+
+          (b.band === '1-7天' ? 'tag orange' : b.band === '8-30天' ? 'tag red' : 'tag grey')+'">'+
+          esc(b.band)+'</span> <b style="font-size:18px">'+b.count+'</b> 次</div>').join('')+
+        '<div style="margin-left:auto;color:#82909c;font-size:12px">今日已跟进 '+
+        (sum.followed_up_today || 0)+' 次 · 今日计划访视 '+(sum.today_patients || 0)+' 人</div>'+
+        '</div></div>' : '';
+    S.visitSel = new Set();
+    document.getElementById('vsSelN').textContent = 0;
     document.getElementById('visitTable').innerHTML =
-      '<thead><tr><th>患者</th><th>访视</th><th>类型</th><th>计划日</th><th>窗口</th>'+
+      '<thead><tr><th></th><th>患者</th><th>访视</th><th>类型</th><th>计划日</th><th>窗口</th>'+
       '<th>状态</th><th>内容</th><th></th></tr></thead><tbody>'+
       (S.visits.length ? S.visits.map(x =>
-        '<tr><td>'+esc(x.patient_name || x.patient_no)+'<br><span style="color:#9ca3af;font-size:11px">'+
+        '<tr><td>'+(['done','skipped','cancelled'].indexOf(x.status) < 0
+          ? '<input type="checkbox" data-vsel="'+x.id+'">' : '')+'</td>'+
+        '<td>'+esc(x.patient_name || x.patient_no)+'<br><span style="color:#9ca3af;font-size:11px">'+
           esc(x.patient_no)+'</span></td>'+
         '<td>'+esc(x.name)+'<br><span style="color:#9ca3af;font-size:11px">'+esc(x.node_path || '')+'</span></td>'+
         '<td>'+(x.is_offschedule ? '<span class="tag orange">流程外</span>' : '<span class="tag grey">计划内</span>')+'</td>'+
@@ -2854,11 +2903,193 @@ async function loadVisits() {
           ? '<button class="link" onclick="visitGo('+x.id+',\'done\')">完成</button>'+
             '<button class="link" onclick="visitGo('+x.id+',\'skip\')">跳过</button>'
           : '<button class="link" onclick="visitGo('+x.id+',\'reopen\')">撤销</button>')+'</td></tr>').join('')
-        : '<tr><td colspan="8" style="color:#9ca3af;text-align:center;padding:24px">'+
+        : '<tr><td colspan="9" style="color:#9ca3af;text-align:center;padding:24px">'+
           '没有访视。先在流程库里把流程分配给患者。</td></tr>')+'</tbody>';
+    document.querySelectorAll('[data-vsel]').forEach(el => el.onchange = () => {
+      const id = Number(el.dataset.vsel);
+      el.checked ? S.visitSel.add(id) : S.visitSel.delete(id);
+      document.getElementById('vsSelN').textContent = S.visitSel.size;
+    });
   } catch (e) { document.getElementById('visitTable').innerHTML = '<tbody><tr><td>'+errBox(e)+'</td></tr></tbody>'; }
 }
 document.getElementById('vsFilter').onchange = loadVisits;
+document.getElementById('vsSelAll').onclick = () => {
+  const els = document.querySelectorAll('[data-vsel]');
+  const all = S.visitSel.size === els.length;
+  els.forEach(el => { el.checked = !all; const id = Number(el.dataset.vsel);
+                      all ? S.visitSel.delete(id) : S.visitSel.add(id); });
+  document.getElementById('vsSelN').textContent = S.visitSel.size;
+};
+
+const FOLLOWUP_LABEL = { call:'电话联系', reschedule:'改约', visited:'已到院',
+                         lost:'标记失访', waive:'本次豁免', note:'仅记录' };
+document.getElementById('vsFollowBtn').onclick = () => {
+  if (!S.visitSel.size) { toast('先勾选要跟进的访视'); return; }
+  const today = new Date().toISOString().slice(0, 10);
+  openModal('批量跟进 ' + S.visitSel.size + ' 次访视', '每一条都会单独留痕',
+    '<div class="field"><label>处理方式</label><select id="fuAct">'+
+      Object.keys(FOLLOWUP_LABEL).map(k => '<option value="'+k+'">'+FOLLOWUP_LABEL[k]+'</option>').join('')+
+      '</select></div>'+
+    '<div class="field" id="fuDateWrap" style="display:none"><label>改约到</label>'+
+      '<input id="fuDate" type="date" value="'+today+'">'+
+      '<div class="sub">窗口会跟着平移并保持原本宽窄——直接设成当天会把「±14 天」变成「必须当天完成」</div></div>'+
+    '<div class="field"><label>处理结果 / 依据<span class="sub" id="fuReqHint"></span></label>'+
+      '<textarea id="fuResult" style="height:70px"></textarea></div>'+
+    '<div class="err" id="fuWarn" style="margin-top:4px;display:none"></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="fuGo">确认</button>');
+  const sync = () => {
+    const a = document.getElementById('fuAct').value;
+    document.getElementById('fuDateWrap').style.display = a === 'reschedule' ? '' : 'none';
+    const req = (a === 'lost' || a === 'waive');
+    document.getElementById('fuReqHint').textContent = req ? '（必填）' : '（选填）';
+    const w = document.getElementById('fuWarn');
+    if (a === 'lost') {
+      w.style.display = ''; w.innerHTML = '<b>标记失访会把患者移出分析人群</b>，'+
+        '并连带终止其整个随访流程、把剩余访视置为取消。这是个改变研究结论的判定，'+
+        '不能批量一点了事——必须写明依据。';
+    } else { w.style.display = 'none'; }
+  };
+  document.getElementById('fuAct').onchange = sync; sync();
+  document.getElementById('fuGo').onclick = async () => {
+    const act = document.getElementById('fuAct').value;
+    const result = document.getElementById('fuResult').value.trim();
+    if ((act === 'lost' || act === 'waive') && !result) { toast('必须写明依据'); return; }
+    const btn = document.getElementById('fuGo'); btn.disabled = true; btn.textContent = '处理中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/visit/followup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visit_ids: Array.from(S.visitSel), action: act, result: result,
+          new_date: document.getElementById('fuDate') ? document.getElementById('fuDate').value : null,
+          operator: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      // 逐条给结果 —— 20 条里坏了 3 条, 得让人知道是哪 3 条
+      if (d.failed) {
+        openDrawer('批量跟进结果', d.action_label + ' · 成功 ' + d.succeeded + ' / 失败 ' + d.failed,
+          '<div class="err">有 '+d.failed+' 条没能处理：</div><ul class="qc-log">'+
+          d.results.filter(x => !x.ok).map(x => '<li>访视 #'+x.visit_id+
+            (x.patient_no ? '（'+esc(x.patient_no)+'）' : '')+' — '+esc(x.error)+'</li>').join('')+
+          '</ul>' + (d.note ? '<div class="note-strip" style="margin-top:12px">'+esc(d.note)+'</div>' : ''), '');
+      } else {
+        toast('已' + d.action_label + ' ' + d.succeeded + ' 条' + (d.note ? '。' + d.note : ''),
+              d.note ? 9000 : 4000);
+      }
+      await loadVisits();
+    } catch (e) { btn.disabled = false; btn.textContent = '确认'; toast(e.message, 7000); }
+  };
+};
+
+/* ---- 推送队列 ---- */
+async function loadPushes() {
+  try {
+    const st = document.getElementById('pushStatus').value;
+    const d = await getJSON('/api/platform/pushes?limit=300' + (st ? '&status=' + st : ''));
+    S.pushes = d.pushes || [];
+    document.getElementById('tabPushN').textContent = (d.by_status || {}).queued || 0;
+    document.getElementById('pushTable').innerHTML =
+      '<thead><tr><th>患者</th><th>内容</th><th>渠道</th><th>方式</th><th>状态</th><th>操作人</th><th>时间</th></tr></thead><tbody>'+
+      (S.pushes.length ? S.pushes.map(x =>
+        '<tr><td>'+esc(x.patient_name || x.patient_no)+'<br><span style="color:#9ca3af;font-size:11px">'+
+          esc(x.patient_no)+'</span></td>'+
+        '<td>'+esc(x.title || '--')+'<br><span style="color:#9ca3af;font-size:11px">'+
+          esc(x.content_type_label)+(x.ref_code ? ' · '+esc(x.ref_code)+' v'+esc(x.ref_version || '') : '')+'</span></td>'+
+        '<td>'+esc(x.channel_label)+'</td><td>'+esc(x.mode_label)+'</td>'+
+        '<td><span class="'+(x.status === 'queued' ? 'tag orange' : x.status === 'sent' ? 'tag green' : 'tag grey')+'">'+
+          esc(x.status_label)+'</span></td>'+
+        '<td>'+esc(x.operator || '--')+'</td><td>'+esc((x.created_at || '').slice(0, 16))+'</td></tr>').join('')
+        : '<tr><td colspan="7" style="color:#9ca3af;text-align:center;padding:24px">'+
+          '推送队列是空的。</td></tr>')+'</tbody>';
+  } catch (e) { document.getElementById('pushTable').innerHTML = '<tbody><tr><td>'+errBox(e)+'</td></tr></tbody>'; }
+}
+document.getElementById('pushStatus').onchange = loadPushes;
+document.getElementById('pushReload').onclick = loadPushes;
+
+document.getElementById('newPushBtn').onclick = async () => {
+  if (!S.cohorts.length) await loadCohorts().catch(() => {});
+  if (!S.edu.length) await loadEdu().catch(() => {});
+  const published = (S.edu || []).filter(m => m.status === 'published');
+  openModal('手动推送', '通道未接——这里只入队，不会真的发出去',
+    '<div class="form-row">'+
+      '<div class="field"><label>内容类型</label><select id="pcType">'+
+        '<option value="notice">通知</option><option value="reminder">用药/复诊提醒</option>'+
+        '<option value="edu">患教内容</option></select></div>'+
+      '<div class="field"><label>渠道</label><select id="pcCh">'+
+        '<option value="sms">短信</option><option value="wechat">微信</option>'+
+        '<option value="inapp">站内</option></select></div></div>'+
+    '<div class="field" id="pcEduWrap" style="display:none"><label>宣教材料'+
+      '<span class="sub">只列出<b>已发布</b>的——草稿和待审核的推不出去</span></label>'+
+      '<select id="pcRef">'+(published.length
+        ? published.map(m => '<option value="'+esc(m.code)+'">'+esc(m.title)+'（'+esc(m.code)+'）</option>').join('')
+        : '<option value="">（没有已发布的材料）</option>')+'</select></div>'+
+    '<div class="field"><label>推送范围</label><select id="pcTarget">'+
+      '<option value="patient">单个患者</option><option value="group">某个分组</option>'+
+      '<option value="cohort">整个方案</option><option value="all">全量患者</option></select></div>'+
+    '<div class="field" id="pcPnoWrap"><label>门诊号</label><input id="pcPno"></div>'+
+    '<div class="form-row" id="pcCohortWrap" style="display:none">'+
+      '<div class="field"><label>方案</label><select id="pcCohort">'+
+        (S.cohorts || []).map(c => '<option value="'+esc(c.code)+'">'+esc(c.name)+'</option>').join('')+'</select></div>'+
+      '<div class="field"><label>分组</label><select id="pcGroup"></select></div></div>'+
+    '<div class="field" id="pcTextWrap"><label>标题</label><input id="pcTitle"></div>'+
+    '<div class="field" id="pcBodyWrap"><label>正文</label><textarea id="pcBody" style="height:70px"></textarea></div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="pcGo">试算</button>');
+  const syncT = () => {
+    const t = document.getElementById('pcTarget').value;
+    document.getElementById('pcPnoWrap').style.display = t === 'patient' ? '' : 'none';
+    document.getElementById('pcCohortWrap').style.display = (t === 'group' || t === 'cohort') ? '' : 'none';
+    if (t === 'group') {
+      const c = (S.cohorts || []).find(x => x.code === document.getElementById('pcCohort').value);
+      document.getElementById('pcGroup').innerHTML = ((c || {}).groups || []).map(g =>
+        '<option value="'+esc(g.code)+'">'+esc(g.name)+'</option>').join('');
+      document.getElementById('pcGroup').parentElement.style.display = '';
+    } else if (document.getElementById('pcGroup')) {
+      document.getElementById('pcGroup').parentElement.style.display = t === 'cohort' ? 'none' : '';
+    }
+  };
+  const syncC = () => {
+    const isEdu = document.getElementById('pcType').value === 'edu';
+    document.getElementById('pcEduWrap').style.display = isEdu ? '' : 'none';
+    document.getElementById('pcTextWrap').style.display = isEdu ? 'none' : '';
+    document.getElementById('pcBodyWrap').style.display = isEdu ? 'none' : '';
+  };
+  document.getElementById('pcTarget').onchange = syncT;
+  document.getElementById('pcCohort').onchange = syncT;
+  document.getElementById('pcType').onchange = syncC;
+  syncT(); syncC();
+  const build = dry => ({ channel: document.getElementById('pcCh').value,
+    content_type: document.getElementById('pcType').value,
+    target_kind: document.getElementById('pcTarget').value,
+    patient_no: document.getElementById('pcPno').value.trim() || null,
+    cohort_code: document.getElementById('pcCohort').value || null,
+    group_code: document.getElementById('pcGroup').value || null,
+    ref_code: document.getElementById('pcRef') ? document.getElementById('pcRef').value : null,
+    title: document.getElementById('pcTitle').value.trim() || null,
+    body: document.getElementById('pcBody').value || null,
+    dry_run: dry, operator: localStorage.getItem(LS_OP) || null });
+  document.getElementById('pcGo').onclick = async () => {
+    const btn = document.getElementById('pcGo'); btn.disabled = true; btn.textContent = '试算中…';
+    try {
+      const res = await apiFetch(API_BASE + '/api/platform/push', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(build(true)) });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      btn.disabled = false; btn.textContent = '试算';
+      if (!confirm('本次会推给 ' + d.would_send + ' 位患者（' + d.channel_label + '）。\n\n' +
+                   '示例：' + d.sample.join('、') + (d.would_send > d.sample.length ? ' 等' : '') +
+                   '\n\n' + d.channel_warning + '\n\n确认入队？')) return;
+      const res2 = await apiFetch(API_BASE + '/api/platform/push', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(build(false)) });
+      const d2 = await res2.json();
+      if (!res2.ok || d2.ok === false) throw new Error(d2.error || ('HTTP ' + res2.status));
+      closeModal();
+      toast('已入队 ' + d2.queued + ' 条（' + d2.status_label + '）。' + d2.channel_warning, 10000);
+      document.querySelector('[data-ftab="push"]').click();
+    } catch (e) { btn.disabled = false; btn.textContent = '试算'; toast(e.message, 9000); }
+  };
+};
 document.getElementById('vsRefresh').onclick = async () => {
   try {
     const res = await apiFetch(API_BASE + '/api/platform/flow/refresh',

@@ -7860,6 +7860,510 @@ def copy_flow(body):
         conn.close()
 
 
+# ============ 随访平台 1.1 M20 (访视超窗管理 + 消息推送, 方案 §4.5) ============
+#
+# 两件事必须先说死:
+#
+# 1) **推送通道没有接。** 短信/微信网关都没配。所以这里做的是**推送记录与队列**:
+#    决定了要发什么、发给谁、什么时候发。状态一律是 queued, **绝不会显示 sent** ——
+#    有人看到"已推送 200 条"就会以为患者收到了, 那比不做这个功能更糟。
+#    真接了通道再让 sender 把 queued 改成 sent/failed。
+#
+# 2) **只有已发布的宣教材料能推。** M15 那套"AI 产出一律草稿, 必须署名审核发布后
+#    才能被随访计划调用"的闸门, 落点就在这里。推送接口不校验 status='published',
+#    那道闸门就纯粹是装饰 —— 前面写的所有约束都白设。
+
+PUSH_CHANNELS = {'sms': '短信', 'wechat': '微信', 'inapp': '站内'}
+PUSH_CONTENT_TYPES = {'edu': '患教内容', 'reminder': '用药/复诊提醒',
+                      'task': '随访任务', 'notice': '通知'}
+PUSH_TARGETS = {'patient': '单个患者', 'group': '分组', 'cohort': '整个方案', 'all': '全量患者'}
+PUSH_STATUSES = {'queued': '待发送', 'sent': '已发送', 'failed': '发送失败', 'cancelled': '已取消'}
+PUSH_MAX_TARGETS = 2000
+PUSH_NOT_WIRED = ('推送通道(短信/微信)尚未接入。以上记录已入队但**没有真的发出去** —— '
+                  '状态是"待发送"不是"已发送"。接通道后由发送器把它们置为已发送/失败。')
+
+FOLLOWUP_ACTIONS = {'call': '电话联系', 'reschedule': '改约', 'visited': '已到院',
+                    'lost': '标记失访', 'waive': '本次豁免', 'note': '仅记录'}
+
+
+def ensure_platform_push_tables():
+    """M20: 访视跟进记录 + 推送队列 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_visit_followup (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                visit_id BIGINT DEFAULT NULL,
+                patient_no VARCHAR(64) NOT NULL,
+                action VARCHAR(16) NOT NULL,
+                result VARCHAR(500) DEFAULT NULL,
+                new_date DATE DEFAULT NULL COMMENT '改约后的新计划日',
+                operator VARCHAR(64) DEFAULT NULL,
+                batch_id VARCHAR(40) DEFAULT NULL COMMENT '同一次批量操作的标记, 便于回溯"那次群跟进"',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_visit (visit_id), INDEX idx_patient (patient_no),
+                INDEX idx_batch (batch_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M20 访视跟进记录 (只增不改)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_push (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                batch_id VARCHAR(40) DEFAULT NULL,
+                channel VARCHAR(16) NOT NULL DEFAULT 'sms',
+                content_type VARCHAR(16) NOT NULL DEFAULT 'notice',
+                target_kind VARCHAR(16) NOT NULL DEFAULT 'patient',
+                patient_no VARCHAR(64) NOT NULL,
+                ref_code VARCHAR(64) DEFAULT NULL COMMENT '患教内容的材料编码',
+                ref_version VARCHAR(32) DEFAULT NULL,
+                title VARCHAR(200) DEFAULT NULL,
+                body MEDIUMTEXT,
+                mode ENUM('auto','manual') DEFAULT 'manual',
+                visit_id BIGINT DEFAULT NULL COMMENT '由哪次访视触发(自动推送)',
+                scheduled_at DATETIME DEFAULT NULL,
+                status ENUM('queued','sent','failed','cancelled') DEFAULT 'queued'
+                    COMMENT '通道未接时恒为 queued —— 绝不能让人以为患者已经收到了',
+                sent_at DATETIME DEFAULT NULL,
+                error VARCHAR(300) DEFAULT NULL,
+                operator VARCHAR(64) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_patient (patient_no), INDEX idx_status (status),
+                INDEX idx_batch (batch_id), INDEX idx_visit (visit_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M20 推送队列(通道未接, 只入队不发送)'
+        """)
+        print('[启动] platform_visit_followup / platform_push 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_push_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def _batch_id():
+    """批次号。不用随机数 —— 同一秒内的两次批量操作各自有 id 就够了, 用时间戳+序号。"""
+    return datetime.datetime.now().strftime('B%Y%m%d%H%M%S%f')[:22]
+
+
+def visit_overdue_summary(days_ahead=7):
+    """§4.5(4) 实时统计: 当日访视人数、超窗人数、未来 N 天到期。"""
+    ensure_platform_flow_tables()
+    ensure_platform_push_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+              SUM(v.kind='scheduled' AND v.status='overdue') AS overdue,
+              COUNT(DISTINCT CASE WHEN v.kind='scheduled' AND v.status='overdue'
+                                  THEN v.patient_no END) AS overdue_patients,
+              SUM(v.kind='scheduled' AND v.status='due') AS due,
+              SUM(v.kind='scheduled' AND v.status='due'
+                  AND CURDATE() BETWEEN v.window_start AND v.window_end
+                  AND v.planned_date = CURDATE()) AS today,
+              COUNT(DISTINCT CASE WHEN v.kind='scheduled' AND v.planned_date=CURDATE()
+                                  THEN v.patient_no END) AS today_patients,
+              SUM(v.kind='scheduled' AND v.status='pending'
+                  AND v.window_start <= DATE_ADD(CURDATE(), INTERVAL %s DAY)) AS upcoming
+            FROM platform_visit v
+            JOIN platform_flow_instance i ON i.id=v.instance_id AND i.status='running'
+        """, (int(days_ahead),))
+        row = cur.fetchone() or (0,) * 6
+        n = [int(x or 0) for x in row]
+        # 超窗分档: 超 1-7 天还能补, 超 30 天以上多半是失访了, 两者的跟进方式不一样
+        cur.execute("""
+            SELECT CASE WHEN DATEDIFF(CURDATE(), v.window_end) <= 7 THEN '1-7天'
+                        WHEN DATEDIFF(CURDATE(), v.window_end) <= 30 THEN '8-30天'
+                        ELSE '30天以上' END AS band, COUNT(*)
+            FROM platform_visit v JOIN platform_flow_instance i ON i.id=v.instance_id
+            WHERE i.status='running' AND v.kind='scheduled' AND v.status='overdue'
+            GROUP BY band ORDER BY FIELD(band,'1-7天','8-30天','30天以上')
+        """)
+        bands = [{'band': b, 'count': int(c)} for b, c in cur.fetchall()]
+        cur.execute("""SELECT COUNT(*) FROM platform_visit_followup f
+                       WHERE DATE(f.created_at)=CURDATE()""")
+        followed_today = int(cur.fetchone()[0] or 0)
+        cur.close()
+        return {'ok': True,
+                'overdue_visits': n[0], 'overdue_patients': n[1],
+                'due_visits': n[2], 'today_visits': n[3], 'today_patients': n[4],
+                'upcoming_visits': n[5], 'days_ahead': int(days_ahead),
+                'overdue_bands': bands, 'followed_up_today': followed_today,
+                'note': ('超窗按天数分档: 1-7 天还能补, 30 天以上多半已经失访 —— '
+                         '两者的跟进方式不一样, 混在一起看会把还救得回来的人淹掉')}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def visit_batch_followup(body):
+    """§4.5(4) 批量跟进 {visit_ids:[...], action, result?, new_date?, operator?}
+
+    **逐条给结果**, 不只说"成功了" —— 20 条里坏了 3 条, 得知道是哪 3 条。
+    标记失访要写原因: 失访会把患者移出分析人群, 是个重大判定。
+    """
+    ids = body.get('visit_ids')
+    if not isinstance(ids, list) or not ids:
+        return None, 'visit_ids 必须是非空数组'
+    if len(ids) > 500:
+        return None, '一次最多跟进 500 条'
+    action = str(body.get('action') or '').strip()
+    if action not in FOLLOWUP_ACTIONS:
+        return None, 'action 必须是 {} 之一'.format('/'.join(FOLLOWUP_ACTIONS))
+    result = str(body.get('result') or '').strip()
+    if action == 'lost' and not result:
+        return None, ('标记失访必须写明依据 —— 失访会把患者移出分析人群, '
+                      '是个改变研究结论的判定, 不能批量一点了事')
+    if action == 'waive' and not result:
+        return None, '本次豁免必须写明原因'
+    new_date = str(body.get('new_date') or '').strip()
+    if action == 'reschedule':
+        if not re.match(r'^\d{4}-\d{2}-\d{2}$', new_date):
+            return None, "改约必须给 new_date ('YYYY-MM-DD')"
+
+    ensure_platform_push_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        bid = _batch_id()
+        out, ok_n = [], 0
+        for vid in ids[:500]:
+            try:
+                v = int(vid)
+            except (TypeError, ValueError):
+                out.append({'visit_id': vid, 'ok': False, 'error': 'visit_id 不是整数'})
+                continue
+            cur.execute('SELECT patient_no, status, kind FROM platform_visit WHERE id=%s', (v,))
+            row = cur.fetchone()
+            if not row:
+                out.append({'visit_id': v, 'ok': False, 'error': '访视不存在'})
+                continue
+            pno, st, kind = row
+            if st in ('done', 'cancelled'):
+                out.append({'visit_id': v, 'ok': False, 'patient_no': pno,
+                            'error': '该访视已{}，不再跟进'.format(VISIT_STATUSES.get(st, st))})
+                continue
+            cur.execute("""INSERT INTO platform_visit_followup
+                           (visit_id, patient_no, action, result, new_date, operator, batch_id)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                        (v, pno, action, result[:500] or None,
+                         new_date or None, body.get('operator') or None, bid))
+            if action == 'reschedule':
+                # 改约 = 挪日期。窗口跟着平移, 保持原本的宽窄 —— 直接把窗口设成当天
+                # 会让"术后 3 月(±14 天)"变成"必须当天完成"。
+                cur.execute("""UPDATE platform_visit SET
+                    window_start = DATE_ADD(%s, INTERVAL DATEDIFF(window_start, planned_date) DAY),
+                    window_end   = DATE_ADD(%s, INTERVAL DATEDIFF(window_end, planned_date) DAY),
+                    planned_date = %s,
+                    status = CASE WHEN CURDATE() < DATE_ADD(%s, INTERVAL DATEDIFF(window_start, planned_date) DAY)
+                                  THEN 'pending' ELSE 'due' END,
+                    note = CONCAT(COALESCE(note,''),' [改约至 ',%s,']')
+                    WHERE id=%s""", (new_date, new_date, new_date, new_date, new_date, v))
+            elif action == 'visited':
+                cur.execute("UPDATE platform_visit SET status='done', done_at=NOW(), operator=%s WHERE id=%s",
+                            (body.get('operator') or None, v))
+            elif action == 'waive':
+                cur.execute("UPDATE platform_visit SET status='skipped', note=%s WHERE id=%s",
+                            ('本次豁免: ' + result[:400], v))
+            elif action == 'lost':
+                # 失访不改这一次访视的状态, 而是终止整个流程 —— 人都联系不上了,
+                # 后面几次访视继续在那儿"待完成"没有意义, 还会把超窗数越堆越高
+                cur.execute("""SELECT i.flow_code FROM platform_visit v
+                               JOIN platform_flow_instance i ON i.id=v.instance_id WHERE v.id=%s""", (v,))
+                fc = cur.fetchone()
+                if fc:
+                    cur.execute("""UPDATE platform_flow_instance SET status='ended',
+                                   end_reason='withdrawn', end_note=%s, ended_at=NOW()
+                                   WHERE flow_code=%s AND patient_no=%s AND status='running'""",
+                                ('失访: ' + result[:400], fc[0], pno))
+                    cur.execute("""UPDATE platform_visit v JOIN platform_flow_instance i ON i.id=v.instance_id
+                                   SET v.status='cancelled', v.note=CONCAT(COALESCE(v.note,''),' [失访]')
+                                   WHERE i.flow_code=%s AND v.patient_no=%s
+                                     AND v.status IN ('pending','due','overdue')""", (fc[0], pno))
+            out.append({'visit_id': v, 'ok': True, 'patient_no': pno, 'action': action})
+            ok_n += 1
+        cur.close()
+        res = {'ok': True, 'batch_id': bid, 'action': action,
+               'action_label': FOLLOWUP_ACTIONS[action],
+               'total': len(ids), 'succeeded': ok_n, 'failed': len(ids) - ok_n,
+               'results': out}
+        if action == 'lost' and ok_n:
+            res['note'] = ('已对 {} 名患者标记失访: 其流程一并终止, 剩余访视置为取消 —— '
+                           '人都联系不上了, 后面的访视继续挂着"待完成"只会把超窗数越堆越高, '
+                           '而且会让随访完成率失真'.format(ok_n))
+        return res, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def _resolve_push_targets(cur, body):
+    """把推送目标解析成门诊号列表。返回 (list, error)。"""
+    kind = body.get('target_kind') or 'patient'
+    if kind not in PUSH_TARGETS:
+        return None, 'target_kind 必须是 {} 之一'.format('/'.join(PUSH_TARGETS))
+    if kind == 'patient':
+        no = str(body.get('patient_no') or '').strip()
+        if not no:
+            return None, '单患者推送必须给 patient_no'
+        return [no], None
+    if kind == 'group':
+        c, g = body.get('cohort_code'), body.get('group_code')
+        if not c or not g:
+            return None, '分组推送必须给 cohort_code 和 group_code'
+        cur.execute("SELECT patient_no FROM platform_enrollment WHERE cohort_code=%s "
+                    "AND group_code=%s AND status='enrolled'", (c, g))
+    elif kind == 'cohort':
+        if not body.get('cohort_code'):
+            return None, '方案推送必须给 cohort_code'
+        cur.execute("SELECT patient_no FROM platform_enrollment WHERE cohort_code=%s "
+                    "AND status='enrolled'", (body['cohort_code'],))
+    else:
+        cur.execute('SELECT patient_no FROM platform_patient')
+    return [r[0] for r in cur.fetchall()], None
+
+
+def push_create(body):
+    """建推送。{channel, content_type, target_kind, ..., title?, body?, ref_code?,
+       dry_run?, operator?, mode?, scheduled_at?}
+
+    dry_run 默认 **true** —— 全量群发点错一次是收不回来的, 先告诉你会发给几个人。
+    content_type='edu' 时**强制校验材料已发布**: M15 那道审核闸门的落点就在这儿。
+    """
+    ch = body.get('channel') or 'sms'
+    if ch not in PUSH_CHANNELS:
+        return None, 'channel 必须是 {} 之一'.format('/'.join(PUSH_CHANNELS))
+    ct = body.get('content_type') or 'notice'
+    if ct not in PUSH_CONTENT_TYPES:
+        return None, 'content_type 必须是 {} 之一'.format('/'.join(PUSH_CONTENT_TYPES))
+    dry = body.get('dry_run')
+    dry = True if dry is None else bool(dry)
+
+    ensure_platform_push_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        targets, err = _resolve_push_targets(cur, body)
+        if err:
+            cur.close()
+            return None, err
+        targets = [t for t in targets if t]
+        if not targets:
+            cur.close()
+            return None, '没有解析到任何推送对象'
+        if len(targets) > PUSH_MAX_TARGETS:
+            cur.close()
+            return None, '一次最多推送 {} 人, 当前 {} 人 —— 请收窄范围分批发'.format(
+                PUSH_MAX_TARGETS, len(targets))
+
+        title = str(body.get('title') or '').strip()
+        content = str(body.get('body') or '')
+        ref_code = ref_ver = None
+        if ct == 'edu':
+            ref_code = str(body.get('ref_code') or '').strip()
+            if not ref_code:
+                cur.close()
+                return None, '推送患教内容必须给 ref_code(宣教材料编码)'
+            cur.execute("SELECT version, title, body, status FROM platform_edu_material "
+                        "WHERE code=%s ORDER BY id DESC LIMIT 1", (ref_code,))
+            m = cur.fetchone()
+            if not m:
+                cur.close()
+                return None, '宣教材料不存在: {}'.format(ref_code)
+            if m[3] != 'published':
+                cur.close()
+                # 这是 M15 那道闸门真正起作用的地方。不校验的话前面所有约束都白设。
+                return None, ('宣教材料《{}》当前是「{}」, 不能推送给患者。'
+                              '只有经人工署名审核发布的材料才能推 —— 这份材料会被患者当医嘱照做, '
+                              '未审核的内容里可能有剂量数字或"可自行停药"这类表述'.format(
+                                  m[1], EDU_STATUS_LABELS.get(m[3], m[3])))
+            ref_ver, title, content = m[0], (title or m[1]), (content or m[2])
+        elif not title and not content:
+            cur.close()
+            return None, 'title 或 body 至少给一个'
+
+        if dry:
+            cur.close()
+            return {'ok': True, 'dry_run': True, 'channel': ch,
+                    'channel_label': PUSH_CHANNELS[ch],
+                    'content_type': ct, 'target_kind': body.get('target_kind') or 'patient',
+                    'would_send': len(targets), 'sample': targets[:10],
+                    'title': title, 'ref_code': ref_code, 'ref_version': ref_ver,
+                    'hint': '这是试算, 没有入队。确认后带 dry_run=false 执行',
+                    'channel_warning': PUSH_NOT_WIRED}, None
+
+        bid = _batch_id()
+        rows = [(bid, ch, ct, body.get('target_kind') or 'patient', t, ref_code, ref_ver,
+                 title[:200] or None, content, body.get('mode') or 'manual',
+                 body.get('visit_id'), body.get('scheduled_at') or None,
+                 body.get('operator') or None) for t in targets]
+        cur.executemany("""INSERT INTO platform_push
+            (batch_id, channel, content_type, target_kind, patient_no, ref_code, ref_version,
+             title, body, mode, visit_id, scheduled_at, status, operator)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'queued',%s)""", rows)
+        cur.close()
+        return {'ok': True, 'dry_run': False, 'batch_id': bid, 'queued': len(rows),
+                'channel': ch, 'channel_label': PUSH_CHANNELS[ch],
+                'ref_code': ref_code, 'ref_version': ref_ver,
+                'status': 'queued', 'status_label': PUSH_STATUSES['queued'],
+                'channel_warning': PUSH_NOT_WIRED}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def push_from_visit(body):
+    """§4.5(2) 自动推送: 把一次访视上配的患教内容入队。
+
+    {visit_id, channel?, operator?, dry_run?}
+    只挑访视 items 里 type='edu' 的; 依然要过"必须已发布"这一关。
+    """
+    try:
+        vid = int(body.get('visit_id'))
+    except (TypeError, ValueError):
+        return None, 'visit_id 必填且为整数'
+    ensure_platform_push_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT patient_no, items, name FROM platform_visit WHERE id=%s', (vid,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return None, '访视不存在: {}'.format(vid)
+        pno, items, vname = row
+        if isinstance(items, str):
+            try:
+                items = json.loads(items)
+            except ValueError:
+                items = []
+        edus = [i for i in (items or []) if i.get('type') == 'edu' and i.get('ref')]
+        if not edus:
+            return {'ok': True, 'queued': 0,
+                    'note': '这次访视「{}」没有配患教内容(items 里没有 type=edu 的项)'.format(vname)}, None
+        out, errs = [], []
+        for e in edus:
+            r, err = push_create({'channel': body.get('channel') or 'sms', 'content_type': 'edu',
+                                  'target_kind': 'patient', 'patient_no': pno,
+                                  'ref_code': e['ref'], 'mode': 'auto', 'visit_id': vid,
+                                  'dry_run': bool(body.get('dry_run')),
+                                  'operator': body.get('operator')})
+            if err:
+                errs.append({'ref': e['ref'], 'error': err})
+            else:
+                out.append(r)
+        return {'ok': True, 'visit_id': vid, 'patient_no': pno,
+                'queued': sum(x.get('queued', 0) for x in out),
+                'batches': [x.get('batch_id') for x in out if x.get('batch_id')],
+                'blocked': errs,
+                'channel_warning': PUSH_NOT_WIRED,
+                'note': ('有 {} 份材料没能推出去(多半是还没审核发布) —— 未审核的内容里'
+                         '可能有剂量数字或"可自行停药"这类表述'.format(len(errs))) if errs else None}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_pushes(patient_no=None, status=None, batch_id=None, content_type=None, limit=300):
+    """推送队列。"""
+    ensure_platform_push_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if patient_no:
+            where.append('p.patient_no=%s'); params.append(patient_no)
+        if status:
+            where.append('p.status=%s'); params.append(status)
+        if batch_id:
+            where.append('p.batch_id=%s'); params.append(batch_id)
+        if content_type:
+            where.append('p.content_type=%s'); params.append(content_type)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT p.id, p.batch_id, p.channel, p.content_type, p.target_kind, p.patient_no,
+                   pt.name, p.ref_code, p.ref_version, p.title, p.mode, p.visit_id,
+                   p.status, p.scheduled_at, p.sent_at, p.error, p.operator, p.created_at
+            FROM platform_push p
+            LEFT JOIN platform_patient pt ON pt.patient_no=p.patient_no
+            WHERE {} ORDER BY p.id DESC LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'batch_id', 'channel', 'content_type', 'target_kind', 'patient_no',
+                'patient_name', 'ref_code', 'ref_version', 'title', 'mode', 'visit_id',
+                'status', 'scheduled_at', 'sent_at', 'error', 'operator', 'created_at']
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            for k in ('scheduled_at', 'sent_at', 'created_at'):
+                if d.get(k) is not None and hasattr(d[k], 'strftime'):
+                    d[k] = d[k].strftime('%Y-%m-%d %H:%M:%S')
+            d['channel_label'] = PUSH_CHANNELS.get(d['channel'], d['channel'])
+            d['content_type_label'] = PUSH_CONTENT_TYPES.get(d['content_type'], d['content_type'])
+            d['status_label'] = PUSH_STATUSES.get(d['status'], d['status'])
+            d['mode_label'] = '自动' if d['mode'] == 'auto' else '手动'
+            out.append(d)
+        cur.execute("SELECT status, COUNT(*) FROM platform_push GROUP BY status")
+        by_status = {a: int(b) for a, b in cur.fetchall()}
+        cur.close()
+        return {'ok': True, 'count': len(out), 'pushes': out, 'by_status': by_status,
+                'channels': PUSH_CHANNELS, 'content_types': PUSH_CONTENT_TYPES,
+                'statuses': PUSH_STATUSES, 'channel_warning': PUSH_NOT_WIRED}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_followups(patient_no=None, visit_id=None, batch_id=None, limit=300):
+    """访视跟进记录。"""
+    ensure_platform_push_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if patient_no:
+            where.append('f.patient_no=%s'); params.append(patient_no)
+        if visit_id:
+            where.append('f.visit_id=%s'); params.append(int(visit_id))
+        if batch_id:
+            where.append('f.batch_id=%s'); params.append(batch_id)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT f.id, f.visit_id, f.patient_no, p.name, v.name, f.action, f.result,
+                   f.new_date, f.operator, f.batch_id, f.created_at
+            FROM platform_visit_followup f
+            LEFT JOIN platform_patient p ON p.patient_no=f.patient_no
+            LEFT JOIN platform_visit v ON v.id=f.visit_id
+            WHERE {} ORDER BY f.id DESC LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'visit_id', 'patient_no', 'patient_name', 'visit_name', 'action',
+                'result', 'new_date', 'operator', 'batch_id', 'created_at']
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            for k in ('new_date', 'created_at'):
+                if d.get(k) is not None and hasattr(d[k], 'strftime'):
+                    d[k] = d[k].strftime('%Y-%m-%d' if k == 'new_date' else '%Y-%m-%d %H:%M:%S')
+            d['action_label'] = FOLLOWUP_ACTIONS.get(d['action'], d['action'])
+            out.append(d)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'followups': out,
+                'actions': FOLLOWUP_ACTIONS}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -8982,6 +9486,34 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/visit/summary':
+            try:
+                da = int((query.get('daysAhead') or ['7'])[0] or 7)
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'daysAhead 必须是整数'}); return
+            result, err = visit_overdue_summary(da)
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/pushes':
+            st = (query.get('status') or [None])[0]
+            if st and st not in PUSH_STATUSES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 {} 之一'.format('/'.join(PUSH_STATUSES))}); return
+            result, err = query_pushes(
+                patient_no=(query.get('patientNo') or [None])[0], status=st,
+                batch_id=(query.get('batch') or [None])[0],
+                content_type=(query.get('type') or [None])[0],
+                limit=min(int((query.get('limit') or ['300'])[0] or 300), 1000))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/followups':
+            result, err = query_followups(
+                patient_no=(query.get('patientNo') or [None])[0],
+                visit_id=(query.get('visitId') or [None])[0],
+                batch_id=(query.get('batch') or [None])[0],
+                limit=min(int((query.get('limit') or ['300'])[0] or 300), 1000))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/flows':
             result, err = query_flows(
                 code=(query.get('code') or [None])[0],
@@ -9388,6 +9920,12 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/visit/summary': '随访平台 M20: 当日/超窗统计 (?daysAhead=7)',
+                    'POST /api/platform/visit/followup': '随访平台 M20: 批量跟进超窗访视(逐条给结果)',
+                    'GET  /api/platform/followups': '随访平台 M20: 跟进记录',
+                    'POST /api/platform/push': '随访平台 M20: 建推送(单/分组/方案/全量; dry_run 默认 true; 通道未接只入队)',
+                    'POST /api/platform/push/from-visit': '随访平台 M20: 把访视上配的患教内容入队',
+                    'GET  /api/platform/pushes': '随访平台 M20: 推送队列 (?status=&patientNo=)',
                     'GET  /api/platform/flows': '随访平台 M19: 流程库 (?code=&scope=shared&allVersions=1)',
                     'POST /api/platform/flow': '随访平台 M19: 建/改流程模板(多级节点树+访视窗口+流程外阶段)',
                     'POST /api/platform/flow/copy': '随访平台 M19: 复制流程 ({code,new_code})',
@@ -9598,6 +10136,18 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/visit/followup':
+                result, err = visit_batch_followup(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/push':
+                result, err = push_create(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/push/from-visit':
+                result, err = push_from_visit(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/flow':
                 result, err = upsert_flow(body)
@@ -9959,6 +10509,8 @@ if __name__ == '__main__':
         ensure_platform_cohort_tables()
         # M19: 随访流程 + 实例 + 访视 (idempotent)
         ensure_platform_flow_tables()
+        # M20: 访视跟进 + 推送队列 (idempotent)
+        ensure_platform_push_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -10010,6 +10562,10 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/visit/summary            随访平台 M20: 当日/超窗统计')
+    print('[端点] POST /api/platform/visit/followup           随访平台 M20: 批量跟进')
+    print('[端点] POST /api/platform/push                     随访平台 M20: 建推送(通道未接, 只入队)')
+    print('[端点] GET  /api/platform/pushes                   随访平台 M20: 推送队列')
     print('[端点] GET  /api/platform/flows                    随访平台 M19: 流程库')
     print('[端点] POST /api/platform/flow                     随访平台 M19: 建/改流程模板')
     print('[端点] POST /api/platform/flow/instantiate         随访平台 M19: 实例化到患者')
