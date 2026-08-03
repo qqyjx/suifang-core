@@ -371,6 +371,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         <div class="module-hero">
           <div><h2>随访资料准备</h2><p>方案阶段一：CRF 表单 · 量表体系 · 宣教材料 · 知情同意</p></div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="white-btn" id="docUploadBtn">✎ 上传项目资料</button>
             <button class="white-btn" id="eduGenBtn">▧ 生成宣教稿</button>
             <button class="white-btn" id="crfGenBtn">▤ AI 生成 CRF</button>
             <button class="white-btn" id="crfExcelBtn">⇱ Excel 建表</button>
@@ -383,13 +384,14 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
           <div class="card asset"><div class="big-icon">▤</div><h3>智能 CRF 表单</h3><p>8 种基本题型 + 4 种表格题型 · 逻辑显隐/启禁/自动设值/互斥 · 破坏性改动自动开新版</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="crfCardN">--</small></div></div>
           <div class="card asset"><div class="big-icon">◈</div><h3>专业量表库</h3><p>题型配置 · 评分规则 · 分量表 · 划界值分级 · 字段映射 · 医护填报与患者自评</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="scaleCardN">--</small></div></div>
           <div class="card asset"><div class="big-icon">▧</div><h3>宣教材料库</h3><p>按病种/病程/主题生成 · 内容体检 · 审核后才能发布给患者</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="eduCardN">--</small></div></div>
-          <div class="card asset"><div class="big-icon">✎</div><h3>知情与项目资料</h3><p>电子签署、版本管理、权限管控与全周期留痕</p><div class="asset-foot"><span class="tag grey">未建设</span><small>方案 §2.4 · 2 个功能点</small></div></div>
+          <div class="card asset"><div class="big-icon">✎</div><h3>知情与项目资料</h3><p>资料上传与版本留档 · 内容哈希锁定 · 签署留痕（非可靠电子签名）</p><div class="asset-foot"><span class="status">引擎已上线</span><small id="docCardN">--</small></div></div>
         </div>
 
         <div class="tabs" style="margin-top:18px">
           <button class="tab active" data-stab="lib">量表库 <span id="tabScaleN">0</span></button>
           <button class="tab" data-stab="crf">CRF 表单库 <span id="tabCrfN">0</span></button>
           <button class="tab" data-stab="edu">宣教材料 <span id="tabEduN">0</span></button>
+          <button class="tab" data-stab="doc">知情与资料 <span id="tabDocN">0</span></button>
           <button class="tab" data-stab="resp">填报记录 <span id="tabRespN">0</span></button>
         </div>
         <div id="stabLib">
@@ -451,6 +453,39 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>内容安全把关</td><td><span class="tag green">已建</span></td><td>方案没写这一条，是我们加的：剂量/用药调整/劝阻就医三类高危表述在入库时就标出，发布必须逐条确认</td></tr>
               <tr><td>文本编辑、内容布局调整</td><td><span class="tag amber">部分</span></td><td>纯文本编辑已通；富文本排版与图片上传未建</td></tr>
               <tr><td>推送给患者</td><td><span class="tag grey">未建设</span></td><td>材料库已通，但还没有接到随访计划的推送动作上</td></tr>
+            </tbody></table></div>
+          </div>
+        </div>
+        <div id="stabDoc" style="display:none">
+          <div class="note-strip">
+            <b>这里的「电子签字」是签署留痕，不是法律意义上的电子签名。</b>
+            我们记的是：谁、什么时候、从哪个 IP、签的是<b>哪一版文件（内容哈希）</b>、以及手写签名图。
+            《电子签名法》要求的可靠电子签名需要第三方 CA 数字证书，本平台尚未接入——
+            这份记录可用于内部流程追溯，<b>不能作为法律证据</b>。<br>
+            钉住内容哈希是这块唯一真正有价值的完整性属性：只记文件 id 的话，有人换掉 PDF，
+            已有的签名就"覆盖"了不同的内容，而且看不出来。签署后文件被换过的记录，列表里会标红。
+          </div>
+          <div class="head-tools" style="margin-bottom:12px">
+            <select id="docType" class="mini"><option value="">全部类型</option><option value="consent">知情同意书</option><option value="protocol">研究方案</option><option value="ethics">伦理批件</option><option value="sop">SOP 文件</option><option value="guideline">诊疗规范</option><option value="other">其他资料</option></select>
+            <button class="link" id="docReload">刷新</button>
+          </div>
+          <div class="rows" id="docWrap"><div class="loading">加载中…</div></div>
+          <div class="card panel" style="margin-top:16px">
+            <div class="panel-head"><h3>签署记录</h3><button class="link" id="consentReload">刷新</button></div>
+            <div id="consentWrap"><div class="loading">加载中…</div></div>
+          </div>
+          <div class="card panel" style="margin-top:16px">
+            <div class="panel-head"><h3>方案 §2.4 逐条对照</h3></div>
+            <div class="table-wrap"><table><thead><tr><th>要求</th><th>状态</th><th>说明</th></tr></thead><tbody>
+              <tr><td>Word 版知情同意书上传</td><td><span class="tag green">已建</span></td><td>pdf/doc/docx/xls/ppt/图片等 14 种格式，30MB 以内。html/svg/js 被<b>刻意排除</b>——它们从服务器发回时可能被当作可执行内容渲染</td></tr>
+              <tr><td>手机端 / PC 端电子签字</td><td><span class="tag amber">部分</span></td><td>手写签名板已通，手机与 PC 同一套；但这是<b>签署留痕不是可靠电子签名</b>，见上方说明</td></tr>
+              <tr><td>签署文件统一归档、可追溯查阅</td><td><span class="tag green">已建</span></td><td>签署记录钉住内容哈希；文件在签署后被替换会被标出</td></tr>
+              <tr><td>研究方案/伦理批件/SOP/诊疗规范上传与分类</td><td><span class="tag green">已建</span></td><td>六类资料</td></tr>
+              <tr><td>版本管理</td><td><span class="tag green">已建</span></td><td>同编码再上传自动成新版，旧版置为已被取代但<b>文件不删</b>——「当时用的是哪一版」本身就是要留档的信息</td></tr>
+              <tr><td>全程留痕</td><td><span class="tag green">已建</span></td><td>上传/新版/签署/撤回四类动作只增不改</td></tr>
+              <tr><td>权限管控</td><td><span class="tag amber">部分</span></td><td>下载需写接口口令（读操作却要口令是刻意的——签好的同意书含姓名身份证号）；但<b>细粒度角色权限未建</b>，平台还没有账号体系</td></tr>
+              <tr><td>AI 辅助资料完整性/合规性校验</td><td><span class="tag grey">未建设</span></td><td>方案 §4.1(2) 提到，需要一套院内合规清单做对照</td></tr>
+              <tr><td>接入第三方 CA，产出可靠电子签名</td><td><span class="tag grey">未建设</span></td><td>要有法律效力必须走这一步</td></tr>
             </tbody></table></div>
           </div>
         </div>
@@ -720,6 +755,7 @@ const S = {
   qcFindings: [], qcQueries: [], cmpData: null,
   crfs: [], crfFill: null, crfDraft: null,
   edu: [], eduDraft: null,
+  docs: [], consents: [], docMeta: null,
   sqFields: null, sqConds: [], sqResult: null,
 };
 
@@ -734,7 +770,7 @@ function goto(page) {
   if (page === 'plans') loadPlans();
   if (page === 'analytics') { loadAnalytics(); loadSearchFields().then(renderSqRows).catch(() => {}); }
   if (page === 'settings') fillSettings();
-  if (page === 'assets') { loadScales(); loadResponses(); loadCrfs(); loadEdu(); }
+  if (page === 'assets') { loadScales(); loadResponses(); loadCrfs(); loadEdu(); loadDocs(); }
   if (page === 'quality') loadQuality();
 }
 document.addEventListener('click', e => {
@@ -2241,10 +2277,12 @@ document.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => {
   document.getElementById('stabLib').style.display = t === 'lib' ? '' : 'none';
   document.getElementById('stabCrf').style.display = t === 'crf' ? '' : 'none';
   document.getElementById('stabEdu').style.display = t === 'edu' ? '' : 'none';
+  document.getElementById('stabDoc').style.display = t === 'doc' ? '' : 'none';
   document.getElementById('stabResp').style.display = t === 'resp' ? '' : 'none';
   if (t === 'resp') loadResponses();
   if (t === 'crf') loadCrfs();
   if (t === 'edu') loadEdu();
+  if (t === 'doc') { loadDocs(); loadConsents(); }
 });
 
 /* ================================================================ M16 高级检索与统计 (方案 §4.6(2))
@@ -2529,6 +2567,258 @@ document.getElementById('sqExport').onclick = () => {
   URL.revokeObjectURL(a.href);
   toast('已导出 ' + d.count + ' 人' + (d.total > d.count ? '（共命中 ' + d.total + ' 人，文件末尾有说明）' : ''), 6000);
 };
+
+/* ================================================================ M17 知情同意与项目资料 (方案 §2.4) */
+const DOC_TYPE_LABEL = { consent:'知情同意书', protocol:'研究方案', ethics:'伦理批件',
+                         sop:'SOP 文件', guideline:'诊疗规范', other:'其他资料' };
+const DOC_STATUS_TAG = { active:['tag green','现行版'], superseded:['tag grey','已被取代'],
+                         archived:['tag grey','已归档'] };
+const SIGNER_ROLE_LABEL = { patient:'受试者本人', guardian:'监护人/法定代理人',
+                            witness:'见证人', investigator:'研究者' };
+
+function fmtBytes(n) {
+  if (n == null) return '--';
+  return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+}
+
+async function loadDocs() {
+  const wrap = document.getElementById('docWrap');
+  try {
+    const t = document.getElementById('docType').value;
+    const d = await getJSON('/api/platform/documents?limit=200' + (t ? '&type=' + t : ''));
+    S.docs = d.documents || [];
+    S.docMeta = d;
+    document.getElementById('tabDocN').textContent = S.docs.length;
+    const card = document.getElementById('docCardN');
+    if (card) card.textContent = S.docs.length ? S.docs.length + ' 份资料' : '暂无资料';
+    wrap.innerHTML = S.docs.length ? S.docs.map(x => {
+      const st = DOC_STATUS_TAG[x.status] || ['tag grey', x.status];
+      return '<div class="row-card row-plan">'+
+        '<div><span class="strong">'+esc(x.title)+'</span><span class="sub">'+esc(x.code)+' v'+esc(x.version)+'</span></div>'+
+        '<div>'+esc(x.doc_type_label)+'<span class="sub">'+esc(x.category || '未分类')+'</span></div>'+
+        '<div><span class="'+st[0]+'">'+esc(st[1])+'</span>'+
+          '<span class="sub">'+esc(x.ext.toUpperCase())+' · '+fmtBytes(x.size_bytes)+'</span></div>'+
+        '<div>'+(x.doc_type === 'consent'
+            ? (x.signed_count ? '<b>'+x.signed_count+'</b> 人已签' : '<span style="color:#9ca3af">尚无签署</span>')
+            : '<span style="color:#9ca3af">—</span>')+
+          '<span class="sub" title="内容哈希（sha256 前 16 位）">哈希 '+esc(x.sha256_short)+'</span></div>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+          '<button class="secondary" onclick="downloadDoc(\''+esc(x.code)+'\',\''+esc(x.version)+'\')">下载</button>'+
+          (x.doc_type === 'consent' && x.status === 'active'
+            ? '<button class="link" onclick="openSign(\''+esc(x.code)+'\')">签署</button>' : '')+
+          '<button class="link" onclick="docHistory(\''+esc(x.code)+'\')">留痕</button>'+
+        '</div>'+
+      '</div>';
+    }).join('')
+      : emptyBox('✎', '还没有项目资料', '点右上角「上传项目资料」，支持知情同意书／研究方案／伦理批件等。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+document.getElementById('docType').onchange = loadDocs;
+document.getElementById('docReload').onclick = loadDocs;
+
+async function loadConsents() {
+  const wrap = document.getElementById('consentWrap');
+  try {
+    const d = await getJSON('/api/platform/consents?limit=200');
+    S.consents = d.consents || [];
+    wrap.innerHTML = S.consents.length ? S.consents.map(c =>
+      '<div class="qc-item '+(c.integrity_warning ? 'block' : (c.status === 'revoked' ? '' : 'warn'))+'">'+
+        '<div class="qc-head">'+
+          '<span class="'+(c.status === 'revoked' ? 'tag grey' : 'tag green')+'">'+
+            (c.status === 'revoked' ? '已撤回' : '已签署')+'</span>'+
+          '<span class="tag blue">'+esc(c.signer_role_label)+'</span>'+
+          '<b>'+esc(c.signer_name)+'</b>'+
+          '<span style="color:#9ca3af;font-size:12px">'+esc(c.patient_name || '')+' '+esc(c.patient_no)+'</span>'+
+          '<span style="margin-left:auto;font-size:11px;color:#9ca3af">#'+c.id+'</span></div>'+
+        '<div class="qc-detail">《'+esc(c.title || c.doc_code)+'》 v'+esc(c.doc_version)+
+          ' · '+esc(c.signed_at)+(c.source_ip ? ' · 来自 '+esc(c.source_ip) : '')+'</div>'+
+        '<div class="qc-basis">签署时文件哈希 '+esc(c.doc_sha256_short)+
+          (c.hash_matches ? ' ✓ 与当前版本一致' : '')+'</div>'+
+        (c.integrity_warning ? '<div class="err" style="margin-top:8px">⚠ '+esc(c.integrity_warning)+'</div>' : '')+
+        (c.status === 'revoked'
+          ? '<div class="qc-meta"><span>撤回：'+esc(c.revoked_by || '未署名')+' · '+esc(c.revoked_at || '')+
+            ' · '+esc(c.revoke_reason || '')+'</span></div>'
+          : '<div class="qc-meta"><button class="link" style="margin-left:auto" onclick="revokeConsent('+c.id+')">撤回签署</button></div>')+
+      '</div>').join('')
+      : emptyBox('◇', '还没有签署记录', '在上面的知情同意书上点「签署」。');
+  } catch (e) { wrap.innerHTML = errBox(e); }
+}
+document.getElementById('consentReload').onclick = loadConsents;
+
+/* 下载要带写接口口令 —— 服务端刻意这么设的(签好的同意书含姓名身份证号)。
+   所以不能用 <a href> 直接下, 得走 fetch 带 header 再转 blob。 */
+async function downloadDoc(code, version) {
+  toast('正在取文件…');
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/document/download?code=' +
+      encodeURIComponent(code) + '&version=' + encodeURIComponent(version), { headers: headers(false) });
+    if (!res.ok) {
+      let msg = 'HTTP ' + res.status;
+      try { const j = await res.json(); msg = j.error || msg; } catch (e) {}
+      throw new Error(msg);
+    }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
+    const name = m ? decodeURIComponent(m[1]) : (code + '_v' + version);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    URL.revokeObjectURL(a.href);
+    toast('已下载 ' + name + '（内容哈希 ' + (res.headers.get('X-Content-SHA256') || '').slice(0, 16) + '）', 6000);
+  } catch (e) { toast('下载失败：' + e.message, 6000); }
+}
+
+document.getElementById('docUploadBtn').onclick = () => {
+  const meta = S.docMeta || { allowed_ext: ['pdf'], max_mb: 30 };
+  openModal('上传项目资料', '同一编码再上传即成为新版本，旧版留档不删',
+    '<div class="form-row">'+
+      '<div class="field"><label>资料标题</label><input id="duTitle" placeholder="如：XX 研究知情同意书"></div>'+
+      '<div class="field"><label>资料类型</label><select id="duType">'+
+        Object.keys(DOC_TYPE_LABEL).map(k => '<option value="'+k+'">'+DOC_TYPE_LABEL[k]+'</option>').join('')+
+        '</select></div></div>'+
+    '<div class="form-row">'+
+      '<div class="field"><label>编码<span class="sub">留空自动生成；填已有编码=传新版本</span></label><input id="duCode" placeholder="选填"></div>'+
+      '<div class="field"><label>项目 / 病种<span class="sub">选填</span></label><input id="duCat"></div></div>'+
+    '<div class="field"><label>选择文件</label><input type="file" id="duFile" accept="'+
+      meta.allowed_ext.map(e => '.' + e).join(',')+'"></div>'+
+    '<div class="err" style="margin-top:4px">支持 '+meta.allowed_ext.join('/')+'，'+meta.max_mb+
+      'MB 以内。<b>html/svg/js 被刻意排除</b>——它们从服务器发回时可能被浏览器当作可执行内容渲染。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="duGo">上传</button>');
+  document.getElementById('duGo').onclick = async () => {
+    const f = document.getElementById('duFile').files[0];
+    const title = document.getElementById('duTitle').value.trim();
+    if (!title) { toast('请填写标题'); return; }
+    if (!f) { toast('请选择文件'); return; }
+    const btn = document.getElementById('duGo'); btn.disabled = true; btn.textContent = '上传中…';
+    try {
+      const buf = await f.arrayBuffer();
+      let bin = ''; const b = new Uint8Array(buf);
+      for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+      const res = await apiFetch(API_BASE + '/api/platform/document', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title, doc_type: document.getElementById('duType').value,
+          code: document.getElementById('duCode').value.trim() || undefined,
+          category: document.getElementById('duCat').value.trim() || null,
+          filename: f.name, content_base64: btoa(bin),
+          uploader: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      toast('已上传 ' + d.code + ' v' + d.version + ' · ' + fmtBytes(d.size_bytes) +
+            ' · 内容哈希 ' + d.sha256.slice(0, 16), 7000);
+      await loadDocs();
+    } catch (e) { btn.disabled = false; btn.textContent = '上传'; toast('上传失败：' + e.message, 6000); }
+  };
+};
+
+/* 手写签名板。canvas 同时接鼠标与触摸 —— 方案要求手机端与 PC 端都能签, 而实际上
+   手机端才是主场(患者在诊室用平板签)。 */
+function openSign(code) {
+  const doc = (S.docs || []).find(d => d.code === code) || {};
+  openModal('签署知情同意书', '《' + (doc.title || code) + '》 v' + (doc.version || ''),
+    '<div class="form-row">'+
+      '<div class="field"><label>门诊号</label><input id="csPno" list="csPnoList" placeholder="输入或选择">'+
+      '<datalist id="csPnoList">'+(S.patients || []).map(p =>
+        '<option value="'+esc(p.patient_no)+'">'+esc(p.name || '')+'</option>').join('')+'</datalist></div>'+
+      '<div class="field"><label>签署人姓名</label><input id="csName"></div></div>'+
+    '<div class="field"><label>以何身份签署</label><select id="csRole">'+
+      Object.keys(SIGNER_ROLE_LABEL).map(k => '<option value="'+k+'">'+SIGNER_ROLE_LABEL[k]+'</option>').join('')+
+      '</select></div>'+
+    '<div class="field"><label>手写签名<span class="sub">在下方框内签名，手机与 PC 均可</span></label>'+
+      '<canvas id="csPad" width="520" height="150" style="border:1px dashed #cfdad9;border-radius:8px;'+
+      'width:100%;touch-action:none;background:#fff"></canvas>'+
+      '<button class="link" id="csClear" style="margin-top:5px">清除重签</button></div>'+
+    '<div class="err" style="margin-top:4px">本记录会锁定当前文件的<b>内容哈希</b>，'+
+      '日后文件被替换可以查出来。但这<b>不是《电子签名法》意义上的可靠电子签名</b>——'+
+      '那需要第三方 CA 数字证书，本平台尚未接入，本记录不能作为法律证据。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="csGo">确认签署</button>');
+  const cv = document.getElementById('csPad'), ctx = cv.getContext('2d');
+  ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.strokeStyle = '#22303a';
+  let drawing = false, dirty = false;
+  const pos = ev => {
+    const r = cv.getBoundingClientRect();
+    const t = ev.touches ? ev.touches[0] : ev;
+    return [(t.clientX - r.left) * cv.width / r.width, (t.clientY - r.top) * cv.height / r.height];
+  };
+  const start = ev => { ev.preventDefault(); drawing = true; dirty = true; ctx.beginPath(); ctx.moveTo.apply(ctx, pos(ev)); };
+  const move = ev => { if (!drawing) return; ev.preventDefault(); ctx.lineTo.apply(ctx, pos(ev)); ctx.stroke(); };
+  const end = () => { drawing = false; };
+  cv.addEventListener('mousedown', start); cv.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  cv.addEventListener('touchstart', start, { passive: false });
+  cv.addEventListener('touchmove', move, { passive: false });
+  cv.addEventListener('touchend', end);
+  document.getElementById('csClear').onclick = () => { ctx.clearRect(0, 0, cv.width, cv.height); dirty = false; };
+
+  document.getElementById('csGo').onclick = async (resign) => {
+    const pno = document.getElementById('csPno').value.trim();
+    const nm = document.getElementById('csName').value.trim();
+    if (!pno || !nm) { toast('门诊号与签署人姓名都要填'); return; }
+    if (!dirty) { toast('请先手写签名'); return; }
+    const btn = document.getElementById('csGo'); btn.disabled = true; btn.textContent = '提交中…';
+    const send = async (allow) => {
+      const res = await apiFetch(API_BASE + '/api/platform/consent', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_code: code, doc_version: doc.version, patient_no: pno,
+          signer_name: nm, signer_role: document.getElementById('csRole').value,
+          signature_png: cv.toDataURL('image/png'), allow_resign: allow === true }),
+      });
+      return [res, await res.json()];
+    };
+    try {
+      let [res, d] = await send(false);
+      if (d.signed === false && d.existing_id) {
+        if (!confirm(d.hint + '\n\n仍要重新签署？')) {
+          btn.disabled = false; btn.textContent = '确认签署'; return;
+        }
+        [res, d] = await send(true);
+      }
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      toast('已记录签署 #' + d.id + '，锁定内容哈希 ' + d.doc_sha256.slice(0, 16), 7000);
+      await loadDocs(); await loadConsents();
+    } catch (e) { btn.disabled = false; btn.textContent = '确认签署'; toast('签署失败：' + e.message, 6000); }
+  };
+}
+
+async function revokeConsent(id) {
+  const reason = prompt('撤回原因（必填）——撤回知情同意是件大事，请写清楚为什么：', '');
+  if (reason === null) return;
+  if (!reason.trim()) { toast('必须写明原因'); return; }
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/consent/revoke', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id, reason: reason.trim(),
+                             operator: localStorage.getItem(LS_OP) || null }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast('已撤回签署 #' + id + '（记录保留不删除）', 5000);
+    await loadConsents();
+  } catch (e) { toast('撤回失败：' + e.message, 6000); }
+}
+
+async function docHistory(code) {
+  try {
+    const d = await getJSON('/api/platform/documents?code=' + encodeURIComponent(code) + '&withLog=1');
+    const list = d.documents || [];
+    if (!list.length) { toast('资料不存在'); return; }
+    const log = list[0].log || [];
+    const ACT = { upload:'首次上传', new_version:'上传新版本', sign:'签署', revoke:'撤回签署',
+                  archive:'归档', download:'下载' };
+    openDrawer(list[0].title, code + ' · 共 ' + list.length + ' 个版本',
+      '<div class="detail-card"><h4>版本</h4>'+list.map(v =>
+        '<div class="detail-row"><span>v'+esc(v.version)+' · '+esc(v.created_at)+'</span>'+
+        '<b>'+(DOC_STATUS_TAG[v.status] || ['','?'])[1]+' · '+fmtBytes(v.size_bytes)+
+        ' · 哈希 '+esc(v.sha256_short)+'</b></div>').join('')+'</div>'+
+      '<h4 style="margin:16px 0 8px">操作留痕（只增不改）</h4><ul class="qc-log">'+
+      (log.length ? log.map(l => '<li><b>'+esc(ACT[l.action] || l.action)+'</b> · '+
+        esc(l.operator || '未署名')+' · '+esc(l.at)+
+        (l.detail ? '<br><span style="color:#82909c">'+esc(l.detail)+'</span>' : '')+'</li>').join('')
+        : '<li style="color:#9ca3af">暂无</li>')+'</ul>', '');
+  } catch (e) { toast('加载失败：' + e.message, 5000); }
+}
 
 /* ================================================================ M15 宣教材料库 (方案 §2.3)
 

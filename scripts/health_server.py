@@ -5957,6 +5957,484 @@ def search_field_catalog():
             'limits': {'max_nodes': SEARCH_MAX_NODES, 'max_depth': SEARCH_MAX_DEPTH}}
 
 
+# ============ 随访平台 1.1 M17 (知情同意与项目资料, 方案 §2.4) ============
+#
+# 两条必须先说清楚的边界, 否则这块做出来会给人错误的安全感:
+#
+# 1) **这不是《电子签名法》意义上的"可靠电子签名"。**
+#    法律上的可靠电子签名要求: 制作数据由签名人专有控制、签署后对签名和文件的
+#    任何改动都能被发现 —— 实务上靠 CA 数字证书实现。这里做的是**签署留痕**:
+#    谁、什么时候、从哪个 IP/设备、签的是哪一版(内容哈希)、手写签名图。
+#    它对内部流程管理和事后追溯是够用的, 但**不能拿去当法律证据**。
+#    要有法律效力必须接第三方 CA。这一条在接口注释、前端界面、对照表三处都写明。
+#
+# 2) 签署记录必须钉住**内容哈希**, 不能只记文件 id。
+#    只记 id 的话, 有人替换了那份 PDF, 已有的签名就"覆盖"了不同的内容 ——
+#    而且看不出来。存 sha256 之后, 换了文件一比对就知道签的不是这一版。
+#    这是这块唯一真正有价值的完整性属性, 也是最便宜的。
+#
+# 3) 签好的知情同意书含姓名、身份证号、手写签名, 比平台现在暴露的门诊号严重得多。
+#    所以**文件下载要带写接口口令**, 尽管它是个读操作。这个不对称是刻意的。
+
+DOC_TYPES = {
+    'consent':   '知情同意书',
+    'protocol':  '研究方案',
+    'ethics':    '伦理批件',
+    'sop':       'SOP 文件',
+    'guideline': '诊疗规范',
+    'other':     '其他资料',
+}
+# 扩展名白名单。明确排掉 html/htm/svg/js —— 这些从服务器发回去时浏览器可能当成
+# 可执行内容渲染, 一份上传的 svg 里塞段脚本就是存储型 XSS。
+DOC_ALLOWED_EXT = ('pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+                   'jpg', 'jpeg', 'png', 'txt', 'md', 'csv', 'zip')
+DOC_MAX_BYTES = 30 * 1024 * 1024
+DOC_DIR = os.environ.get('PLATFORM_DOC_DIR') or '/opt/suifang/uploads'
+
+CONSENT_SIGNER_ROLES = {'patient': '受试者本人', 'guardian': '监护人/法定代理人',
+                        'witness': '见证人', 'investigator': '研究者'}
+CONSENT_DISCLAIMER = ('本签署记录为流程留痕(签署人、时间、来源、文件内容哈希与手写签名图), '
+                      '不是《电子签名法》意义上的可靠电子签名。可靠电子签名需第三方 CA 数字证书, '
+                      '本平台尚未接入 —— 本记录可用于内部追溯, 不能作为法律证据。')
+
+
+def _doc_safe_ext(filename):
+    """从原始文件名里取扩展名。**只取扩展名, 原始文件名一个字都不落到磁盘上** ——
+    用户可以在文件名里塞 ../../etc/passwd, 也可以塞超长名/控制字符。"""
+    ext = str(filename or '').rsplit('.', 1)[-1].lower() if '.' in str(filename or '') else ''
+    ext = re.sub(r'[^a-z0-9]', '', ext)[:8]
+    return ext if ext in DOC_ALLOWED_EXT else None
+
+
+def ensure_platform_doc_tables():
+    """M17: 项目资料表 + 签署记录表 + 留痕表 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_document (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(64) NOT NULL,
+                version VARCHAR(32) NOT NULL DEFAULT '1',
+                title VARCHAR(200) NOT NULL,
+                doc_type VARCHAR(24) NOT NULL DEFAULT 'other',
+                category VARCHAR(64) DEFAULT NULL COMMENT '项目/病种',
+                orig_name VARCHAR(255) DEFAULT NULL COMMENT '上传时的原始文件名, 仅供显示',
+                stored_name VARCHAR(128) NOT NULL COMMENT '磁盘上的名字, 由服务端生成',
+                ext VARCHAR(8) NOT NULL,
+                size_bytes BIGINT NOT NULL,
+                sha256 CHAR(64) NOT NULL COMMENT '内容哈希: 签署记录钉的就是它',
+                uploader VARCHAR(64) DEFAULT NULL,
+                scope ENUM('private','shared') DEFAULT 'private',
+                status ENUM('active','superseded','archived') DEFAULT 'active',
+                note VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_doc_code_version (code, version),
+                INDEX idx_type (doc_type),
+                INDEX idx_status (status),
+                INDEX idx_sha (sha256)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M17 项目资料 (含知情同意书模板)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_consent (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                doc_code VARCHAR(64) NOT NULL,
+                doc_version VARCHAR(32) NOT NULL,
+                doc_sha256 CHAR(64) NOT NULL COMMENT '签署当时那份文件的内容哈希 —— 只记 doc_id 的话
+                    有人换了 PDF, 这个签名就"覆盖"了不同的内容, 而且看不出来',
+                patient_no VARCHAR(64) NOT NULL,
+                signer_name VARCHAR(64) NOT NULL,
+                signer_role VARCHAR(16) NOT NULL DEFAULT 'patient',
+                signature_png MEDIUMTEXT DEFAULT NULL COMMENT '手写签名图 data URI',
+                signed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                source_ip VARCHAR(64) DEFAULT NULL,
+                user_agent VARCHAR(300) DEFAULT NULL,
+                status ENUM('signed','revoked') DEFAULT 'signed',
+                revoked_by VARCHAR(64) DEFAULT NULL,
+                revoked_at DATETIME DEFAULT NULL,
+                revoke_reason VARCHAR(500) DEFAULT NULL,
+                note VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_patient (patient_no),
+                INDEX idx_doc (doc_code, doc_version),
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+              COMMENT='随访平台 M17 知情同意签署留痕 (非可靠电子签名, 见 CONSENT_DISCLAIMER)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_document_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                doc_code VARCHAR(64) DEFAULT NULL,
+                doc_version VARCHAR(32) DEFAULT NULL,
+                consent_id BIGINT DEFAULT NULL,
+                action VARCHAR(24) NOT NULL COMMENT 'upload/new_version/download/sign/revoke/archive',
+                operator VARCHAR(64) DEFAULT NULL,
+                detail VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_doc (doc_code, doc_version),
+                INDEX idx_consent (consent_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M17 资料与签署留痕 (只增不改)'
+        """)
+        print('[启动] platform_document / platform_consent / platform_document_log 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_doc_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def upload_document(body):
+    """上传一份项目资料。{title, doc_type, filename, content_base64, code?, version?,
+       category?, uploader?, scope?, note?}
+
+    同 code 再传一份 = 新版本, 旧版自动置 superseded 但**文件不删** ——
+    伦理批件这类东西, "当时用的是哪一版"本身就是要留档的信息。
+    """
+    title = str(body.get('title') or '').strip()
+    doc_type = body.get('doc_type') or 'other'
+    if not title:
+        return None, 'title 必填'
+    if doc_type not in DOC_TYPES:
+        return None, 'doc_type 必须是 {} 之一'.format('/'.join(DOC_TYPES))
+    ext = _doc_safe_ext(body.get('filename'))
+    if not ext:
+        return None, '只接受这些格式: {}。html/svg/js 等被刻意排除 —— 它们从服务器发回时可能被当作可执行内容渲染'.format(
+            '/'.join(DOC_ALLOWED_EXT))
+    b64 = body.get('content_base64') or ''
+    try:
+        import base64 as _b64
+        raw = _b64.b64decode(b64)
+    except Exception:
+        return None, 'content_base64 不是合法 base64'
+    if not raw:
+        return None, '文件是空的'
+    if len(raw) > DOC_MAX_BYTES:
+        return None, '文件超过 {}MB'.format(DOC_MAX_BYTES // 1024 // 1024)
+
+    import hashlib
+    sha = hashlib.sha256(raw).hexdigest()
+    code = re.sub(r'[^0-9A-Za-z_\-]', '', str(body.get('code') or ''))[:64] or \
+        'DOC' + sha[:8].upper()
+
+    ensure_platform_doc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        version = str(body.get('version') or '').strip()
+        if not version:
+            cur.execute('SELECT version FROM platform_document WHERE code=%s '
+                        'ORDER BY id DESC LIMIT 1', (code,))
+            row = cur.fetchone()
+            version = _bump_version(row[0]) if row else '1'
+        cur.execute('SELECT id FROM platform_document WHERE code=%s AND version=%s', (code, version))
+        if cur.fetchone():
+            cur.close()
+            return None, '{} 的版本 {} 已存在。不指定 version 时会自动递增'.format(code, version)
+
+        # 磁盘上的名字完全由服务端生成, 与用户提供的文件名无关 —— 路径穿越、
+        # 超长名、控制字符、同名覆盖这几类问题一次性都没有了。
+        stored = '{}_{}_{}.{}'.format(code, version, sha[:12], ext)
+        try:
+            if not os.path.isdir(DOC_DIR):
+                os.makedirs(DOC_DIR)
+            with open(os.path.join(DOC_DIR, stored), 'wb') as f:
+                f.write(raw)
+        except OSError as e:
+            cur.close()
+            return None, '文件写入失败({}): {}'.format(DOC_DIR, e)
+
+        cur.execute("""
+            INSERT INTO platform_document
+              (code, version, title, doc_type, category, orig_name, stored_name, ext,
+               size_bytes, sha256, uploader, scope, status, note)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active',%s)
+        """, (code, version, title, doc_type, body.get('category') or None,
+              str(body.get('filename') or '')[:255], stored, ext, len(raw), sha,
+              body.get('uploader') or None, body.get('scope') or 'private',
+              body.get('note') or None))
+        cur.execute("UPDATE platform_document SET status='superseded' "
+                    "WHERE code=%s AND version<>%s AND status='active'", (code, version))
+        cur.execute("""INSERT INTO platform_document_log (doc_code, doc_version, action, operator, detail)
+                       VALUES (%s,%s,%s,%s,%s)""",
+                    (code, version, 'new_version' if version != '1' else 'upload',
+                     body.get('uploader') or None,
+                     '{} · {} 字节 · sha256 {}'.format(title, len(raw), sha[:16])))
+        cur.close()
+        return {'code': code, 'version': version, 'sha256': sha, 'size_bytes': len(raw),
+                'ext': ext, 'stored_name': stored}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_documents(doc_type=None, code=None, category=None, status=None,
+                    with_log=False, limit=200):
+    """项目资料列表。不返回文件内容, 只返回元信息 —— 内容走单独的下载接口(带门禁)。"""
+    ensure_platform_doc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if code:
+            where.append('d.code=%s'); params.append(code)
+        if doc_type:
+            where.append('d.doc_type=%s'); params.append(doc_type)
+        if category:
+            where.append('d.category=%s'); params.append(category)
+        if status:
+            where.append('d.status=%s'); params.append(status)
+        params.append(int(limit))
+        cur.execute("""
+            SELECT d.id, d.code, d.version, d.title, d.doc_type, d.category, d.orig_name,
+                   d.ext, d.size_bytes, d.sha256, d.uploader, d.scope, d.status, d.note,
+                   d.created_at,
+                   (SELECT COUNT(*) FROM platform_consent c
+                     WHERE c.doc_code=d.code AND c.doc_version=d.version AND c.status='signed') AS signed_count
+            FROM platform_document d WHERE {}
+            ORDER BY d.doc_type, d.code, d.id DESC LIMIT %s
+        """.format(' AND '.join(where)), params)
+        cols = ['id', 'code', 'version', 'title', 'doc_type', 'category', 'orig_name', 'ext',
+                'size_bytes', 'sha256', 'uploader', 'scope', 'status', 'note', 'created_at',
+                'signed_count']
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(cols, row))
+            if r.get('created_at') is not None and hasattr(r['created_at'], 'strftime'):
+                r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+            r['doc_type_label'] = DOC_TYPES.get(r['doc_type'], r['doc_type'])
+            r['sha256_short'] = (r.get('sha256') or '')[:16]
+            out.append(r)
+        if with_log and code:
+            cur.execute("""SELECT action, operator, detail, created_at FROM platform_document_log
+                           WHERE doc_code=%s ORDER BY id""", (code,))
+            logs = [{'action': a, 'operator': o, 'detail': d,
+                     'at': c.strftime('%Y-%m-%d %H:%M:%S') if hasattr(c, 'strftime') else c}
+                    for a, o, d, c in cur.fetchall()]
+            for r in out:
+                r['log'] = logs
+        cur.close()
+        return {'ok': True, 'count': len(out), 'documents': out,
+                'doc_types': DOC_TYPES, 'allowed_ext': list(DOC_ALLOWED_EXT),
+                'max_mb': DOC_MAX_BYTES // 1024 // 1024}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def fetch_document_bytes(code, version=None):
+    """取一份资料的字节。返回 (bytes, meta, error)。
+
+    读文件前重算一次 sha256 和库里比对 —— 磁盘上的文件被换掉/损坏时要立刻发现,
+    而不是把一份不知道是什么的东西发出去。
+    """
+    if not code:
+        return None, None, 'code 必填'
+    ensure_platform_doc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if version:
+            cur.execute('SELECT stored_name, orig_name, ext, sha256, title, size_bytes '
+                        'FROM platform_document WHERE code=%s AND version=%s', (code, str(version)))
+        else:
+            cur.execute('SELECT stored_name, orig_name, ext, sha256, title, size_bytes '
+                        'FROM platform_document WHERE code=%s ORDER BY id DESC LIMIT 1', (code,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return None, None, '资料不存在: {}'.format(code)
+        stored, orig, ext, sha, title, size = row
+        # basename 兜底: stored_name 是服务端生成的, 正常不含分隔符; 万一库被改过也不越出目录
+        path = os.path.join(DOC_DIR, os.path.basename(stored))
+        if not os.path.isfile(path):
+            return None, None, '文件在磁盘上找不到({}) —— 库里有记录但文件丢了'.format(stored)
+        with open(path, 'rb') as f:
+            raw = f.read()
+        import hashlib
+        actual = hashlib.sha256(raw).hexdigest()
+        if actual != sha:
+            return None, None, ('文件内容哈希与入库时不一致(库 {} / 实际 {}) —— '
+                                '文件可能被替换或损坏, 已拒绝下发'.format(sha[:16], actual[:16]))
+        return raw, {'orig_name': orig, 'ext': ext, 'title': title,
+                     'sha256': sha, 'size_bytes': size}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, None, str(e)
+    finally:
+        conn.close()
+
+
+def sign_consent(body, source_ip=None, user_agent=None):
+    """记录一次知情同意签署。{doc_code, patient_no, signer_name, signer_role?,
+       doc_version?, signature_png?, note?}
+
+    再说一次: 这是**签署留痕**, 不是可靠电子签名。见 CONSENT_DISCLAIMER。
+    """
+    code = str(body.get('doc_code') or '').strip()
+    patient_no = str(body.get('patient_no') or '').strip()
+    signer = str(body.get('signer_name') or '').strip()
+    if not code or not patient_no or not signer:
+        return None, 'doc_code / patient_no / signer_name 都必填'
+    role = body.get('signer_role') or 'patient'
+    if role not in CONSENT_SIGNER_ROLES:
+        return None, 'signer_role 必须是 {} 之一'.format('/'.join(CONSENT_SIGNER_ROLES))
+    png = body.get('signature_png')
+    if png and (not isinstance(png, str) or not png.startswith('data:image/png;base64,')):
+        return None, 'signature_png 必须是 data:image/png;base64, 开头的 data URI'
+    if png and len(png) > 2 * 1024 * 1024:
+        return None, '签名图过大(超过 2MB)'
+
+    ensure_platform_doc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if body.get('doc_version'):
+            cur.execute('SELECT version, sha256, doc_type, title FROM platform_document '
+                        'WHERE code=%s AND version=%s', (code, str(body['doc_version'])))
+        else:
+            cur.execute("SELECT version, sha256, doc_type, title FROM platform_document "
+                        "WHERE code=%s AND status='active' ORDER BY id DESC LIMIT 1", (code,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '知情同意书不存在或已归档: {}'.format(code)
+        version, sha, doc_type, title = row
+        if doc_type != 'consent':
+            cur.close()
+            return None, ('{} 的类型是「{}」, 不是知情同意书 —— 签署只对知情同意书有意义, '
+                          '给研究方案盖个签名不构成任何东西'.format(code, DOC_TYPES.get(doc_type, doc_type)))
+        cur.execute("SELECT id FROM platform_consent WHERE doc_code=%s AND doc_version=%s "
+                    "AND patient_no=%s AND signer_role=%s AND status='signed'",
+                    (code, version, patient_no, role))
+        dup = cur.fetchone()
+        if dup and not body.get('allow_resign'):
+            cur.close()
+            return {'ok': False, 'signed': False, 'existing_id': dup[0],
+                    'hint': '该受试者已以「{}」身份签署过本版本(记录 #{})。'
+                            '确需重签请带 allow_resign=true —— 重签会新增一条记录, '
+                            '旧记录不删除'.format(CONSENT_SIGNER_ROLES[role], dup[0])}, None
+
+        cur.execute("""
+            INSERT INTO platform_consent
+              (doc_code, doc_version, doc_sha256, patient_no, signer_name, signer_role,
+               signature_png, source_ip, user_agent, status, note)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'signed',%s)
+        """, (code, version, sha, patient_no, signer[:64], role, png,
+              (source_ip or '')[:64] or None, (user_agent or '')[:300] or None,
+              body.get('note') or None))
+        cid = cur.lastrowid
+        cur.execute("""INSERT INTO platform_document_log
+                       (doc_code, doc_version, consent_id, action, operator, detail)
+                       VALUES (%s,%s,%s,'sign',%s,%s)""",
+                    (code, version, cid, signer[:64],
+                     '{} 以「{}」身份签署《{}》v{} (内容哈希 {})'.format(
+                         patient_no, CONSENT_SIGNER_ROLES[role], title, version, sha[:16])))
+        cur.close()
+        return {'ok': True, 'signed': True, 'id': cid, 'doc_code': code,
+                'doc_version': version, 'doc_sha256': sha,
+                'disclaimer': CONSENT_DISCLAIMER}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def revoke_consent(body):
+    """撤回一份签署 {id, operator, reason}。不删记录, 只标 revoked。"""
+    try:
+        cid = int(body.get('id'))
+    except (TypeError, ValueError):
+        return None, 'id 必填且为整数'
+    reason = str(body.get('reason') or '').strip()
+    if not reason:
+        return None, 'reason 必填 —— 撤回知情同意是件大事, 必须写清楚为什么'
+    ensure_platform_doc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, doc_code, doc_version, patient_no FROM platform_consent WHERE id=%s', (cid,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '签署记录不存在: {}'.format(cid)
+        if row[0] == 'revoked':
+            cur.close()
+            return None, '该记录已经是撤回状态'
+        cur.execute("""UPDATE platform_consent SET status='revoked', revoked_by=%s,
+                       revoked_at=NOW(), revoke_reason=%s WHERE id=%s""",
+                    (body.get('operator') or None, reason[:500], cid))
+        cur.execute("""INSERT INTO platform_document_log
+                       (doc_code, doc_version, consent_id, action, operator, detail)
+                       VALUES (%s,%s,%s,'revoke',%s,%s)""",
+                    (row[1], row[2], cid, body.get('operator') or None,
+                     '撤回 {} 的签署: {}'.format(row[3], reason[:200])))
+        cur.close()
+        return {'ok': True, 'id': cid, 'status': 'revoked'}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def query_consents(patient_no=None, doc_code=None, status=None,
+                   with_signature=False, limit=200):
+    """签署记录查询。默认不带签名图 —— 那是几十 KB 的 base64, 列表页不需要。"""
+    ensure_platform_doc_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if patient_no:
+            where.append('c.patient_no=%s'); params.append(patient_no)
+        if doc_code:
+            where.append('c.doc_code=%s'); params.append(doc_code)
+        if status:
+            where.append('c.status=%s'); params.append(status)
+        params.append(int(limit))
+        cols = ('c.id, c.doc_code, c.doc_version, c.doc_sha256, c.patient_no, p.name, '
+                'c.signer_name, c.signer_role, c.signed_at, c.source_ip, c.status, '
+                'c.revoked_by, c.revoked_at, c.revoke_reason, c.note, d.title, '
+                "(c.doc_sha256 = COALESCE(d.sha256,'')) AS hash_matches")
+        if with_signature:
+            cols += ', c.signature_png'
+        cur.execute("""
+            SELECT {} FROM platform_consent c
+            LEFT JOIN platform_patient p ON p.patient_no=c.patient_no
+            LEFT JOIN platform_document d ON d.code=c.doc_code AND d.version=c.doc_version
+            WHERE {} ORDER BY c.signed_at DESC LIMIT %s
+        """.format(cols, ' AND '.join(where)), params)
+        names = [x[0] for x in cur.description]
+        out = []
+        for row in cur.fetchall():
+            r = dict(zip(names, row))
+            for k in ('signed_at', 'revoked_at'):
+                if r.get(k) is not None and hasattr(r[k], 'strftime'):
+                    r[k] = r[k].strftime('%Y-%m-%d %H:%M:%S')
+            r['signer_role_label'] = CONSENT_SIGNER_ROLES.get(r.get('signer_role'), r.get('signer_role'))
+            r['doc_sha256_short'] = (r.get('doc_sha256') or '')[:16]
+            # 库里那份文件现在的哈希和签署时对不上 = 文件被换过。这是这块最该报出来的事。
+            r['hash_matches'] = bool(r.get('hash_matches'))
+            if not r['hash_matches']:
+                r['integrity_warning'] = ('签署时的文件哈希与该版本当前的哈希不一致 —— '
+                                          '文件在签署之后被替换过, 这份签名已不能证明签的是现在这一版')
+            out.append(r)
+        cur.close()
+        return {'ok': True, 'count': len(out), 'consents': out,
+                'roles': CONSENT_SIGNER_ROLES, 'disclaimer': CONSENT_DISCLAIMER}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -6675,6 +7153,31 @@ def platform_auto_ingest_loop(interval_min):
 # ============ HTTP Handler ============
 class HealthDataHandler(BaseHTTPRequestHandler):
 
+    def _send_file(self, raw, meta):
+        """下发一份上传的资料。
+
+        三个必须的响应头:
+          Content-Disposition: attachment  —— 强制下载而不是在浏览器里渲染。上传的
+              文档里可能有主动内容, 在我们自己的域下渲染就是存储型 XSS。
+          X-Content-Type-Options: nosniff  —— 关掉浏览器的类型嗅探, 否则 Content-Type
+              写成 octet-stream 也可能被"猜"成 html 后渲染。
+          Content-Type: application/octet-stream —— 一律当字节流, 不按扩展名给真实类型。
+        文件名走 RFC 5987 的 filename*, 中文名才不会乱码。
+        """
+        name = meta.get('orig_name') or '{}.{}'.format(meta.get('title') or 'document', meta.get('ext') or 'bin')
+        quoted = urllib.parse.quote(str(name), safe='')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + quoted)
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Content-Length', str(len(raw)))
+        self.send_header('X-Content-SHA256', meta.get('sha256') or '')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Platform-Token')
+        self.send_header('Access-Control-Expose-Headers', 'Content-Disposition, X-Content-SHA256')
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _send_json(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
         self.send_response(code)
@@ -7054,6 +7557,40 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/documents':
+            dt = (query.get('type') or [None])[0]
+            if dt and dt not in DOC_TYPES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'type 必须是 {} 之一'.format('/'.join(DOC_TYPES))}); return
+            result, err = query_documents(
+                doc_type=dt, code=(query.get('code') or [None])[0],
+                category=(query.get('category') or [None])[0],
+                status=(query.get('status') or [None])[0],
+                with_log=(query.get('withLog') or ['0'])[0] in ('1', 'true'),
+                limit=min(int((query.get('limit') or ['200'])[0] or 200), 500))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/document/download':
+            # 这是个读操作, 却要写接口口令 —— 刻意的。签好的知情同意书含姓名、身份证号、
+            # 手写签名, 比平台其余不鉴权接口暴露的门诊号严重得多, 不该谁都能下载。
+            if not check_platform_token(self):
+                return
+            raw, meta, err = fetch_document_bytes(
+                (query.get('code') or [None])[0], (query.get('version') or [None])[0])
+            if err:
+                self._send_json(404 if '不存在' in err or '找不到' in err else 400,
+                                {'ok': False, 'error': err}); return
+            self._send_file(raw, meta)
+
+        elif pathname == '/api/platform/consents':
+            result, err = query_consents(
+                patient_no=(query.get('patientNo') or [None])[0],
+                doc_code=(query.get('code') or [None])[0],
+                status=(query.get('status') or [None])[0],
+                with_signature=(query.get('withSignature') or ['0'])[0] in ('1', 'true'),
+                limit=min(int((query.get('limit') or ['200'])[0] or 200), 500))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/search/fields':
             self._send_json(200, search_field_catalog())
 
@@ -7373,6 +7910,12 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/documents': '随访平台 M17: 项目资料列表 (?type=consent|protocol|ethics|sop|guideline)',
+                    'POST /api/platform/document': '随访平台 M17: 上传资料 ({title, doc_type, filename, content_base64}); 同 code 再传=新版本',
+                    'GET  /api/platform/document/download': '随访平台 M17: 下载资料 (?code=&version=) —— 需 X-Platform-Token, 见代码注释',
+                    'POST /api/platform/consent': '随访平台 M17: 记录知情同意签署(签署留痕, 非可靠电子签名)',
+                    'GET  /api/platform/consents': '随访平台 M17: 签署记录 (?patientNo=&code=); 会标出文件被换过的记录',
+                    'POST /api/platform/consent/revoke': '随访平台 M17: 撤回签署 ({id, reason})',
                     'GET  /api/platform/search/fields': '随访平台 M16: 可用检索字段与统计维度(前端据此建条件, 不自己硬编码)',
                     'POST /api/platform/search': '随访平台 M16: 受试者高级检索 ({conditions:{op:and,children:[...]}})',
                     'POST /api/platform/stats': '随访平台 M16: 对检索结果做分布统计 ({conditions?, dims:[...]})',
@@ -7560,6 +8103,21 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/document':
+                result, err = upload_document(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/consent':
+                result, err = sign_consent(
+                    body, source_ip=self.client_address[0] if self.client_address else None,
+                    user_agent=self.headers.get('User-Agent'))
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/consent/revoke':
+                result, err = revoke_consent(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/search':
                 # 只读检索, 但用 POST: 条件树放不进查询串, 而且门诊号不该出现在
@@ -7852,6 +8410,8 @@ if __name__ == '__main__':
         ensure_platform_edu_tables()
         # M16: 体征日聚合派生表 (idempotent)
         ensure_platform_vital_daily()
+        # M17: 项目资料 + 知情签署 + 留痕 (idempotent)
+        ensure_platform_doc_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -7903,6 +8463,12 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/documents                随访平台 M17: 项目资料列表')
+    print('[端点] POST /api/platform/document                 随访平台 M17: 上传资料(同 code 再传=新版本)')
+    print('[端点] GET  /api/platform/document/download        随访平台 M17: 下载资料(需口令)')
+    print('[端点] POST /api/platform/consent                  随访平台 M17: 知情同意签署留痕')
+    print('[端点] GET  /api/platform/consents                 随访平台 M17: 签署记录')
+    print('[端点] POST /api/platform/consent/revoke           随访平台 M17: 撤回签署')
     print('[端点] GET  /api/platform/search/fields           随访平台 M16: 可用检索字段')
     print('[端点] POST /api/platform/search                  随访平台 M16: 受试者高级检索')
     print('[端点] POST /api/platform/stats                   随访平台 M16: 分布统计')
