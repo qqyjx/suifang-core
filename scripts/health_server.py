@@ -10041,6 +10041,485 @@ def query_screen_submissions(task_code=None, status=None, limit=200):
         conn.close()
 
 
+# ============ 随访平台 1.1 M24 (研究数据库状态管理 + 版本回滚, 方案 §3.1(3)) ============
+#
+# 方案原话: "支持暂存、重置、删除、结束四种状态管理, 重置后可修改 CRF 表、流程与
+# 分组信息, **且不影响已收集患者数据**"。最后半句是整块的重心, 也是和 M14/M18/M19
+# 一脉相承的地方。
+#
+# 三条钉死的规矩:
+#
+# 1) **重置不动任何已收集的数据。** 重置的含义只是"解开配置锁, 允许改 CRF/流程/分组",
+#    不是"清空重来"。已填的表、已排的访视、已入组的人一条不动。改完配置回到运行中,
+#    旧数据仍钉在它当时的版本上(M14/M19 的版本机制保证了这一点)。
+#
+# 2) **重置期间不收新数据。** 这条是我加的: 配置正在改的时候收上来的数据, 说不清
+#    是按旧配置采的还是按新配置采的 —— 而三个月后没人能凭记忆分辨。所以重置态下
+#    入组和填报一律挡住, 改完再放开。
+#
+# 3) **删除只能是逻辑删除。** 物理删患者数据在临床研究里不可接受(数据要留档备查,
+#    受试者也有权要求知道自己的数据在哪)。所以代码里根本不提供物理删除的路径 ——
+#    "删除"只是把状态置为 deleted 并从常规列表里隐去, 数据一行不少, 而且可以恢复。
+#
+# 状态决定**能做什么**, 不是决定**谁能做** —— 后者是鉴权, 还没建。
+
+STUDY_STATUSES = {
+    'staged':  '暂存(配置中)',
+    'running': '运行中',
+    'reset':   '重置态(可改配置, 暂停收数据)',
+    'ended':   '已结束(只读)',
+    'deleted': '已删除(逻辑删除, 数据保留)',
+}
+STUDY_TRANSITIONS = {
+    'activate': {'from': ('staged', 'reset'), 'to': 'running', 'label': '启用'},
+    'reset':    {'from': ('running',), 'to': 'reset', 'label': '重置'},
+    'end':      {'from': ('running', 'reset', 'staged'), 'to': 'ended', 'label': '结束'},
+    'delete':   {'from': ('staged', 'reset', 'ended'), 'to': 'deleted', 'label': '删除'},
+    'restore':  {'from': ('deleted',), 'to': 'staged', 'label': '恢复'},
+}
+# 各状态允许的业务动作。挡住的不是"权限", 是"这个动作在这个状态下没有意义或会毁数据"。
+STUDY_ALLOWED = {
+    'staged':  {'edit_config': True,  'enroll': False, 'collect': False},
+    'running': {'edit_config': False, 'enroll': True,  'collect': True},
+    'reset':   {'edit_config': True,  'enroll': False, 'collect': False},
+    'ended':   {'edit_config': False, 'enroll': False, 'collect': False},
+    'deleted': {'edit_config': False, 'enroll': False, 'collect': False},
+}
+STUDY_ACTION_LABELS = {'edit_config': '修改 CRF/流程/分组', 'enroll': '入组患者',
+                       'collect': '收集数据(填报/访视)'}
+
+
+def ensure_platform_study_tables():
+    """M24: 研究数据库 + 状态留痕 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_study (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                code VARCHAR(64) NOT NULL UNIQUE,
+                name VARCHAR(128) NOT NULL,
+                sponsor VARCHAR(128) DEFAULT NULL,
+                cohort_code VARCHAR(64) DEFAULT NULL COMMENT '绑定的纳排方案',
+                flow_codes JSON DEFAULT NULL COMMENT '绑定的随访流程',
+                crf_codes JSON DEFAULT NULL COMMENT '绑定的 CRF',
+                status ENUM('staged','running','reset','ended','deleted') DEFAULT 'staged',
+                owner VARCHAR(64) DEFAULT NULL,
+                note VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+              COMMENT='随访平台 M24 研究数据库(删除只置状态, 数据一行不删)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_study_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                study_code VARCHAR(64) NOT NULL,
+                action VARCHAR(24) NOT NULL,
+                from_status VARCHAR(16) DEFAULT NULL,
+                to_status VARCHAR(16) DEFAULT NULL,
+                operator VARCHAR(64) DEFAULT NULL,
+                reason VARCHAR(500) DEFAULT NULL,
+                snapshot JSON DEFAULT NULL COMMENT '变更当时的数据量快照, 事后能证明"重置没动数据"',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_study (study_code, id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M24 数据库状态留痕(只增不改)'
+        """)
+        print('[启动] platform_study / platform_study_log 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_study_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def _study_data_snapshot(cur, code, cohort, flows):
+    """点一遍这个研究底下有多少数据。用来证明"重置前后一条没少"。"""
+    snap = {}
+    try:
+        if cohort:
+            cur.execute("SELECT COUNT(*) FROM platform_enrollment WHERE cohort_code=%s "
+                        "AND status='enrolled'", (cohort,))
+            snap['enrolled'] = int(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM platform_scale_response r "
+                        "JOIN platform_enrollment e ON e.patient_no=r.patient_no "
+                        "WHERE e.cohort_code=%s", (cohort,))
+            snap['scale_responses'] = int(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM platform_crf_response r "
+                        "JOIN platform_enrollment e ON e.patient_no=r.patient_no "
+                        "WHERE e.cohort_code=%s", (cohort,))
+            snap['crf_responses'] = int(cur.fetchone()[0] or 0)
+        if flows:
+            ph = ','.join(['%s'] * len(flows))
+            cur.execute("SELECT COUNT(*) FROM platform_visit v JOIN platform_flow_instance i "
+                        "ON i.id=v.instance_id WHERE i.flow_code IN ({})".format(ph), flows)
+            snap['visits'] = int(cur.fetchone()[0] or 0)
+    except Exception:
+        traceback.print_exc()
+    return snap
+
+
+def upsert_study(body):
+    """建/改研究数据库。运行中不许改绑定 —— 换掉绑的 CRF/流程等于换了一个研究。"""
+    code = re.sub(r'[^0-9A-Za-z_\-]', '', str(body.get('code') or ''))[:64]
+    name = str(body.get('name') or '').strip()
+    if not code or not name:
+        return None, 'code 和 name 必填'
+    for k in ('flow_codes', 'crf_codes'):
+        v = body.get(k)
+        if v is not None and not isinstance(v, list):
+            return None, '{} 必须是数组'.format(k)
+
+    ensure_platform_study_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, cohort_code, flow_codes, crf_codes FROM platform_study WHERE code=%s',
+                    (code,))
+        old = cur.fetchone()
+        if old and old[0] not in ('staged', 'reset'):
+            binding_changed = any([
+                body.get('cohort_code') is not None and body['cohort_code'] != old[1],
+                body.get('flow_codes') is not None
+                and json.dumps(sorted(body['flow_codes'])) != json.dumps(sorted(
+                    json.loads(old[2]) if isinstance(old[2], str) else (old[2] or []))),
+                body.get('crf_codes') is not None
+                and json.dumps(sorted(body['crf_codes'])) != json.dumps(sorted(
+                    json.loads(old[3]) if isinstance(old[3], str) else (old[3] or []))),
+            ])
+            if binding_changed:
+                cur.close()
+                return None, ('数据库当前是「{}」, 不能改绑定的纳排方案/流程/CRF —— '
+                              '换掉这些等于换了一个研究, 而已收上来的数据是按原配置采的。'
+                              '要改请先执行"重置"(重置不会动任何已有数据)'.format(
+                                  STUDY_STATUSES.get(old[0], old[0])))
+        cur.execute("""
+            INSERT INTO platform_study (code, name, sponsor, cohort_code, flow_codes, crf_codes,
+                                        owner, note)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE name=VALUES(name), sponsor=VALUES(sponsor),
+              cohort_code=VALUES(cohort_code), flow_codes=VALUES(flow_codes),
+              crf_codes=VALUES(crf_codes), owner=VALUES(owner), note=VALUES(note)
+        """, (code, name, body.get('sponsor') or None, body.get('cohort_code') or None,
+              json.dumps(body.get('flow_codes') or [], ensure_ascii=False),
+              json.dumps(body.get('crf_codes') or [], ensure_ascii=False),
+              body.get('owner') or None, (body.get('note') or '')[:500] or None))
+        if not old:
+            cur.execute("""INSERT INTO platform_study_log (study_code, action, to_status, operator)
+                           VALUES (%s,'create','staged',%s)""", (code, body.get('owner') or None))
+        cur.close()
+        return {'code': code, 'name': name, 'status': (old[0] if old else 'staged'),
+                'status_label': STUDY_STATUSES.get(old[0] if old else 'staged')}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def study_transition(body):
+    """状态流转 {code, action, operator, reason?}。
+
+    每一步都存一份数据量快照 —— 重置/删除之后有人问"是不是把数据弄没了",
+    快照能直接对上。
+    """
+    code = str(body.get('code') or '').strip()
+    action = str(body.get('action') or '').strip()
+    tr = STUDY_TRANSITIONS.get(action)
+    if not code or not tr:
+        return None, 'code 必填, action 必须是 {}'.format('/'.join(STUDY_TRANSITIONS))
+    op = str(body.get('operator') or '').strip()
+    reason = str(body.get('reason') or '').strip()
+    if action in ('reset', 'delete', 'end') and not op:
+        return None, '{}必须署名'.format(tr['label'])
+    if action in ('reset', 'delete') and not reason:
+        return None, ('{}必须写明原因 —— 这一步会改变整个研究的可操作状态, '
+                      '三个月后要能说清是谁为什么做的'.format(tr['label']))
+
+    ensure_platform_study_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, cohort_code, flow_codes FROM platform_study WHERE code=%s', (code,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '研究数据库不存在: {}'.format(code)
+        cur_st, cohort, flows = row
+        if isinstance(flows, str):
+            flows = json.loads(flows) if flows else []
+        if cur_st not in tr['from']:
+            cur.close()
+            return None, '当前状态「{}」不能执行{} (允许的前置状态: {})'.format(
+                STUDY_STATUSES.get(cur_st, cur_st), tr['label'],
+                '、'.join(STUDY_STATUSES.get(x, x) for x in tr['from']))
+
+        before = _study_data_snapshot(cur, code, cohort, flows or [])
+        cur.execute('UPDATE platform_study SET status=%s WHERE code=%s', (tr['to'], code))
+        after = _study_data_snapshot(cur, code, cohort, flows or [])
+        cur.execute("""INSERT INTO platform_study_log
+                       (study_code, action, from_status, to_status, operator, reason, snapshot)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (code, action, cur_st, tr['to'], op or None, reason[:500] or None,
+                     json.dumps({'before': before, 'after': after}, ensure_ascii=False)))
+        cur.close()
+
+        out = {'ok': True, 'code': code, 'from': cur_st, 'to': tr['to'],
+               'status_label': STUDY_STATUSES[tr['to']],
+               'allowed': {k: v for k, v in STUDY_ALLOWED[tr['to']].items()},
+               'data_snapshot': {'before': before, 'after': after},
+               'data_unchanged': before == after}
+        if action == 'reset':
+            out['note'] = ('已进入重置态: 可以改 CRF/流程/分组了, **已收集的数据一条没动**'
+                           '(快照: 入组 {} 人 / 量表 {} 份 / CRF {} 份 / 访视 {} 次)。'
+                           '重置期间**暂停收新数据** —— 配置正在改的时候收上来的东西, '
+                           '说不清是按旧配置还是新配置采的。改完执行"启用"回到运行中'.format(
+                               before.get('enrolled', 0), before.get('scale_responses', 0),
+                               before.get('crf_responses', 0), before.get('visits', 0)))
+        elif action == 'delete':
+            out['note'] = ('已标记删除。**这是逻辑删除, 数据一行没删** —— 物理删患者数据在'
+                           '临床研究里不可接受(数据要留档备查, 受试者也有权知道自己的数据在哪), '
+                           '所以代码里根本没有物理删除的路径。需要时可以"恢复"')
+        elif action == 'activate':
+            out['note'] = '已启用: 可以入组和收数据了。此后改 CRF/流程的绑定需要先重置'
+        return out, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def study_check_action(code, action):
+    """问一句"这个研究现在能不能做某件事"。返回 (allowed, reason)。
+
+    给别处调用(入组/填报前先问一声), 也给前端拿来把按钮灰掉。
+    """
+    if action not in STUDY_ACTION_LABELS:
+        return False, 'action 必须是 {}'.format('/'.join(STUDY_ACTION_LABELS))
+    ensure_platform_study_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status FROM platform_study WHERE code=%s', (code,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return False, '研究数据库不存在: {}'.format(code)
+        st = row[0]
+        ok = STUDY_ALLOWED.get(st, {}).get(action, False)
+        if ok:
+            return True, None
+        hint = ''
+        if st == 'reset' and action in ('enroll', 'collect'):
+            hint = ' —— 重置期间收上来的数据说不清是按哪版配置采的, 改完配置执行"启用"即可恢复'
+        elif st == 'running' and action == 'edit_config':
+            hint = ' —— 要改配置请先执行"重置"(不会动任何已有数据)'
+        elif st == 'ended':
+            hint = ' —— 已结束的研究只读'
+        return False, '研究「{}」当前是「{}」, 不能{}{}'.format(
+            code, STUDY_STATUSES.get(st, st), STUDY_ACTION_LABELS[action], hint)
+    except Exception as e:
+        traceback.print_exc()
+        return False, str(e)
+    finally:
+        conn.close()
+
+
+def query_studies(code=None, status=None, include_deleted=False, with_log=False, limit=100):
+    """研究数据库列表。默认不含已删除的 —— 它们还在库里, 只是不该出现在日常视野。"""
+    ensure_platform_study_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if code:
+            where.append('s.code=%s'); params.append(code)
+        if status:
+            where.append('s.status=%s'); params.append(status)
+        elif not include_deleted:
+            where.append("s.status <> 'deleted'")
+        params.append(int(limit))
+        cur.execute("""SELECT s.code, s.name, s.sponsor, s.cohort_code, s.flow_codes, s.crf_codes,
+                              s.status, s.owner, s.note, s.created_at, s.updated_at
+                       FROM platform_study s WHERE {} ORDER BY
+                       FIELD(s.status,'running','reset','staged','ended','deleted'),
+                       s.updated_at DESC LIMIT %s""".format(' AND '.join(where)), params)
+        cols = ['code', 'name', 'sponsor', 'cohort_code', 'flow_codes', 'crf_codes',
+                'status', 'owner', 'note', 'created_at', 'updated_at']
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            for k in ('created_at', 'updated_at'):
+                if d.get(k) is not None and hasattr(d[k], 'strftime'):
+                    d[k] = d[k].strftime('%Y-%m-%d %H:%M:%S')
+            for k in ('flow_codes', 'crf_codes'):
+                if isinstance(d.get(k), str):
+                    try:
+                        d[k] = json.loads(d[k])
+                    except ValueError:
+                        d[k] = []
+            d['status_label'] = STUDY_STATUSES.get(d['status'], d['status'])
+            d['allowed'] = STUDY_ALLOWED.get(d['status'], {})
+            d['data'] = _study_data_snapshot(cur, d['code'], d['cohort_code'], d['flow_codes'] or [])
+            out.append(d)
+        if with_log and code and out:
+            cur.execute("""SELECT action, from_status, to_status, operator, reason, snapshot, created_at
+                           FROM platform_study_log WHERE study_code=%s ORDER BY id DESC LIMIT 100""",
+                        (code,))
+            logs = []
+            for a, f, t, o, rs, sn, c in cur.fetchall():
+                if isinstance(sn, str):
+                    try:
+                        sn = json.loads(sn)
+                    except ValueError:
+                        sn = None
+                logs.append({'action': a, 'action_label': (STUDY_TRANSITIONS.get(a) or {}).get('label', a),
+                             'from': f, 'to': t, 'operator': o, 'reason': rs, 'snapshot': sn,
+                             'at': c.strftime('%Y-%m-%d %H:%M:%S') if hasattr(c, 'strftime') else c})
+            out[0]['log'] = logs
+        cur.close()
+        return {'ok': True, 'count': len(out), 'studies': out,
+                'statuses': STUDY_STATUSES, 'actions': STUDY_ACTION_LABELS,
+                'transitions': {k: {'from': list(v['from']), 'to': v['to'], 'label': v['label']}
+                                for k, v in STUDY_TRANSITIONS.items()}}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+# ---- 版本回滚 (CRF / 流程通用) ----
+#
+# **回滚 = 把旧版内容再发一版, 不是删掉新版。**
+# 理由和 M13 质疑单的 reopen 一样: 已经按新版填报的数据钉在新版上, 删了新版
+# 那些数据就读不懂了 —— 而且"曾经发过这一版"这件事本身也该留在记录里。
+# 所以回滚产出的是 vN+1, 内容等于 vX, 中间那几版原样留着。
+def rollback_version(body):
+    """回滚 CRF 或流程到某个旧版本 {kind: crf|flow, code, to_version, operator, reason}"""
+    kind = body.get('kind')
+    if kind not in ('crf', 'flow'):
+        return None, 'kind 必须是 crf 或 flow'
+    code = str(body.get('code') or '').strip()
+    to_ver = str(body.get('to_version') or '').strip()
+    op = str(body.get('operator') or '').strip()
+    reason = str(body.get('reason') or '').strip()
+    if not code or not to_ver:
+        return None, 'code 和 to_version 必填'
+    if not op:
+        return None, '回滚必须署名'
+    if not reason:
+        return None, '回滚必须写明原因 —— 这会让线上换成另一版内容, 得说清为什么'
+
+    table = 'platform_crf' if kind == 'crf' else 'platform_flow'
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT version, definition, name FROM {} WHERE code=%s AND version=%s'.format(table),
+                    (code, to_ver))
+        src = cur.fetchone()
+        if not src:
+            cur.execute('SELECT version FROM {} WHERE code=%s ORDER BY id'.format(table), (code,))
+            have = [r[0] for r in cur.fetchall()]
+            cur.close()
+            return None, '{} {} 没有版本 {} (现有: {})'.format(
+                kind.upper(), code, to_ver, '、'.join(have) or '无')
+        cur.execute('SELECT version FROM {} WHERE code=%s ORDER BY id DESC LIMIT 1'.format(table), (code,))
+        latest = cur.fetchone()[0]
+        if latest == to_ver:
+            cur.close()
+            return None, '当前最新版就是 {}, 无需回滚'.format(to_ver)
+        defn = src[1]
+        if isinstance(defn, str):
+            defn = json.loads(defn)
+        name = src[2]
+        new_ver = _bump_version(latest)
+        cur.close()
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+    payload = {'code': code, 'name': name, 'version': new_ver, 'definition': defn,
+               'owner': op, 'status': 'active',
+               'note': '回滚自 v{}: {}'.format(to_ver, reason)}
+    if kind == 'crf':
+        res, err = upsert_platform_crf(payload)
+    else:
+        res, err = upsert_flow(payload)
+    if err:
+        return None, '回滚失败: {}'.format(err)
+
+    # 留痕借用 study_log 表(它就是干这个的), study_code 记成 kind:code
+    try:
+        ensure_platform_study_tables()
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""INSERT INTO platform_study_log
+                       (study_code, action, from_status, to_status, operator, reason)
+                       VALUES (%s,'rollback',%s,%s,%s,%s)""",
+                    ('{}:{}'.format(kind, code), 'v' + latest, 'v' + new_ver, op,
+                     '回滚到 v{} —— {}'.format(to_ver, reason)[:500]))
+        cur.close(); conn.close()
+    except Exception:
+        traceback.print_exc()
+
+    return {'ok': True, 'kind': kind, 'code': code, 'rolled_back_to': to_ver,
+            'new_version': new_ver, 'previous_latest': latest,
+            'note': ('回滚产出的是**新版本 v{}**(内容等于 v{}), 中间那几版原样留着 —— '
+                     '已经按 v{} 填报的数据还钉在 v{} 上, 删掉它们那些数据就读不懂了。'
+                     '"曾经发过这一版"本身也该留在记录里'.format(
+                         new_ver, to_ver, latest, latest))}, None
+
+
+def query_version_history(kind, code):
+    """看某个 CRF/流程的版本历史与回滚记录。"""
+    if kind not in ('crf', 'flow'):
+        return None, 'kind 必须是 crf 或 flow'
+    if not code:
+        return None, 'code 必填'
+    table = 'platform_crf' if kind == 'crf' else 'platform_flow'
+    resp_table = 'platform_crf_response' if kind == 'crf' else None
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if kind == 'crf':
+            cur.execute("""SELECT c.version, c.name, c.status, c.created_at, c.updated_at,
+                                  (SELECT COUNT(*) FROM platform_crf_response r
+                                    WHERE r.crf_code=c.code AND r.crf_version=c.version) AS used
+                           FROM platform_crf c WHERE c.code=%s ORDER BY c.id""", (code,))
+        else:
+            cur.execute("""SELECT f.version, f.name, f.status, f.created_at, f.updated_at,
+                                  (SELECT COUNT(*) FROM platform_flow_instance i
+                                    WHERE i.flow_code=f.code AND i.flow_version=f.version) AS used
+                           FROM platform_flow f WHERE f.code=%s ORDER BY f.id""", (code,))
+        versions = [{'version': a, 'name': b, 'status': c,
+                     'created_at': d.strftime('%Y-%m-%d %H:%M') if hasattr(d, 'strftime') else d,
+                     'updated_at': e.strftime('%Y-%m-%d %H:%M') if hasattr(e, 'strftime') else e,
+                     'in_use': int(f or 0)} for a, b, c, d, e, f in cur.fetchall()]
+        ensure_platform_study_tables()
+        cur.execute("""SELECT from_status, to_status, operator, reason, created_at
+                       FROM platform_study_log WHERE study_code=%s AND action='rollback'
+                       ORDER BY id DESC""", ('{}:{}'.format(kind, code),))
+        rollbacks = [{'from': a, 'to': b, 'operator': c, 'reason': d,
+                      'at': e.strftime('%Y-%m-%d %H:%M:%S') if hasattr(e, 'strftime') else e}
+                     for a, b, c, d, e in cur.fetchall()]
+        cur.close()
+        if not versions:
+            return None, '{} 不存在: {}'.format(kind.upper(), code)
+        return {'ok': True, 'kind': kind, 'code': code, 'versions': versions,
+                'latest': versions[-1]['version'], 'rollbacks': rollbacks,
+                'note': ('带"使用中"计数的版本不能删 —— 那些数据钉在它上面。'
+                         '回滚也不删任何版本, 而是把旧内容再发一版')}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -11163,6 +11642,28 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/studies':
+            st = (query.get('status') or [None])[0]
+            if st and st not in STUDY_STATUSES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 {} 之一'.format('/'.join(STUDY_STATUSES))}); return
+            result, err = query_studies(
+                code=(query.get('code') or [None])[0], status=st,
+                include_deleted=(query.get('includeDeleted') or ['0'])[0] in ('1', 'true'),
+                with_log=(query.get('withLog') or ['0'])[0] in ('1', 'true'),
+                limit=min(int((query.get('limit') or ['100'])[0] or 100), 300))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/study/can':
+            ok, reason = study_check_action((query.get('code') or [None])[0],
+                                            (query.get('action') or [None])[0])
+            self._send_json(200, {'ok': True, 'allowed': ok, 'reason': reason})
+
+        elif pathname == '/api/platform/version/history':
+            result, err = query_version_history((query.get('kind') or [None])[0],
+                                                (query.get('code') or [None])[0])
+            self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/screen/tasks':
             st = (query.get('status') or [None])[0]
             if st and st not in SCREEN_TASK_STATUSES:
@@ -11653,6 +12154,12 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'GET  /api/platform/studies': '随访平台 M24: 研究数据库(暂存/运行/重置/结束/已删除)',
+                    'POST /api/platform/study': '随访平台 M24: 建/改研究数据库',
+                    'POST /api/platform/study/transition': '随访平台 M24: 启用/重置/结束/删除/恢复(删除是逻辑删除)',
+                    'GET  /api/platform/study/can': '随访平台 M24: 问这个状态下能不能做某动作 (?code=&action=enroll)',
+                    'POST /api/platform/version/rollback': '随访平台 M24: 回滚 CRF/流程(产出新版本, 不删旧版)',
+                    'GET  /api/platform/version/history': '随访平台 M24: 版本历史与回滚记录 (?kind=crf&code=)',
                     'GET  /api/platform/screen/tasks': '随访平台 M23: 筛查任务(含超期/待审批预警)',
                     'POST /api/platform/screen/task': '随访平台 M23: 建/改筛查任务',
                     'POST /api/platform/screen/task/transition': '随访平台 M23: 提交审批/批准/驳回/启停/结束',
@@ -11885,6 +12392,19 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/study':
+                result, err = upsert_study(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
+
+            elif pathname == '/api/platform/study/transition':
+                result, err = study_transition(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/version/rollback':
+                result, err = rollback_version(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/screen/task':
                 result, err = upsert_screen_task(body)
@@ -12319,6 +12839,8 @@ if __name__ == '__main__':
         ensure_platform_consult_tables()
         # M23: 筛查任务 + 自助链接 + 提交 (idempotent)
         ensure_platform_screen_tables()
+        # M24: 研究数据库状态 + 版本留痕 (idempotent)
+        ensure_platform_study_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -12370,6 +12892,9 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] GET  /api/platform/studies                  随访平台 M24: 研究数据库状态')
+    print('[端点] POST /api/platform/study/transition         随访平台 M24: 启用/重置/结束/删除')
+    print('[端点] POST /api/platform/version/rollback         随访平台 M24: 版本回滚(不删旧版)')
     print('[端点] GET  /api/platform/screen/tasks             随访平台 M23: 筛查任务')
     print('[端点] POST /api/platform/screen/link              随访平台 M23: 生成自助填报链接')
     print('[端点] GET  /api/platform/screen/form              随访平台 M23 公开: 取表单(不返回患者数据)')
