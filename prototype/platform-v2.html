@@ -444,7 +444,9 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
           <div><h2>统计分析与数据导出</h2><p>方案 §4.6：受试者高级检索 · 多维分布统计 · 队列数据导出</p></div>
           <div class="hero-actions">
             <button class="white-btn" id="searchBtn">⌕ 高级检索</button>
-            <button class="white-btn" id="exportBtn">⬇ 导出数据</button>
+            <button class="white-btn" id="pickExportBtn">⊟ 变量挑选导出</button>
+            <button class="white-btn" id="sdtmBtn">▤ SDTM 风格导出</button>
+            <button class="white-btn" id="exportBtn">⬇ 全量导出</button>
           </div>
         </div>
         <div class="stats" id="anaStats"></div>
@@ -467,6 +469,13 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
           </div>
         </div>
         <div id="sqCharts"></div>
+        <div class="card panel" id="exportJobPanel" style="margin-bottom:16px">
+          <div class="panel-head"><div><h3>导出记录</h3>
+            <small>每一次导出都是一次患者数据出境——这份记录比导出功能本身更要紧</small></div>
+            <button class="link" id="exJobReload">刷新</button></div>
+          <div id="exEncNote"></div>
+          <div class="table-wrap"><table id="exJobTable"></table></div>
+        </div>
         <div class="card panel" id="sqResultPanel" style="display:none;margin-bottom:16px">
           <div class="panel-head"><h3>检索结果 <span id="sqCount" style="color:#82909c;font-weight:400"></span></h3></div>
           <div class="table-wrap"><table id="sqTable"></table></div>
@@ -476,13 +485,15 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
           <div class="table-wrap"><table><thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead><tbody>
             <tr><td>全量导出 (患者/体征/报警/随访记录/计划)</td><td><span class="status">已上线</span></td><td>CSV 打包 ZIP，中文文件名，UTF-8 BOM 可直接用 Excel 打开</td></tr>
             <tr><td>按门诊号 / 体征天数筛选</td><td><span class="status">已上线</span></td><td>导出弹窗里可选</td></tr>
-            <tr><td>CDISC 标准格式</td><td><span class="tag grey">未建设</span></td><td>方案要求的临床研究级导出规范</td></tr>
-            <tr><td>横向 / 纵向 / 历史三种变量挑选</td><td><span class="tag grey">未建设</span></td><td></td></tr>
+            <tr><td>CDISC 标准格式</td><td><span class="tag amber">部分</span></td><td>产出的是 <b>SDTM 风格</b>（DM/VS/QS/SV 四个域、标准列名），<b>不是 CDISC 合规提交件</b>——真正递交还需要 define.xml、受控术语与申办方映射。说成「支持 CDISC」而实际不合规，审计时要出事</td></tr>
+            <tr><td>横向 / 纵向 / 历史三种变量挑选</td><td><span class="tag green">已建</span></td><td>横向=一行一患者多列变量；纵向=带分组列比组间；历史=一列一次随访看变化。筛选条件复用高级检索的白名单</td></tr>
             <tr><td>受试者高级检索（多条件柔性组合）</td><td><span class="tag green">已建</span></td><td>患者属性／量表总分与单题／体征日均值／预警数／CRF 字段／随访超窗，可 AND/OR 嵌套。字段走白名单、值全参数化——这是个让人自己拼查询的接口，打的是患者库</td></tr>
             <tr><td>单指标与多指标组合统计</td><td><span class="tag green">已建</span></td><td>一次最多 6 个维度，统计范围跟着检索条件走</td></tr>
             <tr><td>自动生成柱状图/饼图/折线图</td><td><span class="tag amber">部分</span></td><td>图表类型由<b>规则</b>决定（分类→饼图/柱图、时间→折线），不是模型选的。方案写的是「AI 自动生成」，我们做到的是这一层，不把它说成别的</td></tr>
-            <tr><td>导出文件加密 + 短信/邮件发密码</td><td><span class="tag grey">未建设</span></td><td>方案要求的导出安全机制</td></tr>
-            <tr><td>大样本异步后台导出 + 导出记录留存</td><td><span class="tag grey">未建设</span></td><td>当前是同步导出，样本量大会占住请求</td></tr>
+            <tr><td>导出文件加密</td><td><span class="tag amber">部分</span></td><td>代码已就绪（AES-256），但服务器没装 pyzipper。<b>勾了加密而库不在时会拒绝产出文件</b>——给一份明文冒充加密件，比不提供这个选项危险得多。装 pyzipper 即可启用</td></tr>
+            <tr><td>密码通过短信/邮件发送</td><td><span class="tag grey">未建设</span></td><td>通道未接（同 §4.5）</td></tr>
+            <tr><td>大样本异步后台导出</td><td><span class="tag green">已建</span></td><td>转后台跑，完成后到导出记录下载。同步导出会把请求占住几十秒，期间整个服务只能排队</td></tr>
+            <tr><td>导出记录留存、随时下载</td><td><span class="tag green">已建</span></td><td><b>这是这块最要紧的产出</b>——每一次导出都是一次患者数据出境。记录里有导出条件、患者数、行数、内容哈希、谁下载过几次、从哪个 IP。文件保留 48 小时，下载前重算哈希比对</td></tr>
             <tr><td>体征指标可检索</td><td><span class="tag green">已建</span></td><td>M7 摄入时顺带把日均值落进 platform_vital_daily（派生表，删了下次重建）——体征原始数据在设备上传的大 JSON 里，不落表就进不了检索条件</td></tr>
           </tbody></table></div>
         </div>
@@ -879,7 +890,7 @@ const S = {
   edu: [], eduDraft: null,
   cohorts: [], flows: [], visits: [], visitSel: new Set(), pushes: [],
   docs: [], consents: [], docMeta: null,
-  sqFields: null, sqConds: [], sqResult: null,
+  sqFields: null, sqConds: [], sqResult: null, exJobs: [],
 };
 
 /* ================================================================ 导航 */
@@ -892,7 +903,8 @@ function goto(page) {
   if (page === 'execute') { loadAlarms(); loadTasks(); }
   if (page === 'plans') { loadFlows(); loadPlans(); }
   if (page === 'cohorts') loadCohorts();
-  if (page === 'analytics') { loadAnalytics(); loadSearchFields().then(renderSqRows).catch(() => {}); }
+  if (page === 'analytics') { loadAnalytics(); loadExportJobs();
+                             loadSearchFields().then(renderSqRows).catch(() => {}); }
   if (page === 'settings') fillSettings();
   if (page === 'assets') { loadScales(); loadResponses(); loadCrfs(); loadEdu(); loadDocs(); }
   if (page === 'quality') loadQuality();
@@ -2691,6 +2703,174 @@ document.getElementById('sqExport').onclick = () => {
   URL.revokeObjectURL(a.href);
   toast('已导出 ' + d.count + ' 人' + (d.total > d.count ? '（共命中 ' + d.total + ' 人，文件末尾有说明）' : ''), 6000);
 };
+
+/* ================================================================ M21 导出增强 (方案 §4.6(1)) */
+async function loadExportJobs() {
+  try {
+    const d = await getJSON('/api/platform/exports?limit=50');
+    S.exJobs = d.jobs || [];
+    document.getElementById('exEncNote').innerHTML = d.encryption_available ? ''
+      : '<div class="err" style="margin-bottom:10px">'+esc(d.encryption_note || '')+'</div>';
+    document.getElementById('exJobTable').innerHTML =
+      '<thead><tr><th>任务号</th><th>类型</th><th>范围</th><th>状态</th><th>大小</th>'+
+      '<th>内容哈希</th><th>下载</th><th>申请人</th><th>时间</th><th></th></tr></thead><tbody>'+
+      (S.exJobs.length ? S.exJobs.map(j =>
+        '<tr><td style="font-size:11px">'+esc(j.job_no)+'</td>'+
+        '<td>'+({full:'全量',pick:'变量挑选',sdtm:'SDTM 风格'}[j.kind] || esc(j.kind))+
+          (j.encrypted ? ' <span class="tag green">加密</span>' : '')+'</td>'+
+        '<td>'+(j.patient_count == null ? '--' : j.patient_count + ' 人 / ' + j.row_count + ' 行')+'</td>'+
+        '<td><span class="'+(j.status === 'done' ? 'tag green' : j.status === 'failed' ? 'tag red'
+          : j.status === 'expired' ? 'tag grey' : 'tag orange')+'">'+esc(j.status_label)+'</span>'+
+          (j.error ? '<br><span style="color:#d74c55;font-size:11px">'+esc(j.error.slice(0,60))+'</span>' : '')+'</td>'+
+        '<td>'+(j.size_bytes ? fmtBytes(j.size_bytes) : '--')+'</td>'+
+        '<td style="font-size:11px;font-family:ui-monospace,monospace">'+esc(j.sha256_short || '--')+'</td>'+
+        '<td>'+(j.download_count || 0)+' 次</td>'+
+        '<td>'+esc(j.requested_by || '--')+'</td>'+
+        '<td style="font-size:11px">'+esc((j.created_at || '').slice(5,16))+'</td>'+
+        '<td>'+(j.status === 'done'
+          ? '<button class="link" onclick="downloadExport(\''+esc(j.job_no)+'\')">下载</button>' : '')+
+          '<button class="link" onclick="exportJobDetail(\''+esc(j.job_no)+'\')">详情</button></td></tr>').join('')
+        : '<tr><td colspan="10" style="color:#9ca3af;text-align:center;padding:22px">'+
+          '还没有导出记录。</td></tr>')+'</tbody>';
+  } catch (e) { document.getElementById('exJobTable').innerHTML = '<tbody><tr><td>'+errBox(e)+'</td></tr></tbody>'; }
+}
+document.getElementById('exJobReload').onclick = loadExportJobs;
+
+async function downloadExport(job) {
+  toast('正在取文件…');
+  try {
+    const op = encodeURIComponent(localStorage.getItem(LS_OP) || '');
+    const res = await apiFetch(API_BASE + '/api/platform/export/download?job=' +
+      encodeURIComponent(job) + '&operator=' + op, { headers: headers(false) });
+    if (!res.ok) {
+      let m = 'HTTP ' + res.status;
+      try { const j = await res.json(); m = j.error || m; } catch (e) {}
+      throw new Error(m);
+    }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const mm = /filename\*=UTF-8''([^;]+)/.exec(cd);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(await res.blob());
+    a.download = mm ? decodeURIComponent(mm[1]) : (job + '.zip');
+    a.click(); URL.revokeObjectURL(a.href);
+    toast('已下载。这次下载已记入导出留痕。', 5000);
+    await loadExportJobs();
+  } catch (e) { toast('下载失败：' + e.message, 7000); }
+}
+
+async function exportJobDetail(job) {
+  try {
+    const d = await getJSON('/api/platform/exports?job=' + encodeURIComponent(job));
+    const j = (d.jobs || [])[0];
+    if (!j) { toast('任务不存在'); return; }
+    let h = '<div class="detail-card">'+
+      '<div class="detail-row"><span>任务号</span><b>'+esc(j.job_no)+'</b></div>'+
+      '<div class="detail-row"><span>状态</span><b>'+esc(j.status_label)+'</b></div>'+
+      '<div class="detail-row"><span>范围</span><b>'+(j.patient_count == null ? '--'
+        : j.patient_count+' 人 / '+j.row_count+' 行')+'</b></div>'+
+      '<div class="detail-row"><span>内容哈希</span><b class="mono">'+esc(j.sha256 || '--')+'</b></div>'+
+      '<div class="detail-row"><span>过期时间</span><b>'+esc(j.expires_at || '--')+'</b></div></div>'+
+      '<h4 style="margin:16px 0 8px">导出条件（事后要能说清那次导的是谁）</h4>'+
+      '<div class="qc-basis">'+esc(JSON.stringify(j.params || {}))+'</div>';
+    if ((j.downloads || []).length) {
+      h += '<h4 style="margin:16px 0 8px">下载留痕</h4><ul class="qc-log">'+
+        j.downloads.map(x => '<li>'+esc(x.operator || '未署名')+' · '+esc(x.at)+
+          (x.source_ip ? ' · 来自 '+esc(x.source_ip) : '')+'</li>').join('')+'</ul>';
+    }
+    openDrawer('导出任务详情', j.job_no, h, '');
+  } catch (e) { toast('加载失败：' + e.message, 5000); }
+}
+
+/* 变量挑选: 三种模式对应三种透视形状 */
+document.getElementById('pickExportBtn').onclick = async () => {
+  await loadSearchFields().catch(() => {});
+  if (!S.scales.length) await loadScales().catch(() => {});
+  if (!S.crfs.length) await loadCrfs().catch(() => {});
+  openModal('变量挑选导出', '筛选条件用上面「高级检索」里已设好的那组',
+    '<div class="field"><label>挑选模式</label><select id="epMode">'+
+      '<option value="horizontal">横向 — 单分组多变量（一行一患者，一列一变量）</option>'+
+      '<option value="vertical">纵向 — 多分组单变量（带分组列，比组间差异）</option>'+
+      '<option value="history">历史 — 单变量历次随访变化（一列一次随访）</option></select></div>'+
+    '<div class="field"><label>变量<span class="sub">一行一个，格式：来源 | 编码 | 字段 | 显示名</span></label>'+
+      '<textarea id="epVars" style="height:110px" placeholder="patient | | age | 年龄&#10;scale | PHQ-9 | __total__ | PHQ-9 总分&#10;scale | PHQ-9 | q1 | PHQ-9 第1题&#10;crf | FU-1 | weight | 体重"></textarea></div>'+
+    '<div class="err" style="margin-top:4px">来源写 patient / scale / crf。'+
+      '量表总分用 <b>__total__</b>。同一变量有多次记录时，横向/纵向取<b>最近一次</b>——'+
+      '要看历次变化请用历史模式（它只接受 1 个变量）。<br>'+
+      '当前筛选条件：'+(S.sqConds.length ? '高级检索里的 '+S.sqConds.length+' 个条件' : '<b>未设，将导出全部患者</b>')+'</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button>'+
+    '<button class="secondary" id="epPreview">预览</button>'+
+    '<button class="primary" id="epGo">建导出任务</button>');
+  const build = () => {
+    const vars = document.getElementById('epVars').value.split('\n').map(x => x.trim()).filter(Boolean)
+      .map(line => {
+        const p = line.split('|').map(x => x.trim());
+        return { source: p[0], code: p[1] || null, field: p[2], label: p[3] || null };
+      });
+    return { mode: document.getElementById('epMode').value, variables: vars,
+             conditions: sqBuild() };
+  };
+  document.getElementById('epPreview').onclick = async () => {
+    try {
+      const res = await fetch(API_BASE + '/api/platform/export/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(build()) });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      openDrawer('导出预览', d.patients + ' 位患者 · ' + d.rows + ' 行',
+        '<div class="note-strip">'+esc(d.note)+'</div>'+
+        '<div class="table-wrap"><table><tbody>'+d.preview.map((l, i) =>
+          '<tr>'+l.split('","').map(c => '<td style="font-size:12px">'+
+            esc(c.replace(/^"|"$/g, ''))+'</td>').join('')+'</tr>').join('')+
+        '</tbody></table></div>'+
+        '<div class="qc-meta"><span>只显示前 '+d.preview.length+' 行。确认无误后回去点「建导出任务」。</span></div>', '');
+    } catch (e) { toast('预览失败：' + e.message, 7000); }
+  };
+  document.getElementById('epGo').onclick = () => submitExportJob('pick', build());
+};
+
+document.getElementById('sdtmBtn').onclick = () => {
+  openModal('SDTM 风格导出', '按 SDTM 域组织的 CSV 包',
+    '<div class="field"><label>研究编号<span class="sub">会作为 STUDYID 和 USUBJID 前缀</span></label>'+
+      '<input id="esStudy" value="STUDY001"></div>'+
+    '<div class="field"><label>包含的域</label>'+
+      '<div style="display:flex;gap:14px;flex-wrap:wrap;padding:4px 0">'+
+      [['DM','人口学'],['VS','生命体征'],['QS','问卷'],['SV','访视']].map(([c,n]) =>
+        '<label style="display:flex;gap:5px;align-items:center;font-weight:400">'+
+        '<input type="checkbox" data-esd="'+c+'" checked>'+c+' '+n+'</label>').join('')+'</div></div>'+
+    '<div class="err" style="margin-top:4px"><b>这不是 CDISC 合规提交件。</b>'+
+      '真正的 CDISC 递交还需要 define.xml、受控术语（CT）、申办方特定映射与一整套核查。'+
+      '这里产出的是按 SDTM 域组织、用标准列名的 CSV——能让统计方少做很多整理，'+
+      '但<b>不能直接拿去递交</b>。说成「支持 CDISC」而实际不合规，审计时要出事。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="esGo">建导出任务</button>');
+  document.getElementById('esGo').onclick = () => submitExportJob('sdtm', {
+    study_id: document.getElementById('esStudy').value.trim(),
+    domains: Array.from(document.querySelectorAll('[data-esd]:checked')).map(x => x.dataset.esd),
+    conditions: sqBuild() });
+};
+
+async function submitExportJob(kind, params) {
+  const enc = confirm('是否加密导出？\n\n点「确定」= 加密（需要服务器装 pyzipper，没装会直接拒绝而不是给明文件）\n' +
+                      '点「取消」= 不加密');
+  let pwd = '';
+  if (enc) {
+    pwd = prompt('设置解压口令（至少 8 位）：', '') || '';
+    if (pwd.length < 8) { toast('口令至少 8 位'); return; }
+  }
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/export/job', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: kind, params: params, encrypt: enc, password: pwd,
+                             requested_by: localStorage.getItem(LS_OP) || null }) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    closeModal();
+    toast('导出任务 ' + d.job_no + ' 已提交。' + d.note, 9000);
+    setTimeout(loadExportJobs, 1500);
+    setTimeout(loadExportJobs, 4000);
+    document.getElementById('exportJobPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) { toast('提交失败：' + e.message, 10000); }
+}
 
 /* ================================================================ M19 随访流程 (方案 §3.3) */
 const VISIT_TAG = { pending:'tag grey', due:'tag orange', done:'tag green',

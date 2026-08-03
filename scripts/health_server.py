@@ -8364,6 +8364,582 @@ def query_followups(patient_no=None, visit_id=None, batch_id=None, limit=300):
         conn.close()
 
 
+# ============ 随访平台 1.1 M21 (导出增强, 方案 §4.6(1)) ============
+#
+# 三件事必须先说死:
+#
+# 1) **"CDISC 标准格式"这里做的是 SDTM 风格, 不是 CDISC 合规。**
+#    真正的 CDISC 提交需要 define.xml、受控术语(CT)、申办方特定映射和一整套核查。
+#    这里产出的是按 SDTM 域(DM/VS/QS/AE)组织、用标准列名(STUDYID/USUBJID/DOMAIN...)
+#    的 CSV —— 它能让统计方少做很多整理, 但**不能直接拿去递交**。
+#    说成"支持 CDISC"而实际不合规, 在审计时是要出事的。
+#
+# 2) **加密导出要么真加密, 要么不给文件。**
+#    Python 标准库的 zipfile 只能**读**加密 zip, 不能写; 而它能读的那种 ZipCrypto
+#    本身就是可以秒破的, 拿来保护患者数据等于没保护。真加密需要 pyzipper(AES-256),
+#    当前环境没装。所以勾了"加密"而库不在时, 这里**拒绝产出文件**而不是悄悄给一份
+#    明文的 —— 用户勾了加密拿到文件, 一定会以为它是受保护的。
+#
+# 3) **每一次导出都是一次患者数据出境。** 导出记录(谁、什么时候、导了哪些人的
+#    哪些数据、多少行、下载过几次)本身就是这块最要紧的产出, 比导出功能本身更重要。
+
+EXPORT_PICK_MODES = {
+    'horizontal': '横向挑选(单分组 · 多 CRF 变量)',
+    'vertical':   '纵向挑选(多分组 · 单变量)',
+    'history':    '历史挑选(单变量 · 历次随访变化)',
+}
+EXPORT_JOB_STATUSES = {'queued': '排队中', 'running': '导出中', 'done': '已完成',
+                       'failed': '失败', 'expired': '已过期'}
+EXPORT_ASYNC_THRESHOLD = 500        # 超过这么多患者就建议走异步
+EXPORT_KEEP_HOURS = 48              # 导出文件保留多久
+EXPORT_DIR = os.environ.get('PLATFORM_EXPORT_DIR') or '/opt/suifang/exports'
+
+# SDTM 域。列名用 SDTM 的标准写法, 但不声称合规 —— 见本节开头。
+SDTM_DOMAINS = {
+    'DM': ('人口学', ['STUDYID', 'DOMAIN', 'USUBJID', 'SUBJID', 'SEX', 'AGE', 'AGEU',
+                      'ARM', 'ARMCD', 'RFSTDTC']),
+    'VS': ('生命体征', ['STUDYID', 'DOMAIN', 'USUBJID', 'VSSEQ', 'VSTESTCD', 'VSTEST',
+                        'VSORRES', 'VSORRESU', 'VSDTC']),
+    'QS': ('问卷', ['STUDYID', 'DOMAIN', 'USUBJID', 'QSSEQ', 'QSCAT', 'QSTESTCD',
+                    'QSTEST', 'QSORRES', 'QSSTRESN', 'QSDTC']),
+    'SV': ('访视', ['STUDYID', 'DOMAIN', 'USUBJID', 'VISITNUM', 'VISIT', 'SVSTDTC',
+                    'SVUPDES']),
+}
+SDTM_VS_MAP = {'hr': ('HR', 'Heart Rate', 'beats/min'), 'sbp': ('SYSBP', 'Systolic Blood Pressure', 'mmHg'),
+               'dbp': ('DIABP', 'Diastolic Blood Pressure', 'mmHg'), 'temp': ('TEMP', 'Temperature', 'C'),
+               'spo2': ('SPO2', 'Oxygen Saturation', '%'), 'sleep': ('SLEEP', 'Sleep Duration', 'min')}
+
+SDTM_DISCLAIMER = ('本导出为 **SDTM 风格**, 不是 CDISC 合规提交件。真正的 CDISC 递交还需要 '
+                   'define.xml、受控术语(CT)、申办方特定映射与一整套核查 —— 这里产出的是按 SDTM '
+                   '域组织、用标准列名的 CSV, 能让统计方少做很多整理, 但不能直接递交。')
+ENCRYPT_UNAVAILABLE = ('导出加密需要 pyzipper(AES-256), 当前服务器没装。'
+                       '**已拒绝产出文件** —— 勾了加密却拿到一份明文文件, 比不提供这个选项危险得多。'
+                       '装法: pip install pyzipper。注意标准库 zipfile 只能读加密 zip 不能写, '
+                       '而它能读的那种 ZipCrypto 本身就是可以秒破的, 保护不了患者数据。')
+
+
+def _has_pyzipper():
+    try:
+        import pyzipper       # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def ensure_platform_export_tables():
+    """M21: 导出任务 + 下载留痕 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_export_job (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                job_no VARCHAR(40) NOT NULL UNIQUE,
+                kind VARCHAR(32) NOT NULL COMMENT 'full/pick/sdtm',
+                params JSON DEFAULT NULL COMMENT '导出条件原样留档 —— 事后要能说清"那次导的是谁"',
+                status ENUM('queued','running','done','failed','expired') DEFAULT 'queued',
+                patient_count INT DEFAULT NULL,
+                row_count INT DEFAULT NULL,
+                file_name VARCHAR(200) DEFAULT NULL,
+                stored_name VARCHAR(160) DEFAULT NULL,
+                size_bytes BIGINT DEFAULT NULL,
+                sha256 CHAR(64) DEFAULT NULL,
+                encrypted TINYINT(1) DEFAULT 0,
+                error VARCHAR(500) DEFAULT NULL,
+                requested_by VARCHAR(64) DEFAULT NULL,
+                download_count INT DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                finished_at DATETIME DEFAULT NULL,
+                expires_at DATETIME DEFAULT NULL,
+                INDEX idx_status (status), INDEX idx_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+              COMMENT='随访平台 M21 导出任务(每一次导出都是一次患者数据出境, 记录本身比功能更重要)'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_export_download (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                job_no VARCHAR(40) NOT NULL,
+                operator VARCHAR(64) DEFAULT NULL,
+                source_ip VARCHAR(64) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_job (job_no)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M21 导出文件下载留痕'
+        """)
+        print('[启动] platform_export_job / platform_export_download 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_export_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def _csv_bytes(header, rows):
+    """拼一份 UTF-8 BOM 的 CSV。Excel 不认没有 BOM 的 UTF-8, 中文会乱码。"""
+    q = lambda v: '"' + ('' if v is None else str(v)).replace('"', '""') + '"'
+    out = [','.join(q(h) for h in header)]
+    out += [','.join(q(c) for c in r) for r in rows]
+    # 末尾留一个换行: RFC 4180 允许, Excel 也是这么写的。少了它有些工具会把
+    # 最后一行当成"未结束的记录"。读的一方按行拆时要记得末尾会多一个空元素。
+    return ('﻿' + '\r\n'.join(out) + '\r\n').encode('utf-8')
+
+
+def export_variable_pick(spec):
+    """§4.6(1) 变量挑选导出。三种模式对应三种透视形状。
+
+    横向: 一个分组的患者 × 多个变量  -> 一行一患者, 一列一变量(最常见的分析用表)
+    纵向: 多个分组 × 同一个变量      -> 一行一患者, 带分组列(用来比较组间差异)
+    历史: 一个变量 × 历次随访        -> 一行一患者, 一列一次随访(看变化趋势)
+
+    变量走 M16 那套白名单的量表/CRF 引用形式, 不接受任意 SQL。
+    """
+    mode = spec.get('mode') or 'horizontal'
+    if mode not in EXPORT_PICK_MODES:
+        return None, None, 'mode 必须是 {} 之一'.format('/'.join(EXPORT_PICK_MODES))
+    variables = spec.get('variables') or []
+    if not isinstance(variables, list) or not variables:
+        return None, None, 'variables 必须是非空数组'
+    if len(variables) > 200:
+        return None, None, 'variables 最多 200 个'
+    for v in variables:
+        if not isinstance(v, dict) or v.get('source') not in ('scale', 'crf', 'patient'):
+            return None, None, "每个变量要有 source(scale/crf/patient)"
+        if v['source'] in ('scale', 'crf') and not (v.get('code') and v.get('field')):
+            return None, None, '量表/CRF 变量必须给 code 和 field'
+    if mode == 'history' and len(variables) != 1:
+        return None, None, '历史挑选是"单变量历次变化", variables 只能给 1 个'
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = ['1=1'], []
+        if spec.get('conditions'):
+            try:
+                where_sql, params = build_search_sql(spec['conditions'])
+                where = [where_sql]
+            except ValueError as e:
+                cur.close()
+                return None, None, '筛选条件有问题: {}'.format(e)
+        cur.execute('SELECT p.patient_no, p.name, p.gender, p.age, p.group_tag '
+                    'FROM platform_patient p WHERE {} ORDER BY p.patient_no LIMIT 5000'.format(
+                        ' AND '.join(where)), params)
+        pats = [{'no': a, 'name': b, 'gender': c, 'age': d, 'group': e} for a, b, c, d, e in cur.fetchall()]
+        if not pats:
+            cur.close()
+            return None, None, '筛选条件没有命中任何患者'
+        nos = [p['no'] for p in pats]
+        ph = ','.join(['%s'] * len(nos))
+
+        def var_label(v):
+            return v.get('label') or '{}.{}'.format(v.get('code') or v['source'], v.get('field') or '')
+
+        # 取值: (patient_no, var_key, value, when) 四元组, 三种模式共用同一份原料
+        vals = {}
+        for v in variables:
+            key = var_label(v)
+            if v['source'] == 'patient':
+                f = {'name': 'name', 'gender': 'gender', 'age': 'age', 'group': 'group_tag'}.get(v.get('field'))
+                if not f:
+                    cur.close()
+                    return None, None, '患者字段只支持 name/gender/age/group'
+                cur.execute('SELECT patient_no, {} FROM platform_patient WHERE patient_no IN ({})'.format(f, ph), nos)
+                for no, val in cur.fetchall():
+                    vals.setdefault(no, {}).setdefault(key, []).append((None, val))
+            elif v['source'] == 'scale':
+                if v['field'] == '__total__':
+                    cur.execute("""SELECT patient_no, total_score, created_at FROM platform_scale_response
+                                   WHERE scale_code=%s AND status='submitted' AND patient_no IN ({})
+                                   ORDER BY created_at""".format(ph), [v['code']] + nos)
+                else:
+                    cur.execute("""SELECT patient_no,
+                                     JSON_UNQUOTE(JSON_EXTRACT(answers, CONCAT('$.', %s))), created_at
+                                   FROM platform_scale_response
+                                   WHERE scale_code=%s AND status='submitted' AND patient_no IN ({})
+                                   ORDER BY created_at""".format(ph), [v['field'], v['code']] + nos)
+                for no, val, when in cur.fetchall():
+                    vals.setdefault(no, {}).setdefault(key, []).append(
+                        (when.strftime('%Y-%m-%d') if hasattr(when, 'strftime') else when, val))
+            else:
+                cur.execute("""SELECT patient_no,
+                                 JSON_UNQUOTE(JSON_EXTRACT(data, CONCAT('$.', %s))), created_at
+                               FROM platform_crf_response
+                               WHERE crf_code=%s AND status='submitted' AND patient_no IN ({})
+                               ORDER BY created_at""".format(ph), [v['field'], v['code']] + nos)
+                for no, val, when in cur.fetchall():
+                    vals.setdefault(no, {}).setdefault(key, []).append(
+                        (when.strftime('%Y-%m-%d') if hasattr(when, 'strftime') else when, val))
+        cur.close()
+
+        keys = [var_label(v) for v in variables]
+        if mode == 'history':
+            k = keys[0]
+            maxn = max([len(vals.get(p['no'], {}).get(k, [])) for p in pats] + [1])
+            header = ['门诊号', '姓名', '分组'] + ['第{}次'.format(i + 1) for i in range(maxn)] \
+                + ['第{}次日期'.format(i + 1) for i in range(maxn)]
+            rows = []
+            for p in pats:
+                seq = vals.get(p['no'], {}).get(k, [])
+                rows.append([p['no'], p['name'], p['group']]
+                            + [(seq[i][1] if i < len(seq) else '') for i in range(maxn)]
+                            + [(seq[i][0] if i < len(seq) else '') for i in range(maxn)])
+            note = '历史挑选: 变量「{}」的历次取值。每位患者的次数不同, 列数按最多的那位对齐, 空白 = 该次没有记录'.format(k)
+        else:
+            header = ['门诊号', '姓名', '性别', '年龄', '分组'] + keys
+            rows = []
+            for p in pats:
+                r = [p['no'], p['name'], {'M': '男', 'F': '女'}.get(p['gender'], ''), p['age'], p['group']]
+                for k in keys:
+                    seq = vals.get(p['no'], {}).get(k, [])
+                    # 取最近一次 —— 横向/纵向都是"一行一患者", 多次填报要压成一个值。
+                    # 取最近一次而不是首次, 因为分析通常关心当前状态; 要看变化请用历史模式。
+                    r.append(seq[-1][1] if seq else '')
+                rows.append(r)
+            note = ('{}: 一行一患者。同一变量有多次记录时取**最近一次** —— '
+                    '要看历次变化请用"历史挑选"模式'.format(EXPORT_PICK_MODES[mode]))
+        return _csv_bytes(header, rows), {'mode': mode, 'patients': len(pats), 'rows': len(rows),
+                                          'variables': keys, 'note': note}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, None, str(e)
+    finally:
+        conn.close()
+
+
+def export_sdtm_like(spec):
+    """§4.6(1) SDTM 风格导出。返回 (files{name: bytes}, meta, err)。**不是 CDISC 合规件。**"""
+    study = re.sub(r'[^0-9A-Za-z_\-]', '', str(spec.get('study_id') or 'STUDY001'))[:20] or 'STUDY001'
+    domains = spec.get('domains') or ['DM', 'VS', 'QS', 'SV']
+    bad = [d for d in domains if d not in SDTM_DOMAINS]
+    if bad:
+        return None, None, '未知的 SDTM 域: {} (支持 {})'.format(
+            '、'.join(bad), '/'.join(SDTM_DOMAINS))
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        where, params = '1=1', []
+        if spec.get('conditions'):
+            try:
+                where, params = build_search_sql(spec['conditions'])
+            except ValueError as e:
+                cur.close()
+                return None, None, '筛选条件有问题: {}'.format(e)
+        cur.execute('SELECT p.patient_no FROM platform_patient p WHERE {} LIMIT 5000'.format(where), params)
+        nos = [r[0] for r in cur.fetchall()]
+        if not nos:
+            cur.close()
+            return None, None, '筛选条件没有命中任何患者'
+        ph = ','.join(['%s'] * len(nos))
+        files, counts = {}, {}
+
+        if 'DM' in domains:
+            cur.execute("""SELECT p.patient_no, p.gender, p.age, p.group_tag, DATE(p.created_at),
+                                  e.group_code
+                           FROM platform_patient p
+                           LEFT JOIN platform_enrollment e ON e.patient_no=p.patient_no
+                             AND e.status='enrolled'
+                           WHERE p.patient_no IN ({})""".format(ph), nos)
+            rows = [[study, 'DM', '{}-{}'.format(study, a), a,
+                     {'M': 'M', 'F': 'F'}.get(b, 'U'), c if c is not None else '', 'YEARS',
+                     f or d or '', f or '', e.strftime('%Y-%m-%d') if e else '']
+                    for a, b, c, d, e, f in cur.fetchall()]
+            files['dm.csv'] = _csv_bytes(SDTM_DOMAINS['DM'][1], rows); counts['DM'] = len(rows)
+
+        if 'VS' in domains:
+            cur.execute("""SELECT patient_no, metric, value, day FROM platform_vital_daily
+                           WHERE patient_no IN ({}) ORDER BY patient_no, day""".format(ph), nos)
+            rows, seq = [], {}
+            for no, metric, val, day in cur.fetchall():
+                tc, tn, unit = SDTM_VS_MAP.get(metric, (metric.upper(), metric, ''))
+                seq[no] = seq.get(no, 0) + 1
+                rows.append([study, 'VS', '{}-{}'.format(study, no), seq[no], tc, tn,
+                             float(val), unit, day.strftime('%Y-%m-%d') if day else ''])
+            files['vs.csv'] = _csv_bytes(SDTM_DOMAINS['VS'][1], rows); counts['VS'] = len(rows)
+
+        if 'QS' in domains:
+            cur.execute("""SELECT r.patient_no, r.scale_code, r.answers, r.total_score, r.created_at
+                           FROM platform_scale_response r
+                           WHERE r.status='submitted' AND r.patient_no IN ({})
+                           ORDER BY r.patient_no, r.created_at""".format(ph), nos)
+            rows, seq = [], {}
+            for no, code, ans, total, when in cur.fetchall():
+                if isinstance(ans, str):
+                    try:
+                        ans = json.loads(ans)
+                    except ValueError:
+                        ans = {}
+                dt = when.strftime('%Y-%m-%d') if hasattr(when, 'strftime') else ''
+                for iid, val in sorted((ans or {}).items()):
+                    seq[no] = seq.get(no, 0) + 1
+                    rows.append([study, 'QS', '{}-{}'.format(study, no), seq[no], code,
+                                 '{}{}'.format(code[:4].upper(), iid), iid, val,
+                                 val if isinstance(val, (int, float)) else '', dt])
+                if total is not None:
+                    seq[no] = seq.get(no, 0) + 1
+                    rows.append([study, 'QS', '{}-{}'.format(study, no), seq[no], code,
+                                 '{}TOT'.format(code[:4].upper()), 'Total Score',
+                                 float(total), float(total), dt])
+            files['qs.csv'] = _csv_bytes(SDTM_DOMAINS['QS'][1], rows); counts['QS'] = len(rows)
+
+        if 'SV' in domains:
+            cur.execute("""SELECT v.patient_no, v.name, v.planned_date, v.status, v.kind
+                           FROM platform_visit v WHERE v.patient_no IN ({})
+                           ORDER BY v.patient_no, v.planned_date""".format(ph), nos)
+            rows, seq = [], {}
+            for no, name, day, st, kind in cur.fetchall():
+                seq[no] = seq.get(no, 0) + 1
+                rows.append([study, 'SV', '{}-{}'.format(study, no), seq[no], name,
+                             day.strftime('%Y-%m-%d') if day else '',
+                             '{}{}'.format(VISIT_STATUSES.get(st, st),
+                                           ' (流程外)' if kind == 'offschedule' else '')])
+            files['sv.csv'] = _csv_bytes(SDTM_DOMAINS['SV'][1], rows); counts['SV'] = len(rows)
+
+        cur.close()
+        files['README.txt'] = (SDTM_DISCLAIMER + '\n\n生成时间: ' +
+                               datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S') +
+                               '\n研究编号: ' + study +
+                               '\n包含域: ' + '、'.join('{}({} 行)'.format(
+                                   d, counts.get(d, 0)) for d in domains) +
+                               '\n患者数: ' + str(len(nos)) + '\n').encode('utf-8')
+        return files, {'study_id': study, 'patients': len(nos), 'domains': counts,
+                       'rows': sum(counts.values()), 'disclaimer': SDTM_DISCLAIMER}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, None, str(e)
+    finally:
+        conn.close()
+
+
+def _pack_zip(files, password=None):
+    """打包。password 给了就必须真加密, 加密不了就报错 —— 绝不产出明文冒充加密件。"""
+    import io as _io
+    buf = _io.BytesIO()
+    if password:
+        if not _has_pyzipper():
+            return None, ENCRYPT_UNAVAILABLE
+        import pyzipper
+        with pyzipper.AESZipFile(buf, 'w', compression=pyzipper.ZIP_DEFLATED,
+                                 encryption=pyzipper.WZ_AES) as z:
+            z.setpassword(password.encode('utf-8'))
+            for name, data in files.items():
+                z.writestr(name, data)
+    else:
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            for name, data in files.items():
+                z.writestr(name, data)
+    return buf.getvalue(), None
+
+
+_EXPORT_LOCK = threading.Lock()
+
+
+def export_job_create(body):
+    """建一个导出任务。{kind: full|pick|sdtm, params{}, encrypt?, password?, requested_by?}
+
+    大样本自动走后台 —— 同步导出会把请求占住几十秒, 期间整个服务只能排队
+    (这是个单线程 HTTP server)。
+    """
+    kind = body.get('kind') or 'pick'
+    if kind not in ('full', 'pick', 'sdtm'):
+        return None, 'kind 必须是 full/pick/sdtm'
+    encrypt = bool(body.get('encrypt'))
+    password = str(body.get('password') or '')
+    if encrypt:
+        if not _has_pyzipper():
+            return None, ENCRYPT_UNAVAILABLE
+        if len(password) < 8:
+            return None, '加密导出的口令至少 8 位'
+
+    ensure_platform_export_tables()
+    job_no = datetime.datetime.now().strftime('EX%Y%m%d%H%M%S%f')[:20]
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""INSERT INTO platform_export_job
+                       (job_no, kind, params, status, encrypted, requested_by, expires_at)
+                       VALUES (%s,%s,%s,'queued',%s,%s,DATE_ADD(NOW(), INTERVAL %s HOUR))""",
+                    (job_no, kind, json.dumps(body.get('params') or {}, ensure_ascii=False),
+                     1 if encrypt else 0, body.get('requested_by') or None, EXPORT_KEEP_HOURS))
+        cur.close()
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+    t = threading.Thread(target=_export_job_run, args=(job_no, kind, body.get('params') or {},
+                                                       password if encrypt else None), daemon=True)
+    t.start()
+    return {'ok': True, 'job_no': job_no, 'kind': kind, 'status': 'queued',
+            'encrypted': encrypt,
+            'note': ('已转后台导出。样本量大时同步导出会把请求占住几十秒, 期间整个服务只能排队。'
+                     '完成后到导出记录里下载, 文件保留 {} 小时'.format(EXPORT_KEEP_HOURS))}, None
+
+
+def _export_job_run(job_no, kind, params, password):
+    """后台跑导出。任何异常都要写回 job, 不能让任务永远卡在 running。"""
+    def finish(**kw):
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            sets = ', '.join('{}=%s'.format(k) for k in kw)
+            cur.execute('UPDATE platform_export_job SET {}, finished_at=NOW() WHERE job_no=%s'.format(sets),
+                        list(kw.values()) + [job_no])
+            cur.close()
+        except Exception:
+            traceback.print_exc()
+        finally:
+            conn.close()
+
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE platform_export_job SET status='running' WHERE job_no=%s", (job_no,))
+        cur.close(); conn.close()
+
+        if kind == 'pick':
+            data, meta, err = export_variable_pick(params)
+            if err:
+                return finish(status='failed', error=err[:500])
+            files = {'变量挑选导出.csv': data,
+                     'README.txt': (meta['note'] + '\n\n生成时间: ' +
+                                    datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')).encode('utf-8')}
+            pc, rc = meta['patients'], meta['rows']
+        elif kind == 'sdtm':
+            files, meta, err = export_sdtm_like(params)
+            if err:
+                return finish(status='failed', error=err[:500])
+            pc, rc = meta['patients'], meta['rows']
+        else:
+            body, fname, mime, err = platform_export('all', params.get('patient_no'),
+                                                     int(params.get('days') or 90))
+            if err:
+                return finish(status='failed', error=err[:500])
+            files = {fname: body}
+            pc = rc = None
+
+        blob, err = _pack_zip(files, password)
+        if err:
+            return finish(status='failed', error=err[:500])
+        import hashlib
+        sha = hashlib.sha256(blob).hexdigest()
+        stored = '{}.zip'.format(job_no)
+        try:
+            if not os.path.isdir(EXPORT_DIR):
+                os.makedirs(EXPORT_DIR)
+            with open(os.path.join(EXPORT_DIR, stored), 'wb') as f:
+                f.write(blob)
+        except OSError as e:
+            return finish(status='failed', error='写文件失败: {}'.format(e)[:500])
+        finish(status='done', patient_count=pc, row_count=rc,
+               file_name='随访导出_{}.zip'.format(job_no), stored_name=stored,
+               size_bytes=len(blob), sha256=sha)
+    except Exception as e:
+        traceback.print_exc()
+        finish(status='failed', error=str(e)[:500])
+
+
+def export_job_query(job_no=None, status=None, limit=100):
+    """导出记录。**这是这块最要紧的产出** —— 每一次导出都是一次患者数据出境。"""
+    ensure_platform_export_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        # 过期的自动标出来, 免得有人点了下载才发现文件没了
+        cur.execute("UPDATE platform_export_job SET status='expired' "
+                    "WHERE status='done' AND expires_at < NOW()")
+        where, params = ['1=1'], []
+        if job_no:
+            where.append('job_no=%s'); params.append(job_no)
+        if status:
+            where.append('status=%s'); params.append(status)
+        params.append(int(limit))
+        cur.execute("""SELECT job_no, kind, params, status, patient_count, row_count, file_name,
+                              size_bytes, sha256, encrypted, error, requested_by, download_count,
+                              created_at, finished_at, expires_at
+                       FROM platform_export_job WHERE {} ORDER BY id DESC LIMIT %s""".format(
+                           ' AND '.join(where)), params)
+        cols = ['job_no', 'kind', 'params', 'status', 'patient_count', 'row_count', 'file_name',
+                'size_bytes', 'sha256', 'encrypted', 'error', 'requested_by', 'download_count',
+                'created_at', 'finished_at', 'expires_at']
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            for k in ('created_at', 'finished_at', 'expires_at'):
+                if d.get(k) is not None and hasattr(d[k], 'strftime'):
+                    d[k] = d[k].strftime('%Y-%m-%d %H:%M:%S')
+            if isinstance(d.get('params'), str):
+                try:
+                    d['params'] = json.loads(d['params'])
+                except ValueError:
+                    pass
+            d['status_label'] = EXPORT_JOB_STATUSES.get(d['status'], d['status'])
+            d['encrypted'] = bool(d['encrypted'])
+            d['sha256_short'] = (d.get('sha256') or '')[:16]
+            out.append(d)
+        if job_no and out:
+            cur.execute("""SELECT operator, source_ip, created_at FROM platform_export_download
+                           WHERE job_no=%s ORDER BY id DESC LIMIT 50""", (job_no,))
+            out[0]['downloads'] = [{'operator': a, 'source_ip': b,
+                                    'at': c.strftime('%Y-%m-%d %H:%M:%S') if hasattr(c, 'strftime') else c}
+                                   for a, b, c in cur.fetchall()]
+        cur.close()
+        return {'ok': True, 'count': len(out), 'jobs': out,
+                'statuses': EXPORT_JOB_STATUSES, 'keep_hours': EXPORT_KEEP_HOURS,
+                'encryption_available': _has_pyzipper(),
+                'encryption_note': None if _has_pyzipper() else ENCRYPT_UNAVAILABLE,
+                'pick_modes': EXPORT_PICK_MODES, 'sdtm_disclaimer': SDTM_DISCLAIMER}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+
+def export_job_fetch(job_no, operator=None, source_ip=None):
+    """取导出文件, 并记一条下载留痕。返回 (bytes, meta, err)。"""
+    if not job_no:
+        return None, None, 'job_no 必填'
+    ensure_platform_export_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT status, stored_name, file_name, sha256, expires_at '
+                    'FROM platform_export_job WHERE job_no=%s', (job_no,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, None, '导出任务不存在: {}'.format(job_no)
+        st, stored, fname, sha, exp = row
+        if st != 'done':
+            cur.close()
+            return None, None, '任务当前状态是「{}」, 还没有可下载的文件'.format(
+                EXPORT_JOB_STATUSES.get(st, st))
+        if exp and exp < datetime.datetime.now():
+            cur.execute("UPDATE platform_export_job SET status='expired' WHERE job_no=%s", (job_no,))
+            cur.close()
+            return None, None, '导出文件已过期(保留 {} 小时), 请重新导出'.format(EXPORT_KEEP_HOURS)
+        path = os.path.join(EXPORT_DIR, os.path.basename(stored))
+        if not os.path.isfile(path):
+            cur.close()
+            return None, None, '文件在磁盘上找不到, 可能已被清理'
+        with open(path, 'rb') as f:
+            blob = f.read()
+        import hashlib
+        if hashlib.sha256(blob).hexdigest() != sha:
+            cur.close()
+            return None, None, '文件内容哈希与导出时不一致 —— 文件可能被替换或损坏, 已拒绝下发'
+        cur.execute("""INSERT INTO platform_export_download (job_no, operator, source_ip)
+                       VALUES (%s,%s,%s)""", (job_no, operator, (source_ip or '')[:64] or None))
+        cur.execute('UPDATE platform_export_job SET download_count=download_count+1 WHERE job_no=%s',
+                    (job_no,))
+        cur.close()
+        return blob, {'orig_name': fname, 'sha256': sha, 'ext': 'zip', 'title': fname}, None
+    except Exception as e:
+        traceback.print_exc()
+        return None, None, str(e)
+    finally:
+        conn.close()
+
+
 # ============ 随访平台 1.1 M5 (随访计划引擎) ============
 def upsert_platform_plan(body):
     """建/改随访计划 (design: 只有 1 张新表 platform_plan, "任务"从不落地存储).
@@ -9486,6 +10062,26 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 limit=limit)
             self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/exports':
+            st = (query.get('status') or [None])[0]
+            if st and st not in EXPORT_JOB_STATUSES:
+                self._send_json(400, {'ok': False,
+                                      'error': 'status 必须是 {} 之一'.format('/'.join(EXPORT_JOB_STATUSES))}); return
+            result, err = export_job_query((query.get('job') or [None])[0], st,
+                                           min(int((query.get('limit') or ['100'])[0] or 100), 300))
+            self._send_json(500 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/export/download':
+            # 同 M17 的下载: 读操作却要写接口口令 —— 导出件里是整队患者的数据
+            if not check_platform_token(self):
+                return
+            blob, meta, err = export_job_fetch(
+                (query.get('job') or [None])[0], (query.get('operator') or [None])[0],
+                self.client_address[0] if self.client_address else None)
+            if err:
+                self._send_json(404 if '不存在' in err else 400, {'ok': False, 'error': err}); return
+            self._send_file(blob, meta)
+
         elif pathname == '/api/platform/visit/summary':
             try:
                 da = int((query.get('daysAhead') or ['7'])[0] or 7)
@@ -9920,6 +10516,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/scale/responses': '随访平台 M10: 填报记录 (?patientNo=&code=&includeSuperseded=1)',
                     'POST /api/platform/scale/parse': '随访平台 M11: 文档/PDF -> 量表草稿 ({text} 或 {pdf_base64}; 扫描件需先 OCR)',
                     'POST /api/platform/scale/generate': '随访平台 M12: AI 量表生成 (可插拔后端, 默认模板; 产出刻意不含划界值分级)',
+                    'POST /api/platform/export/job': '随访平台 M21: 建导出任务 (kind=full|pick|sdtm; 大样本走后台)',
+                    'POST /api/platform/export/preview': '随访平台 M21: 变量挑选预览(不落任务)',
+                    'GET  /api/platform/exports': '随访平台 M21: 导出记录(每次导出=一次患者数据出境)',
+                    'GET  /api/platform/export/download': '随访平台 M21: 下载导出件 (?job=) —— 需 X-Platform-Token',
                     'GET  /api/platform/visit/summary': '随访平台 M20: 当日/超窗统计 (?daysAhead=7)',
                     'POST /api/platform/visit/followup': '随访平台 M20: 批量跟进超窗访视(逐条给结果)',
                     'GET  /api/platform/followups': '随访平台 M20: 跟进记录',
@@ -10136,6 +10736,18 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 definition 或 scale_code'}); return
                 result, errors = score_scale(definition, body.get('answers') or {})
                 self._send_json(200, {'ok': True, 'result': result, 'errors': errors})
+
+            elif pathname == '/api/platform/export/job':
+                result, err = export_job_create(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/export/preview':
+                # 变量挑选的即时预览(不落任务, 不写文件), 供确认变量选对了没
+                data, meta, err = export_variable_pick(body)
+                if err:
+                    self._send_json(400, {'ok': False, 'error': err}); return
+                self._send_json(200, dict(meta, ok=True,
+                                          preview=data.decode('utf-8-sig').split('\r\n')[:8]))
 
             elif pathname == '/api/platform/visit/followup':
                 result, err = visit_batch_followup(body)
@@ -10511,6 +11123,8 @@ if __name__ == '__main__':
         ensure_platform_flow_tables()
         # M20: 访视跟进 + 推送队列 (idempotent)
         ensure_platform_push_tables()
+        # M21: 导出任务 + 下载留痕 (idempotent)
+        ensure_platform_export_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -10562,6 +11176,9 @@ if __name__ == '__main__':
     print('[端点] GET  /api/platform/scale/responses        随访平台 M10: 填报记录')
     print('[端点] POST /api/platform/scale/parse            随访平台 M11: 文档解析成量表草稿')
     print('[端点] POST /api/platform/scale/generate         随访平台 M12: AI 量表生成')
+    print('[端点] POST /api/platform/export/job               随访平台 M21: 建导出任务')
+    print('[端点] GET  /api/platform/exports                  随访平台 M21: 导出记录')
+    print('[端点] GET  /api/platform/export/download          随访平台 M21: 下载导出件(需口令)')
     print('[端点] GET  /api/platform/visit/summary            随访平台 M20: 当日/超窗统计')
     print('[端点] POST /api/platform/visit/followup           随访平台 M20: 批量跟进')
     print('[端点] POST /api/platform/push                     随访平台 M20: 建推送(通道未接, 只入队)')

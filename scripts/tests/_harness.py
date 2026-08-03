@@ -147,7 +147,12 @@ def start_static():
 
 
 def new_page(pw, viewport=None):
-    """开一个 chromium 页面并挂上错误收集。返回 (browser, page, errs)。
+    """开一个 chromium 页面并挂上错误收集。返回 (browser, page, errs, dialogs)。
+
+    dialogs 是**唯一**的原生弹窗收集器: 每条消息记进列表并 dismiss。
+    不要在各节里另行 page.on('dialog', ...) —— 多个处理器会抢同一个弹窗,
+    谁先 dismiss 谁生效, 后面的拿到的是个已经处理过的对象, 表现是断言随机失败。
+    要"确认"而不是"取消"的场景, 用 accept_next(page) 临时改行为。
 
     channel='chromium': 这台机器上缺 chrome-headless-shell。
     --no-proxy-server: TUN 全局代理会拦 localhost。
@@ -162,4 +167,23 @@ def new_page(pw, viewport=None):
     page.on('pageerror', lambda e: errs.append('pageerror: ' + str(e)))
     page.on('console', lambda m: errs.append('console.error: ' + m.text)
             if m.type == 'error' and 'Failed to load resource' not in m.text else None)
-    return browser, page, errs
+    dialogs = []
+
+    def _on_dialog(d):
+        dialogs.append(d.message)
+        try:
+            if getattr(page, '_accept_dialogs', False):
+                d.accept(getattr(page, '_dialog_text', '') or '')
+            else:
+                d.dismiss()
+        except Exception:
+            pass
+    page.on('dialog', _on_dialog)
+    page._accept_dialogs = False
+    return browser, page, errs, dialogs
+
+
+def accept_dialogs(page, on=True, text=''):
+    """让接下来的原生弹窗走"确定"而不是"取消"。用完记得关回去。"""
+    page._accept_dialogs = on
+    page._dialog_text = text

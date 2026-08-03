@@ -16,7 +16,7 @@ TOKEN = 'uitest_token'
 DOCTMP = tempfile.mkdtemp(prefix='suifang_uidoc_')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _harness import (hs, check, section, sub, finish, ensure_all_tables, db,
-                      start_backend, start_static, new_page, REPO)
+                      start_backend, start_static, new_page, accept_dialogs, REPO)
 
 PFX = 'UI9'
 ensure_all_tables()
@@ -38,6 +38,8 @@ def clean():
        ("DELETE FROM platform_edu_material WHERE code LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_crf WHERE code LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_scale WHERE code LIKE %s",(PFX+'%',)),
+       ("DELETE FROM platform_export_download WHERE job_no IN (SELECT job_no FROM platform_export_job WHERE requested_by='演示医生')",),
+       ("DELETE FROM platform_export_job WHERE requested_by='演示医生'",),
        ("DELETE FROM platform_push WHERE patient_no LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_visit_followup WHERE patient_no LIKE %s",(PFX+'%',)),
        ("DELETE FROM platform_visit WHERE patient_no LIKE %s",(PFX+'%',)),
@@ -126,7 +128,7 @@ WEB = start_static()
 try:
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        browser, page, errs = new_page(pw)
+        browser, page, errs, DIALOGS = new_page(pw)
         page.goto('%s/platform-v2.html?api=%s' % (WEB, API), wait_until='networkidle')
         page.wait_for_timeout(1500)
         page.evaluate("localStorage.setItem('suifang_platform_token','%s');"
@@ -248,12 +250,11 @@ try:
         v = page.inner_text('#drBody')
         check('体检结果顶在正文之前', v.index('内容体检') < v.index('正文'))
         check('高危逐条列出并给了原文', v.count('原文：') >= 3, v.count('原文：'))
-        dialogs = []
-        page.on('dialog', lambda d: (dialogs.append(d.message), d.dismiss()))
+        n0 = len(DIALOGS)
         page.click('#drFoot button:has-text("审核并发布")'); page.wait_for_timeout(2500)
-        confirms = [m for m in dialogs if '命中「' in m]
+        confirms = [m for m in DIALOGS[n0:] if '命中「' in m]
         check('发布时把高危逐条摆进确认框', confirms and confirms[0].count('命中「') >= 3,
-              (confirms[0][:80] if confirms else dialogs[:1]))
+              (confirms[0][:80] if confirms else DIALOGS[-1:]))
         check('确认框说明了后果', confirms and '照做' in confirms[0])
         st = page.evaluate("(async()=>{const r=await fetch('%s/api/platform/edu?code=%sE');"
                            "const d=await r.json();return (d.materials[0]||{}).status})()" % (API, PFX))
@@ -377,16 +378,44 @@ try:
         check('下拉只列已发布的', '已发布患教' in page.inner_text('#pcEduWrap'),
               page.inner_text('#pcEduWrap')[:120])
         check('并说明草稿推不出去', '推不出去' in page.inner_text('#modal'))
-        dlg = []
-        page.on('dialog', lambda d: (dlg.append(d.message), d.dismiss()))
+        n0 = len(DIALOGS)
         page.fill('#pcPno', PFX + '001')
         page.click('#pcGo'); page.wait_for_timeout(2500)
+        dlg = DIALOGS[n0:]
         check('试算后弹确认框', dlg and '位患者' in dlg[0], (dlg[:1] or [''])[0][:80])
         check('确认框里带通道未接的警告', dlg and '没有真的发出去' in dlg[0])
         st = page.evaluate("(async()=>{const r=await fetch('%s/api/platform/pushes?patientNo=%s001');"
                            "return (await r.json()).count})()" % (API, PFX))
         check('取消后没有入队', st == 0, st)
         page.click('#mdClose'); page.wait_for_timeout(400)
+
+        section('11d. 导出增强 (M21)')
+        page.click('[data-page="analytics"]'); page.wait_for_timeout(2200)
+        t = page.inner_text('#analytics')
+        check('CDISC 标为部分并说明不是合规件', '不是 CDISC 合规提交件' in t, t[:100])
+        check('说清了还差什么', 'define.xml' in t and '受控术语' in t)
+        check('点明说成合规会出事', '审计时要出事' in t)
+        check('加密标为部分并说明原因', 'pyzipper' in t)
+        check('明说勾了加密而库不在时会拒绝产出', '拒绝产出文件' in t)
+        check('点明给明文冒充加密件更危险', '比不提供这个选项危险得多' in t)
+        check('导出记录被点明是最要紧的产出', '一次患者数据出境' in t)
+        check('导出记录面板在', page.query_selector('#exJobTable') is not None)
+        page.click('#sdtmBtn'); page.wait_for_timeout(1000)
+        md = page.inner_text('#modal')
+        check('SDTM 对话框再次声明不是合规件', '不是 CDISC 合规提交件' in md, md[-200:])
+        check('列出了四个域', all(d in md for d in ('DM', 'VS', 'QS', 'SV')))
+        n0 = len(DIALOGS)
+        page.click('#esGo'); page.wait_for_timeout(2000)
+        dlg2 = DIALOGS[n0:]
+        check('提交前问是否加密', dlg2 and '是否加密' in dlg2[0], (dlg2[:1] or [''])[0][:60])
+        check('并说明没装库会拒绝而不是给明文', dlg2 and '而不是给明文' in dlg2[0])
+        page.wait_for_timeout(3000)
+        jt = page.inner_text('#exJobTable')
+        check('导出任务出现在记录里', 'SDTM' in jt or 'sdtm' in jt.lower(), jt[:150])
+        check('记录里有内容哈希列', '内容哈希' in page.inner_text('#exportJobPanel'))
+        if page.query_selector('#mdClose') and page.evaluate(
+                "document.getElementById('modal').classList.contains('show')"):
+            page.click('#mdClose'); page.wait_for_timeout(400)
 
         section('12. 系统管理')
         page.click('[data-page="settings"]'); page.wait_for_timeout(1500)
@@ -396,7 +425,8 @@ try:
         # 曾经有个 opacity .04 的 130px "AI" 水印伪元素盖在所有 hero 按钮上,
         # 肉眼完全看不出来, 只有真去点才发现整排按钮全点不动。
         for pg, sel in [('patients', '#newPatientBtn'), ('execute', '#vitalIngestBtn'),
-                        ('plans', '#newPlanBtn'), ('plans', '#newFlowBtn'), ('analytics', '#exportBtn'),
+                        ('plans', '#newPlanBtn'), ('plans', '#newFlowBtn'), ('analytics', '#exportBtn'), ('analytics', '#pickExportBtn'),
+                        ('analytics', '#sdtmBtn'),
                         ('analytics', '#searchBtn'), ('cohorts', '#newCohortBtn'),
                         ('assets', '#scaleParseBtn'), ('assets', '#scaleGenBtn'),
                         ('assets', '#crfGenBtn'), ('assets', '#crfExcelBtn'),
