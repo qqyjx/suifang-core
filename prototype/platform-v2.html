@@ -19,7 +19,7 @@
     随访计划编排 真实   M5 platform_plan
     随访执行中心 真实   M2 报警闭环 + M7 体征阈值/趋势预警 + M5 今日任务
     患者管理     真实   M1 建档/绑定/体征 + M4 佩戴依从性 + M8 待建档发现
-    数据质控     部分   M13 自动质控+历次对比+质疑闭环已通; 留痕回退与 OCR 采集未建设
+    数据质控     部分   M13 自动质控+历次对比+质疑闭环 + M25 OCR 辅助采集已通; 留痕回退未建设
     纳排与分组   真实   M18 纳排/分组/入组已通; AI 推荐纳排与模型分组未建(刻意)
     随访流程     真实   M19 多级流程/访视窗口/流程外阶段/完成率已通; AI 生成计划未建
     统计分析     部分   M6 导出 + M16 高级检索与分布统计已通; CDISC/变量挑选/异步导出未建设
@@ -630,7 +630,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
         <input type="file" id="scalePdfFile" accept=".pdf,.txt,.md" style="display:none">
       </section>
 
-      <!-- ===================== 数据质控 (M13: 自动质控 + 质疑单已建; 留痕/OCR 未建) ===================== -->
+      <!-- ===================== 数据质控 (M13 自动质控+质疑单 / M25 OCR 辅助采集已建; 留痕回退未建) ===================== -->
       <section class="module-page" id="quality">
         <div class="module-hero">
           <div><h2>数据质控中心</h2><p>方案 §4.3：自动质控 · 历次对比 · 质疑闭环 —— 与体征预警分开，这里管的是「数据对不对」</p></div>
@@ -675,6 +675,29 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
           </div>
         </div>
 
+        <!-- ===== M25 OCR 辅助采集 ===== -->
+        <div class="card panel" style="margin-top:16px">
+          <div class="panel-head">
+            <h3>OCR 辅助采集</h3>
+            <div class="head-tools">
+              <span id="ocrEngine" class="tag grey">引擎状态检查中…</span>
+              <button class="white-btn" id="ocrNewBtn">＋ 上传病历/检验单</button>
+              <button class="link" id="ocrReload">刷新</button>
+            </div>
+          </div>
+          <!-- 这条不是免责声明, 是这个功能的设计前提。实测一张干净的印刷体检验单:
+               5 个 ↑ 只认出 1 个, 4.15 读成 "4. 15", 破折号读成汉字"一"。
+               这些错误全都不会报错。 -->
+          <div class="note-strip">
+            <b>识别结果不会自动入库。</b>
+            OCR 负责<b>定位和预读</b>，人负责<b>转录</b>：每个字段都要对着原件那一块确认一次，
+            数字、日期、表格<b>只能手工键入</b>，没有「全部采纳」。
+            实测一张干净的印刷体检验单，5 个 ↑ 异常标记只认出 1 个、<code>4.15</code> 读成
+            <code>4. 15</code>——这类错误看起来完全正常，不会报错。
+          </div>
+          <div id="ocrJobs"><div class="loading">加载中…</div></div>
+        </div>
+
         <div class="card panel" style="margin-top:16px">
           <div class="panel-head"><h3>方案 §4.3 逐条对照</h3></div>
           <div class="table-wrap"><table>
@@ -687,7 +710,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>质疑—核查—修正闭环，全程留痕</td><td><span class="tag green">已建</span></td><td>raise/answer/close/reopen 四步，每步追一行只增不改的日志</td></tr>
               <tr><td>单位级 / 数据库级两级质控员 + 第三方稽查员</td><td><span class="tag amber">部分</span></td><td><b>角色只记录、不鉴权</b>——平台还没有账号体系，任何人都能写任意角色。要满足 GCP 权责分离必须先做鉴权</td></tr>
               <tr><td>修改留痕：改前改后值、历史版本、回退</td><td><span class="tag amber">部分</span></td><td>量表填报已是「新增一条 + 旧版标 superseded」，历史版查得到；但还没有回退操作，其他数据类型也没接</td></tr>
-              <tr><td>OCR 辅助采集（病历/检验单拍照填 CRF）</td><td><span class="tag grey">未建设</span></td><td>量表侧的文档解析已通（随访资料准备），但那是读结构化文本；拍照件要 OCR，当前依赖的 pdf-inspector 不带 OCR</td></tr>
+              <tr><td>OCR 辅助采集（病历/检验单拍照填 CRF）</td><td><span class="tag green">已建</span></td><td>本地 RapidOCR（模型打包在包里，纯 CPU，<b>不联网不要 key</b>——输入是带姓名身份证号的病历照片，不外发第三方）。<b>识别结果一律不自动入库</b>：待核字段按 CRF 定义全量生成（不是按识别命中了什么），逐字段人工核对，数字/日期/表格只能键入。PDF 走 pdf-inspector 分流，有文字层的页直接取字、只有照片页才送识别</td></tr>
             </tbody>
           </table></div>
         </div>
@@ -930,6 +953,9 @@ function openDrawer(title, sub, body, foot) {
 function closeDrawer() {
   document.getElementById('drawer').classList.remove('show');
   document.getElementById('drawerMask').classList.remove('show');
+  /* M25 的核对抽屉里每个字段挂一张 blob URL 的裁图。blob 不会自己回收 ——
+     一个任务几十个字段, 反复开关抽屉能攒住几十 MB。 */
+  if (typeof ocrFreeBlobs === 'function') ocrFreeBlobs();
 }
 document.getElementById('drClose').onclick = closeDrawer;
 document.getElementById('drawerMask').onclick = closeDrawer;
@@ -1990,7 +2016,7 @@ function qcStats() {
 }
 
 async function loadQuality() {
-  await Promise.all([loadQcFindings(), loadQcQueries()]);
+  await Promise.all([loadQcFindings(), loadQcQueries(), loadOcrEngine(), loadOcrJobs()]);
   qcStats();
 }
 
@@ -2241,14 +2267,15 @@ document.getElementById('scaleGenBtn').onclick = () => {
 };
 
 document.getElementById('scaleParseBtn').onclick = () => {
-  openModal('从文档解析量表', '支持文字型 PDF、纯文本；扫描件需先做 OCR',
+  openModal('从文档解析量表', '文字型 PDF、扫描件 PDF、纯文本都能读',
     '<div class="field"><label>方式一：上传文件<span class="sub">文字型 PDF / .txt / .md</span></label>'+
       '<button class="secondary" id="spPick" style="width:100%">选择文件…</button>'+
       '<div class="sub" id="spName"></div></div>'+
     '<div class="field"><label>方式二：直接粘贴量表文字</label>'+
       '<textarea id="spText" style="height:180px" placeholder="把量表的题目、选项、评分标准粘贴到这里…&#10;&#10;例如：&#10;广泛性焦虑障碍量表 (GAD-7)&#10;选项：0=完全不会 1=好几天 2=一半以上时间 3=几乎天天&#10;1. 感觉紧张、焦虑或急切&#10;2. 不能够停止或控制担忧&#10;…&#10;评分标准：0-4 分 无焦虑；5-9 分 轻度焦虑"></textarea></div>'+
     '<div style="color:var(--muted);font-size:12px">解析结果是<b>草稿</b>，会逐项标出置信度供你核对，确认后才入库。'+
-      '扫描件和图片这里读不了——pdf-inspector 只提取已有文字层，不做 OCR。</div>',
+      'PDF 按页分流：有文字层的页直接取字，只有图的页交给本地 OCR。'+
+      '<b>扫描件的识别结果错得不会报错</b>（数字、小数点尤其），逐题核的时候要当心。</div>',
     '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="spGo">开始解析</button>');
   document.getElementById('spPick').onclick = () => document.getElementById('scalePdfFile').click();
   document.getElementById('spGo').onclick = () => runParse(null);
@@ -2420,6 +2447,262 @@ document.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => {
   if (t === 'edu') loadEdu();
   if (t === 'doc') { loadDocs(); loadConsents(); }
 });
+
+/* ================================================================ M25 OCR 辅助采集 (方案 §4.3)
+
+   这一块的界面设计有一条主线: **让"看着原件核对"变成阻力最小的路径**。
+
+   如果核对界面只给一个输入框和一个已经填好的值, 人一定会一路点确定 —— 那样这套
+   东西不但没用, 还更糟: 它给了一层"已经核过了"的假象。所以每个待核字段旁边都摆着
+   从原件上裁下来的那一小块图, 而数字/日期/表格根本不给"采纳"按钮。
+
+   原件裁图接口要带 X-Platform-Token(那是病历照片), 而 <img src> 没法带请求头,
+   所以走 fetch -> blob URL, 用完 revoke。
+   ================================================================ */
+const OCR = { engine: null, job: null, blobs: [] };
+
+function ocrFreeBlobs() {
+  OCR.blobs.forEach(u => { try { URL.revokeObjectURL(u); } catch (e) {} });
+  OCR.blobs = [];
+}
+
+async function loadOcrEngine() {
+  const el = document.getElementById('ocrEngine');
+  try {
+    const d = await getJSON('/api/platform/ocr/status');
+    OCR.engine = d.status;
+    if (d.status.ready) {
+      el.className = 'tag green';
+      el.textContent = '本地引擎就绪 · 不出网';
+    } else {
+      el.className = 'tag grey';
+      el.textContent = '引擎未安装';
+    }
+    el.title = d.status.error || (d.status.pdf_note || '') ||
+      'rapidocr-onnxruntime，模型打包在包里，纯 CPU，不联网不要 key';
+    document.getElementById('ocrNewBtn').disabled = !d.status.ready;
+  } catch (e) {
+    el.className = 'tag grey'; el.textContent = '引擎状态取不到';
+  }
+}
+
+async function loadOcrJobs() {
+  const box = document.getElementById('ocrJobs');
+  box.innerHTML = '<div class="loading">加载中…</div>';
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/ocr/jobs?limit=50', { headers: headers(false) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    if (!d.jobs.length) {
+      box.innerHTML = emptyBox('🗂', '还没有识别任务',
+        '把病历或检验单拍照上传，识别结果会变成一张待人工核对的清单');
+      return;
+    }
+    box.innerHTML = '<div class="table-wrap"><table><thead><tr>' +
+      '<th>任务号</th><th>CRF</th><th>患者</th><th>页/行</th><th>平均置信度</th>' +
+      '<th>核对进度</th><th>状态</th><th></th></tr></thead><tbody>' +
+      d.jobs.map(j => {
+        const done = j.fields_total - j.fields_pending;
+        const st = j.status === 'committed' ? '<span class="tag green">已入库</span>' :
+                   j.status === 'abandoned' ? '<span class="tag grey">已作废</span>' :
+                   j.fields_pending ? '<span class="tag amber">待核对</span>' :
+                                      '<span class="tag blue">可入库</span>';
+        return '<tr><td><code>' + esc(j.job_no) + '</code></td>' +
+          '<td>' + esc(j.crf_code) + ' v' + esc(j.crf_version) + '</td>' +
+          '<td>' + esc(j.patient_no || '--') + '</td>' +
+          '<td>' + (j.page_count || 1) + ' / ' + (j.line_count || 0) + '</td>' +
+          '<td>' + (j.mean_conf == null ? '--' : (j.mean_conf * 100).toFixed(1) + '%') + '</td>' +
+          '<td>' + done + ' / ' + j.fields_total + '</td>' +
+          '<td>' + st + '</td>' +
+          '<td><button class="link" onclick="openOcrJob(\'' + esc(j.job_no) + '\')">' +
+          (j.status === 'committed' ? '查看' : '去核对') + '</button></td></tr>';
+      }).join('') + '</tbody></table></div>';
+  } catch (e) { box.innerHTML = errBox(e); }
+}
+
+document.getElementById('ocrReload').onclick = loadOcrJobs;
+
+document.getElementById('ocrNewBtn').onclick = async () => {
+  let crfs = [];
+  try {
+    const d = await getJSON('/api/platform/crfs');
+    crfs = d.crfs || [];
+  } catch (e) { toast('取 CRF 列表失败：' + e.message); return; }
+  if (!crfs.length) { toast('先去「随访资料准备 · CRF 表单」建一张表——识别结果要按某张表的题目去核对'); return; }
+  const st = OCR.engine || {};
+  openModal('上传病历 / 检验单', '识别结果只产出待核清单，不会写进任何患者数据',
+    '<div class="field"><label>按哪张 CRF 核对</label><select id="ocCrf">' +
+      crfs.map(c => '<option value="' + esc(c.code) + '">' + esc(c.code) + ' · ' + esc(c.name) + '</option>').join('') +
+    '</select></div>' +
+    '<div class="field"><label>门诊号（可以稍后补）</label><input id="ocPno" placeholder="选填"></div>' +
+    '<div class="field"><label>选择照片或 PDF</label><input type="file" id="ocFile" accept=".jpg,.jpeg,.png,.bmp,.tif,.tiff,.webp,.pdf"></div>' +
+    '<div class="err" style="margin-top:4px">' + (st.max_mb || 20) + 'MB / ' + (st.max_pages || 20) +
+      ' 页以内。识别在本院服务器上跑，<b>照片不会发给任何第三方</b>。' +
+      'PDF 里有文字层的页直接取字，只有照片页才送识别。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button>' +
+    '<button class="primary" id="ocGo">开始识别</button>');
+  document.getElementById('ocGo').onclick = async () => {
+    const f = document.getElementById('ocFile').files[0];
+    if (!f) { toast('请选择文件'); return; }
+    const btn = document.getElementById('ocGo');
+    btn.disabled = true; btn.textContent = '识别中…（一页约 2 秒）';
+    try {
+      const buf = await f.arrayBuffer();
+      let bin = ''; const b = new Uint8Array(buf);
+      for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+      const res = await apiFetch(API_BASE + '/api/platform/ocr/recognize', {
+        method: 'POST', headers: headers(true),
+        body: JSON.stringify({
+          crf_code: document.getElementById('ocCrf').value,
+          patient_no: document.getElementById('ocPno').value.trim() || null,
+          filename: f.name, content_base64: btoa(bin),
+          operator: localStorage.getItem(LS_OP) || null }),
+      });
+      const d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal();
+      toast('识别完成：' + d.fields_prefilled + '/' + d.fields_total + ' 个字段预读到了值，全部待人工核对', 6000);
+      await loadOcrJobs();
+      openOcrJob(d.job_no);
+    } catch (e) { btn.disabled = false; btn.textContent = '开始识别'; toast('识别失败：' + e.message, 7000); }
+  };
+};
+
+/* 原件裁图。带口令的 GET，所以只能 fetch 成 blob 再塞给 <img>。 */
+async function ocrCrop(jobNo, fieldKey, imgId) {
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/ocr/crop?job=' +
+      encodeURIComponent(jobNo) + '&field=' + encodeURIComponent(fieldKey), { headers: headers(false) });
+    if (!res.ok) return;
+    const url = URL.createObjectURL(await res.blob());
+    OCR.blobs.push(url);
+    const el = document.getElementById(imgId);
+    if (el) { el.src = url; el.style.display = ''; }
+  } catch (e) { /* 裁不出来不影响核对, 人可以点"看整页" */ }
+}
+
+function ocrFieldRow(f) {
+  const canAccept = f.can_accept;
+  const done = f.verify_state !== 'unverified';
+  const imgId = 'ocimg_' + f.field_key.replace(/[^A-Za-z0-9_]/g, '');
+  const badge = done ? '<span class="tag ' +
+      (f.verify_state === 'match' ? 'green' : f.verify_state === 'corrected' ? 'blue' : 'grey') +
+      '">' + esc(f.state_label) + '</span>'
+    : (f.is_required ? '<span class="tag red">必填 · 待核</span>' : '<span class="tag amber">待核</span>');
+  return '<div class="card" style="padding:14px;margin-bottom:10px" data-ocr-field="' + esc(f.field_key) + '">' +
+    '<div style="display:flex;justify-content:space-between;gap:10px;align-items:start">' +
+      '<div><b>' + esc(f.field_label) + '</b>' +
+        '<small style="color:var(--muted);margin-left:8px">' + esc(f.value_type) + '</small></div>' +
+      badge + '</div>' +
+    (f.ocr_box ? '<img id="' + imgId + '" style="display:none;max-width:100%;margin:8px 0;border:1px solid var(--line);border-radius:6px">' : '') +
+    '<div style="color:var(--muted);font-size:12px;margin:6px 0">识别读到：' +
+      (f.ocr_value == null ? '<i>（没读到，需要你对着原件填，或标记为原件上没有）</i>' :
+        '<code>' + esc(f.ocr_value) + '</code>' +
+        (f.ocr_confidence == null ? '' : ' · 置信度 ' + (f.ocr_confidence * 100).toFixed(1) + '%') +
+        (f.ocr_source === 'text_layer' ? ' · 来自 PDF 文字层（不是识别结果）' : '')) +
+    '</div>' +
+    (done ? '<div style="font-size:12px">最终值：<b>' + esc(f.final_value == null ? '（不写入）' : f.final_value) +
+              '</b> · ' + esc(f.verified_by || '') + '</div>'
+     : '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+         '<input class="mini" style="flex:1;min-width:140px" id="ocv_' + esc(f.field_key) + '" placeholder="' +
+           (canAccept ? '核对无误可直接采纳，或在此改正' : '对着原件键入') + '">' +
+         '<button class="primary" onclick="ocrVerify(\'' + esc(f.field_key) + '\',\'typed\')">确认</button>' +
+         (canAccept ? '<button class="white-btn" onclick="ocrVerify(\'' + esc(f.field_key) + '\',\'accept\')">采纳识别值</button>'
+                    : '<span class="tag grey" title="' + esc(f.accept_blocked_reason || '') + '">只能键入</span>') +
+         '<button class="link" onclick="ocrVerify(\'' + esc(f.field_key) + '\',\'not_found\')">原件上没有</button>' +
+         '<button class="link" onclick="ocrVerify(\'' + esc(f.field_key) + '\',\'na\')">不适用</button>' +
+       '</div>') +
+    '</div>';
+}
+
+async function openOcrJob(jobNo) {
+  ocrFreeBlobs();
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/ocr/job?job=' + encodeURIComponent(jobNo),
+      { headers: headers(false) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    OCR.job = d;
+    const j = d.job, m = j.meta || {};
+    const routeBits = [];
+    if ((m.pages_text_layer || []).length) routeBits.push('第 ' + m.pages_text_layer.join('、') + ' 页走文字层（直接取字，没有识别误差）');
+    if ((m.pages_ocr || []).length) routeBits.push('第 ' + m.pages_ocr.join('、') + ' 页走 OCR');
+    if ((m.pages_unread || []).length) routeBits.push('<b style="color:var(--red)">第 ' + m.pages_unread.join('、') + ' 页没能读出来</b>');
+    openDrawer('核对 ' + j.job_no,
+      j.crf_code + ' v' + j.crf_version + ' · ' + (j.patient_no || '未指定患者'),
+      '<div class="note-strip" style="margin-bottom:12px">' +
+        '还有 <b>' + d.pending_count + '</b> 个字段没核对，核完才能写进 CRF。' +
+        '数字、日期、表格题<b>没有「采纳」按钮</b>——识别把 <code>4.15</code> 读成 ' +
+        '<code>4. 15</code> 这类错误不会报错，只会安静地写进数据。' +
+        (routeBits.length ? '<div style="margin-top:6px;font-size:12px">' + routeBits.join(' · ') + '</div>' : '') +
+      '</div>' +
+      '<div id="ocFields">' + d.fields.map(ocrFieldRow).join('') + '</div>',
+      j.status === 'committed'
+        ? '<span class="tag green">已写入 CRF 填报 #' + j.response_id + '</span>'
+        : '<button class="white-btn" onclick="ocrAbandon()">作废</button>' +
+          '<button class="primary" id="ocCommit"' + (d.can_commit ? '' : ' disabled') +
+          ' onclick="ocrCommit()">' + (d.can_commit ? '写进 CRF' : '还有 ' + d.pending_count + ' 个没核对') + '</button>');
+    d.fields.forEach(f => {
+      if (f.ocr_box) ocrCrop(jobNo, f.field_key, 'ocimg_' + f.field_key.replace(/[^A-Za-z0-9_]/g, ''));
+    });
+  } catch (e) { toast('打开失败：' + e.message, 6000); }
+}
+
+async function ocrVerify(fieldKey, action) {
+  const op = localStorage.getItem(LS_OP) || '';
+  if (!op) { toast('请先到「系统管理」里填操作人——核对记录要落到具体的人', 5000); return; }
+  const body = { job_no: OCR.job.job.job_no, field_key: fieldKey, action: action, operator: op };
+  if (action === 'typed') {
+    const el = document.getElementById('ocv_' + fieldKey);
+    body.value = el ? el.value.trim() : '';
+    if (!body.value) { toast('请先键入值；原件上确实没有请点「原件上没有」'); return; }
+  }
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/ocr/verify', {
+      method: 'POST', headers: headers(true), body: JSON.stringify(body) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    toast(d.state_label + (d.matched_ocr ? '' : '（与识别值不同，已留痕）') +
+          ' · 还剩 ' + d.pending_count + ' 个');
+    await openOcrJob(OCR.job.job.job_no);
+  } catch (e) { toast('核对失败：' + e.message, 7000); }
+}
+
+async function ocrCommit() {
+  const j = OCR.job.job;
+  let pno = j.patient_no;
+  if (!pno) {
+    pno = prompt('这份材料属于哪位患者？（门诊号）', '');
+    if (!pno) return;
+  }
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/ocr/commit', {
+      method: 'POST', headers: headers(true),
+      body: JSON.stringify({ job_no: j.job_no, patient_no: pno,
+                             operator: localStorage.getItem(LS_OP) || '' }) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    if (d.accepted === false) { toast('CRF 校验没过：' + (d.errors || []).map(x => x.field + ' ' + x.error).join('；'), 8000); return; }
+    closeDrawer();
+    toast('已写进 CRF 填报 #' + d.response_id + ' · ' + d.written_fields + ' 项，其中 ' +
+          d.corrected_fields.length + ' 项是人工改正的', 7000);
+    await loadOcrJobs();
+  } catch (e) { toast('写入失败：' + e.message, 7000); }
+}
+
+async function ocrAbandon() {
+  const reason = prompt('作废理由（照片拍糊了 / 传错人了 …）', '');
+  if (!reason) return;
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/ocr/abandon', {
+      method: 'POST', headers: headers(true),
+      body: JSON.stringify({ job_no: OCR.job.job.job_no, reason: reason,
+                             operator: localStorage.getItem(LS_OP) || '' }) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    closeDrawer(); toast('已作废（原件与留痕都留着，没有物理删除）'); await loadOcrJobs();
+  } catch (e) { toast('作废失败：' + e.message, 6000); }
+}
 
 /* ================================================================ M16 高级检索与统计 (方案 §4.6(2))
 

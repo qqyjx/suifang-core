@@ -35,8 +35,13 @@ os.environ.pop('SCALE_LLM_PROVIDER', None)
 os.environ.pop('ANTHROPIC_API_KEY', None)
 os.environ.pop('ANTHROPIC_AUTH_TOKEN', None)
 
-if not os.environ.get('DB_PASSWORD'):
+# HARNESS_NO_DB=1: 只跑不碰数据库的断言。给"手头没有库口令但想验纯逻辑"用的,
+# run_all.py 从不设它。设了之后 finish() 会把跳过的节数印出来并标成"不是完整通过" ——
+# 少跑一半断言却报个绿勾, 比不跑更糟。
+NO_DB = os.environ.get('HARNESS_NO_DB') in ('1', 'true')
+if not os.environ.get('DB_PASSWORD') and not NO_DB:
     print('请通过环境变量提供 DB_PASSWORD (不写进文件)')
+    print('只想跑不需要数据库的那部分: HARNESS_NO_DB=1 python3 <本文件>')
     sys.exit(2)
 
 _spec = importlib.util.spec_from_file_location('hs', SERVER_PY)
@@ -45,6 +50,7 @@ sys.modules['hs'] = hs
 _spec.loader.exec_module(hs)
 
 FAIL = []
+SKIPPED = []
 
 
 def check(name, cond, extra=''):
@@ -61,6 +67,15 @@ def sub(title):
     print('  -- ' + title + ' --')
 
 
+def need_db(what):
+    """要用数据库的一节写在 `if need_db('...'):` 里。HARNESS_NO_DB 下跳过并记账。"""
+    if NO_DB:
+        print('  ⏭  跳过(没有库口令): ' + what)
+        SKIPPED.append(what)
+        return False
+    return True
+
+
 def finish():
     print('\n' + '=' * 66)
     if FAIL:
@@ -68,6 +83,13 @@ def finish():
         for x in FAIL:
             print('   -', x)
         sys.exit(1)
+    if SKIPPED:
+        print('⚠️  纯逻辑部分全部通过, 但**这不是完整通过** —— 跳过了 %d 节需要数据库的断言:'
+              % len(SKIPPED))
+        for x in SKIPPED:
+            print('   -', x)
+        print('   补跑: DB_PASSWORD=xxx python3 ' + os.path.basename(sys.argv[0]))
+        sys.exit(0)
     print('✅ 全部通过')
     sys.exit(0)
 
@@ -99,7 +121,7 @@ def ensure_all_tables():
                'ensure_platform_qc_tables', 'ensure_platform_crf_tables',
                'ensure_platform_edu_tables', 'ensure_platform_vital_daily',
                'ensure_platform_doc_tables', 'ensure_platform_cohort_tables',
-               'ensure_platform_screening_table'):
+               'ensure_platform_screening_table', 'ensure_platform_ocr_tables'):
         if hasattr(hs, fn):
             getattr(hs, fn)()
 

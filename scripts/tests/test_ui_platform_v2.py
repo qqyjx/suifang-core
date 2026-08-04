@@ -294,6 +294,25 @@ try:
         else:
             check('对比入口给出可读的空态', True)
 
+        sub('OCR 辅助采集 (M25)')
+        t = page.inner_text('#quality')
+        check('界面上把"识别结果不会自动入库"讲在最前面 —— 这不是免责声明, '
+              '是这个功能的设计前提', '识别结果不会自动入库' in t)
+        check('把实测到的识别错误摆出来, 而不是只说"请注意核对"',
+              '4. 15' in t and '↑' in t)
+        check('明说数字/日期/表格只能手工键入, 没有"全部采纳"',
+              '只能手工键入' in t and '全部采纳' in t)
+        check('§4.3 对照表里 OCR 那行已从"未建设"翻成"已建"',
+              '未建设' not in t.split('OCR 辅助采集')[1][:200],
+              t.split('OCR 辅助采集')[1][:60])
+        check('声明了不外发第三方 —— 输入是带姓名身份证号的病历照片',
+              '不联网不要 key' in t or '不会发给任何第三方' in t)
+        eng = page.inner_text('#ocrEngine')
+        check('引擎状态是问后端拿的, 不是写死的',
+              eng and '检查中' not in eng, eng)
+        jobs = page.inner_text('#ocrJobs')
+        check('没有任务时给可读空态而不是空白', jobs.strip() != '', jobs[:80])
+
         section('11. 统计分析 · 高级检索 (M6 + M16)')
         page.click('[data-page="analytics"]'); page.wait_for_timeout(2200)
         page.click('#searchBtn'); page.wait_for_timeout(1200)

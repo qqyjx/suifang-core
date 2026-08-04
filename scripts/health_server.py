@@ -2542,30 +2542,29 @@ def parse_scale_text(text, code=None, name=None):
 def extract_pdf_text(pdf_bytes):
     """PDF -> 文字。返回 (text, meta, error)。
 
-    用 pdf-inspector (纯 Rust, 本地跑, 无网络无 key)。它明确**不做 OCR**: 扫描件只能被
-    识别出"是扫描件", 读不出字。这里如实把分类回给前端, 而不是返回空文本让人以为解析失败。
-    未安装时不让整个服务起不来 —— 只有用到这个端点才报错。
+    走 M25 的 ocr_read_source: 有文字层的页用 pdf-inspector 直接取字(快且精确),
+    没有文字层的页渲成图交给本地 OCR 引擎。两个库分工不同 ——
+    pdf-inspector 是**给 OCR 做分流的**(它算出 pages_needing_ocr), 本身不认图。
+
+    这里原先有个坑: 混合件(前几页电子版 + 后面附一张化验单照片)只返回文字层那部分,
+    读不到的页没有任何提示, 看起来像整份都读完了 —— 一份量表少了后半截, 前端和使用者
+    都不会察觉。现在 meta 里如实分列哪几页走了文字层、哪几页走了 OCR、哪几页没读成,
+    有没读成的页时 meta['warning'] 会写清楚。
     """
-    try:
-        import pdf_inspector
-    except ImportError:
-        return None, None, ('未安装 pdf-inspector, 无法解析 PDF。'
-                            '在服务器上执行: /root/miniconda3/bin/pip install pdf-inspector')
-    try:
-        r = pdf_inspector.process_pdf_bytes(pdf_bytes)
-        kind = getattr(r, 'pdf_type', None)
-        md = getattr(r, 'markdown', None) or ''
-        meta = {'pdf_type': kind, 'chars': len(md)}
-        if not md.strip():
-            if kind in ('scanned', 'image_based'):
-                return None, meta, ('这份 PDF 是{}, 里面没有可提取的文字层。'
-                                    'pdf-inspector 不做 OCR, 需要先用 OCR 引擎转成文字再粘贴进来。'
-                                    .format('扫描件' if kind == 'scanned' else '纯图片'))
-            return None, meta, 'PDF 里没有提取到文字 (分类: {})'.format(kind)
-        return md, meta, None
-    except Exception as e:
-        traceback.print_exc()
-        return None, None, 'PDF 解析失败: {}'.format(e)
+    lines, meta, err = ocr_read_source(pdf_bytes, 'pdf')
+    meta = meta or {}
+    if err:
+        return None, meta, err
+    text = '\n'.join(l['text'] for l in lines)
+    meta['chars'] = len(text)
+    meta['line_count'] = len(lines)
+    if meta.get('pages_unread'):
+        meta['warning'] = ('第 {} 页没能读出来, 下面的内容**不是全文**。原因: {}'.format(
+            '、'.join(str(p) for p in meta['pages_unread']),
+            '; '.join(sorted(set((meta.get('unread_reasons') or {}).values()))) or '未知'))
+    if not text.strip():
+        return None, meta, 'PDF 里没有提取到文字 (分类: {})'.format(meta.get('pdf_type'))
+    return text, meta, None
 
 
 # ---------------------------------------------------------------------------
@@ -11017,6 +11016,1224 @@ def _iwown_compliance_daily(device_id, days=14):
 
 
 # ---------------------------------------------------------------------------
+# 随访平台 M25: OCR 辅助采集 —— 病历/检验单拍照填 CRF
+#
+# 在这之前平台里"OCR"是缺的。M11 用 pdf-inspector 读 PDF, 而 pdf-inspector 按它自己
+# 的说明是**给 OCR 做分流的**(它算出 pages_needing_ocr, 你再拿去调真 OCR), 本身不认图。
+# 所以扫描件和拍照件一直读不出来。
+#
+# 引擎选 RapidOCR(onnxruntime): 模型打包在 wheel 里, 纯 CPU, 不联网、不要 key。
+# 这是刻意的 —— 输入是病历和检验单的照片, 上面有姓名、身份证号、门诊号,
+# 送云 OCR 等于把一整份 PHI 交给第三方。本模块没有任何出网代码路径。
+#
+# ---- 为什么识别结果一个字都不自动入库 ----
+#
+# 拿一张 150dpi 的检验单实测(13 行结果, 印刷体, 不倾斜 —— 比真实拍照件干净得多):
+#
+#   * 5 个 ↑ 异常标记只检出 1 个, 而且那一个是全页置信度最低的(0.519)。
+#     漏掉的 4 个**没有任何提示**: 结果看起来是完整的, 只是不再异常了。
+#   * "4.15" 读成 "4. 15"、"5.42" 读成 "5. 42"(中间多个空格), 置信度 0.91,
+#     按数字解析会变成 4 或者 415。
+#   * "床号：—" 读成 "床号：一" —— 破折号成了汉字一, "没有床号"变成"1 床"。
+#   * "2026-07-31 08:15" 粘成 "2026-07-3108:15"。
+#   * 同一张图旋转 2.5° 再识别, 上面那两个空格错误消失了。错误连"稳定"都算不上,
+#     没法靠事后规则补。
+#
+# 共同点是**看起来完全正常**。一个错的血锂浓度不会报错, 它就是个数字。
+# 所以本模块的定位是: OCR 负责定位和预读, 人负责转录。
+#
+# 落到代码上是四道闸:
+#
+# 1) ocr_recognize 只往 platform_ocr_* 写, 一个字都不进 platform_crf_response。
+# 2) ocr_verify_field 一次只核一个字段, 且必须带 operator。数字/日期/表格题
+#    **不提供"采纳 OCR 值"这个动作**, 只能人工键入 —— 上面那个 "4. 15" 就是理由。
+#    置信度低于 OCR_ACCEPT_MIN_CONF 的文本题同样只能键入。
+# 3) ocr_commit 要求该 job 下每一个待核字段都已处置, 写进 CRF 的只能是
+#    final_value(人给的); ocr_value 永远不会成为答案。
+# 4) 待核字段按 **CRF 定义**全量生成, 不是按"OCR 命中了什么"生成。
+#    只给命中项建待核记录的话, 被静默漏掉的字段压根不会出现在核对清单上,
+#    人认真核完一遍还是漏, 且漏得毫无痕迹。宁可让人对着空值点"未找到"。
+#
+# 顺带补上 M11 那边的一个坑: 混合件(前几页电子版 + 后面附一张化验单照片)以前
+# 只返回文字层那部分, 读不到的页没有任何提示 —— 看起来像是整份都读完了。
+# 现在 ocr_read_source 会如实报出哪几页走了文字层、哪几页走了 OCR、哪几页没读成。
+# ---------------------------------------------------------------------------
+
+OCR_DIR = os.environ.get('PLATFORM_OCR_DIR') or os.path.join(DOC_DIR, 'ocr')
+OCR_ALLOWED_EXT = ('jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'webp', 'pdf')
+OCR_MAX_BYTES = 20 * 1024 * 1024
+OCR_MAX_PAGES = int(os.environ.get('PLATFORM_OCR_MAX_PAGES') or 20)
+# PDF 页渲成图再识别的放大倍数。PDF 默认 72dpi, ×3 约等于 216dpi ——
+# 低于 200dpi 时小字号的数字识别率掉得很快, 而这里错一个数字就是错一个化验值。
+OCR_PDF_RENDER_SCALE = float(os.environ.get('PLATFORM_OCR_RENDER_SCALE') or 3.0)
+# 文本题允许"看一眼原图就采纳"的置信度下限。低于它必须人工键入。
+OCR_ACCEPT_MIN_CONF = 0.90
+
+OCR_JOB_STATUSES = ('recognized', 'verifying', 'committed', 'failed', 'abandoned')
+OCR_VERIFY_STATES = {
+    'unverified': '待核对',
+    'match':      '已核对(与识别一致)',
+    'corrected':  '已核对(人工改正)',
+    'not_found':  '原件上没有/看不清',
+    'na':         '本次不适用',
+}
+OCR_TERMINAL_STATES = ('match', 'corrected', 'not_found', 'na')
+# 这些题型永远不给"采纳"按钮, 只能键入。数字和日期是错了看不出来的重灾区,
+# 表格题一次涉及几十个格子, 一键采纳等于整表未经核对入库。
+OCR_TYPED_ONLY = ('number', 'date') + tuple(CRF_TABLE_TYPES)
+
+_OCR_ENGINE = [None]
+
+
+def _ocr_engine():
+    """惰性拿 OCR 引擎。返回 (engine, error)。
+
+    引擎实例化要加载几个 onnx 模型(约 0.2s), 所以进程内只建一次。
+    未安装时返回明确错误, **不返回一个"识别出 0 行"的空结果** ——
+    静默降级在这里的后果是: 页面显示"未识别到内容", 使用者以为是照片拍糊了。
+    """
+    if _OCR_ENGINE[0] is not None:
+        return _OCR_ENGINE[0], None
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        return None, ('未安装 OCR 引擎(rapidocr-onnxruntime)。在服务器上执行: '
+                      '/root/miniconda3/bin/pip install rapidocr-onnxruntime')
+    try:
+        _OCR_ENGINE[0] = RapidOCR()
+    except Exception as e:
+        traceback.print_exc()
+        return None, 'OCR 引擎初始化失败: {}'.format(e)
+    return _OCR_ENGINE[0], None
+
+
+def ocr_engine_status():
+    """引擎与依赖的可用性。前端据此决定是否显示"拍照识别"入口。"""
+    info = {'engine': 'rapidocr-onnxruntime', 'runs_locally': True,
+            'sends_data_out': False, 'ready': False,
+            'accept_min_conf': OCR_ACCEPT_MIN_CONF,
+            'typed_only_types': list(OCR_TYPED_ONLY),
+            'max_mb': OCR_MAX_BYTES // 1024 // 1024, 'max_pages': OCR_MAX_PAGES}
+    try:
+        import rapidocr_onnxruntime          # noqa: F401
+        info['ready'] = True
+    except ImportError:
+        info['error'] = ('未安装 OCR 引擎。装法: '
+                         '/root/miniconda3/bin/pip install rapidocr-onnxruntime')
+    for mod, key, why in (('onnxruntime', 'onnxruntime_version', None),
+                          ('PIL', 'pillow', None)):
+        try:
+            m = __import__(mod)
+            info[key] = getattr(m, '__version__', 'ok')
+        except ImportError:
+            info[key] = None
+    try:
+        import pypdfium2                     # noqa: F401
+        info['pdf_render'] = True
+    except ImportError:
+        info['pdf_render'] = False
+        info['pdf_note'] = ('未安装 pypdfium2, 扫描版 PDF 无法渲成图送识别(图片文件不受影响)。'
+                            '装法: /root/miniconda3/bin/pip install pypdfium2')
+    try:
+        import pdf_inspector                 # noqa: F401
+        info['pdf_route'] = True
+    except ImportError:
+        info['pdf_route'] = False
+        info['pdf_route_note'] = ('未安装 pdf-inspector, PDF 的每一页都会走 OCR —— '
+                                  '有文字层的页本可以直接取字, 又快又不会有识别错误')
+    return info
+
+
+def _ocr_safe_ext(filename):
+    """只取扩展名, 原始文件名一个字都不落到磁盘上(同 M17 的理由)。"""
+    name = str(filename or '')
+    ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+    ext = re.sub(r'[^a-z0-9]', '', ext)[:8]
+    return ext if ext in OCR_ALLOWED_EXT else None
+
+
+def _ocr_lines(image_bytes, page=1, source='ocr'):
+    """一张图 -> ([{text, conf, box, page, source}], error)。
+
+    box 是 [x0,y0,x1,y1] 外接矩形(整数, 图片像素坐标), 前端靠它裁出原图片段
+    摆在待核字段旁边 —— 不看原件的"核对"不叫核对。
+    """
+    engine, err = _ocr_engine()
+    if err:
+        return None, err
+    try:
+        res, _elapse = engine(image_bytes)
+    except Exception as e:
+        traceback.print_exc()
+        return None, 'OCR 识别失败: {}'.format(e)
+    out = []
+    for row in (res or []):
+        box, text, conf = row[0], row[1], row[2]
+        xs = [float(p[0]) for p in box]
+        ys = [float(p[1]) for p in box]
+        out.append({'text': str(text), 'conf': round(float(conf), 4),
+                    'page': page, 'source': source,
+                    'box': [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]})
+    out.sort(key=lambda l: (l['box'][1], l['box'][0]))
+    return out, None
+
+
+def _render_pdf_page(raw, index0, scale=None):
+    """渲染 PDF 的第 index0 页(0 基) 成 PNG bytes。返回 (png, error)。"""
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        return None, ('未安装 pypdfium2, 无法把 PDF 页渲成图。'
+                      '装法: /root/miniconda3/bin/pip install pypdfium2')
+    try:
+        doc = pdfium.PdfDocument(raw)
+        try:
+            bmp = doc[index0].render(scale=scale or OCR_PDF_RENDER_SCALE)
+            buf = io.BytesIO()
+            bmp.to_pil().save(buf, 'PNG')
+            return buf.getvalue(), None
+        finally:
+            doc.close()
+    except Exception as e:
+        traceback.print_exc()
+        return None, 'PDF 第 {} 页渲染失败: {}'.format(index0 + 1, e)
+
+
+def _pdf_page_plan(raw):
+    """用 pdf-inspector 给 PDF 分流。返回 (plan, meta)。
+
+    plan 形如 [{'page':1, 'need_ocr':False, 'markdown':'...'}, ...] (page 1 基)。
+
+    这里有个必须留神的地方: pdf-inspector 顶层的 pages_needing_ocr 是 **1 基**,
+    而 PageMarkdown.page 是 **0 基**。两个字段挨着放, 混用就会错开一页 ——
+    表现是"某一页明明是照片却被当成有文字层", 那一页就整页读不出来还不报错。
+    """
+    meta = {'pdf_route': 'pdf-inspector'}
+    try:
+        import pdf_inspector
+    except ImportError:
+        meta['pdf_route'] = 'none'
+        meta['note'] = '未安装 pdf-inspector, 全部页面走 OCR'
+        return None, meta
+    try:
+        pm = pdf_inspector.extract_pages_markdown_bytes(raw)
+        cls = pdf_inspector.process_pdf_bytes(raw)
+        meta['pdf_type'] = getattr(cls, 'pdf_type', None)
+        meta['has_encoding_issues'] = bool(getattr(cls, 'has_encoding_issues', False))
+        meta['pages_needing_ocr'] = list(getattr(cls, 'pages_needing_ocr', None) or [])
+        reasons = {}
+        for r in (getattr(cls, 'ocr_reasons_by_page', None) or []):
+            reasons[int(getattr(r, 'page', 0))] = list(getattr(r, 'reasons', None) or [])
+        meta['ocr_reasons'] = reasons
+        plan = []
+        for p in (getattr(pm, 'pages', None) or []):
+            md = getattr(p, 'markdown', None) or ''
+            plan.append({'page': int(getattr(p, 'page', 0)) + 1,      # 0 基 -> 1 基
+                         'need_ocr': bool(getattr(p, 'needs_ocr', False)) or not md.strip(),
+                         'markdown': md})
+        # 文字层坏掉时(CID/ToUnicode 有问题)取出来的是乱码, 比没有更糟 —— 一律改走 OCR
+        if meta['has_encoding_issues']:
+            for it in plan:
+                it['need_ocr'] = True
+            meta['note'] = 'PDF 字体编码有问题, 文字层不可信, 全部页面改走 OCR'
+        return (plan or None), meta
+    except Exception as e:
+        traceback.print_exc()
+        meta['pdf_route'] = 'failed'
+        meta['note'] = 'pdf-inspector 分流失败, 全部页面走 OCR: {}'.format(e)
+        return None, meta
+
+
+def ocr_read_source(raw, ext):
+    """源文件 -> (lines, meta, error)。
+
+    PDF 走分流: 有文字层的页直接取字(快, 且没有识别错误), 没有的页才渲图送 OCR。
+    meta 里如实分列 pages_text_layer / pages_ocr / pages_unread ——
+    读不到的页必须说出来, 否则一份"前 3 页电子版 + 第 4 页照片"的材料
+    会安安静静只返回前 3 页, 看起来像整份都读完了。
+    """
+    meta = {'ext': ext, 'pages_text_layer': [], 'pages_ocr': [], 'pages_unread': [],
+            'capped': False}
+    t0 = time.time()
+
+    if ext != 'pdf':
+        lines, err = _ocr_lines(raw, page=1, source='ocr')
+        if err:
+            return None, meta, err
+        meta['page_count'] = 1
+        meta['pages_ocr'] = [1]
+        meta['engine'] = 'rapidocr'
+        meta['ocr_ms'] = int((time.time() - t0) * 1000)
+        return lines, meta, None
+
+    plan, pmeta = _pdf_page_plan(raw)
+    meta.update(pmeta)
+    if plan is None:
+        # 分流不可用: 只能整份走 OCR, 页数从渲染器问
+        try:
+            import pypdfium2 as pdfium
+            doc = pdfium.PdfDocument(raw)
+            n = len(doc)
+            doc.close()
+        except ImportError:
+            return None, meta, ('这是 PDF, 但既没有 pdf-inspector 也没有 pypdfium2, '
+                                '无法处理。装法: /root/miniconda3/bin/pip install '
+                                'pdf-inspector pypdfium2')
+        except Exception as e:
+            return None, meta, 'PDF 打不开: {}'.format(e)
+        plan = [{'page': i + 1, 'need_ocr': True, 'markdown': ''} for i in range(n)]
+
+    meta['page_count'] = len(plan)
+    if len(plan) > OCR_MAX_PAGES:
+        meta['capped'] = True
+        meta['cap_note'] = '共 {} 页, 只处理了前 {} 页(PLATFORM_OCR_MAX_PAGES)'.format(
+            len(plan), OCR_MAX_PAGES)
+        meta['pages_unread'] += [p['page'] for p in plan[OCR_MAX_PAGES:]]
+        plan = plan[:OCR_MAX_PAGES]
+
+    lines = []
+    for item in plan:
+        pno = item['page']
+        if not item['need_ocr']:
+            for ln in _lines_from_markdown(item['markdown'], pno):
+                lines.append(ln)
+            meta['pages_text_layer'].append(pno)
+            continue
+        png, err = _render_pdf_page(raw, pno - 1)
+        if err:
+            meta['pages_unread'].append(pno)
+            meta.setdefault('unread_reasons', {})[str(pno)] = err
+            continue
+        got, err = _ocr_lines(png, page=pno, source='ocr')
+        if err:
+            # 引擎不可用是整体性问题, 不是这一页的问题 —— 直接把错误抛回去
+            if not meta['pages_ocr'] and not meta['pages_text_layer']:
+                return None, meta, err
+            meta['pages_unread'].append(pno)
+            meta.setdefault('unread_reasons', {})[str(pno)] = err
+            continue
+        lines += got
+        meta['pages_ocr'].append(pno)
+
+    meta['engine'] = 'rapidocr+text_layer' if meta['pages_text_layer'] and meta['pages_ocr'] \
+        else ('text_layer' if meta['pages_text_layer'] else 'rapidocr')
+    meta['ocr_ms'] = int((time.time() - t0) * 1000)
+    if not lines and meta['pages_unread']:
+        return None, meta, '第 {} 页读不出来, 全文没有可用内容'.format(
+            '、'.join(str(p) for p in meta['pages_unread']))
+    return lines, meta, None
+
+
+def _lines_from_markdown(md, page):
+    """文字层的 markdown -> 行。没有坐标(PDF 文字层不给外接框), box 记 None。
+
+    source 记成 text_layer 而不是 ocr: 这不是识别结果, 是文档自带的字符数据,
+    准确性和 OCR 不是一回事, 后面允不允许"一键采纳"就靠这个区分。
+    """
+    out = []
+    for raw_line in str(md or '').split('\n'):
+        t = re.sub(r'^#+\s*', '', raw_line).strip()
+        if not t:
+            continue
+        out.append({'text': t, 'conf': 1.0, 'page': page,
+                    'source': 'text_layer', 'box': None})
+    return out
+
+
+# ---- 行 -> 待核字段 ----
+
+def _ocr_norm(s):
+    """比对用的归一化: 去空白、全角转半角、统一分隔符。
+
+    只做这些。**不做数字近似**: "4. 15" 归一化成 "4.15" 已经够宽了,
+    再往下(比如把 O 当 0)就等于替人猜, 猜错的那次谁也发现不了。
+    """
+    s = str(s if s is not None else '')
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if o == 0x3000:
+            continue
+        if 0xFF01 <= o <= 0xFF5E:
+            ch = chr(o - 0xFEE0)
+        out.append(ch)
+    s = ''.join(out)
+    s = re.sub(r'\s+', '', s)
+    return s.replace('：', ':').replace('，', ',')
+
+
+_OCR_SEP = re.compile(r'^[\s:：=＝\-—－·。、]+')
+
+
+def _find_value_for_label(lines, labels):
+    """在 OCR 行里找 labels 中任一标签对应的值。返回 (value, line) 或 (None, None)。
+
+    两种版式都要认:
+      同行  "姓名：赵慧敏"          -> 取冒号后面
+      分列  "空腹血糖"  |  "6.8"    -> 取同一行带里 x 更大的下一段
+    """
+    norm_labels = [(_ocr_norm(x), x) for x in labels if str(x or '').strip()]
+    for i, ln in enumerate(lines):
+        nt = _ocr_norm(ln['text'])
+        for nl, _orig in norm_labels:
+            if not nl or nl not in nt:
+                continue
+            rest = nt.split(nl, 1)[1]
+            rest = _OCR_SEP.sub('', rest)
+            if rest:
+                return rest, ln
+            side = _same_row_right(lines, i)
+            if side is not None:
+                return _ocr_norm(side['text']), side
+            return None, ln
+    return None, None
+
+
+def _same_row_right(lines, idx):
+    """找与 lines[idx] 同一行带、且在其右侧最近的一段文字。没有坐标时返回 None。"""
+    cur = lines[idx]
+    if not cur.get('box'):
+        return None
+    _x0, y0, x1, y1 = cur['box']
+    h = max(1, y1 - y0)
+    best = None
+    for j, ln in enumerate(lines):
+        if j == idx or not ln.get('box') or ln['page'] != cur['page']:
+            continue
+        bx0, by0, _bx1, by1 = ln['box']
+        overlap = min(y1, by1) - max(y0, by0)
+        if overlap < h * 0.5 or bx0 <= x1:
+            continue
+        if best is None or bx0 < best['box'][0]:
+            best = ln
+    return best
+
+
+def cluster_table_rows(lines, page=None):
+    """把 OCR 行按 y 带聚成表格行。返回 [{'y':..,'cells':[{text,conf,box}]}]。
+
+    只给人看的**线索**, 不作为答案 —— 聚错一行的后果是几个化验值串位,
+    而串位后的值每一个看上去都是合法的。所以表格题在核对时必须整表键入。
+    """
+    ls = [l for l in lines if l.get('box') and (page is None or l['page'] == page)]
+    ls.sort(key=lambda l: (l['box'][1], l['box'][0]))
+    rows = []
+    for ln in ls:
+        _x0, y0, _x1, y1 = ln['box']
+        mid = (y0 + y1) / 2.0
+        h = max(1, y1 - y0)
+        placed = False
+        for r in rows:
+            if abs(r['y'] - mid) <= h * 0.6:
+                r['cells'].append(ln)
+                r['y'] = (r['y'] * (len(r['cells']) - 1) + mid) / len(r['cells'])
+                placed = True
+                break
+        if not placed:
+            rows.append({'y': mid, 'cells': [ln]})
+    for r in rows:
+        r['cells'].sort(key=lambda l: l['box'][0])
+        r['y'] = int(r['y'])
+    rows.sort(key=lambda r: r['y'])
+    return [{'y': r['y'],
+             'cells': [{'text': c['text'], 'conf': c['conf'], 'box': c['box']}
+                       for c in r['cells']]} for r in rows]
+
+
+def build_ocr_candidates(definition, lines):
+    """按 CRF 定义生成待核字段。**每一道要采集的题都生成一条**, 不管 OCR 有没有命中。
+
+    理由见本节顶部第 4 条: 实测里 5 个 ↑ 只检出 1 个, 漏掉的没有任何提示。
+    只给命中项建记录, 核对清单本身就是残缺的, 人再认真也补不回来。
+    """
+    out = []
+    for sec, it in _crf_items(definition):
+        t = it.get('type')
+        if t in CRF_NO_ANSWER_TYPES:
+            continue
+        labels = [it.get('text') or '']
+        labels += [str(x) for x in (it.get('ocr_hints') or [])]
+        value, ln = (None, None)
+        if t not in CRF_TABLE_TYPES:
+            value, ln = _find_value_for_label(lines, labels)
+        else:
+            # 表格题不猜值, 只把标签所在页记下来, 让前端把整块原图摆出来
+            _v, ln = _find_value_for_label(lines, labels)
+            value = None
+        out.append({
+            'field_key': it.get('id'),
+            'field_label': (sec + ' / ' if sec else '') + (it.get('text') or it.get('id') or ''),
+            'value_type': t,
+            'required': bool(it.get('required')),
+            'ocr_value': value,
+            'ocr_confidence': (ln or {}).get('conf') if value is not None else None,
+            'ocr_source': (ln or {}).get('source') or 'ocr',
+            'ocr_page': (ln or {}).get('page'),
+            'ocr_box': (ln or {}).get('box'),
+        })
+    return out
+
+
+def _can_accept(field):
+    """这个字段允不允许"看一眼原图就采纳"。返回 (bool, 理由)。
+
+    文字层不是识别结果, 是文档自带的字符数据, 所以可以采纳;
+    OCR 出来的数字/日期/表格一律不行 —— 错了看不出来的正是这几类。
+    """
+    t = field.get('value_type')
+    if field.get('ocr_value') in (None, ''):
+        return False, '识别没取到值, 只能人工键入或标记为"原件上没有"'
+    if field.get('ocr_source') == 'text_layer':
+        return True, ''
+    if t in OCR_TYPED_ONLY:
+        return False, ('{} 题不提供"采纳识别值", 必须人工键入 —— '
+                       '识别把 4.15 读成 "4. 15" 这类错误不会报错, 只会安静地写进数据'
+                       .format(_ocr_type_label(t)))
+    conf = field.get('ocr_confidence')
+    if conf is None or float(conf) < OCR_ACCEPT_MIN_CONF:
+        return False, '识别置信度 {} 低于 {}, 必须人工键入'.format(
+            conf, OCR_ACCEPT_MIN_CONF)
+    return True, ''
+
+
+def _ocr_type_label(t):
+    if t in CRF_BASIC_TYPES:
+        return CRF_BASIC_TYPES[t]
+    if t in CRF_TABLE_TYPES:
+        return CRF_TABLE_TYPES[t][0]
+    return str(t)
+
+
+# 这些题型的最终值按 JSON 存: 选项的 value 可能是数字, 存成字符串再交给
+# validate_crf_data 会被判成"不在选项范围内" —— 类型必须原样保住。
+OCR_JSON_VALUE_TYPES = ('single', 'select', 'multi') + tuple(CRF_TABLE_TYPES)
+
+
+def _ocr_find_item(definition, field_key):
+    for _sec, it in _crf_items(definition or {}):
+        if it.get('id') == field_key:
+            return it
+    return None
+
+
+def _ocr_option_value(it, raw):
+    """把人给的一个选项(填标签或填值都行)映射成该选项的 value。返回 (value, error)。"""
+    opts = it.get('options') or []
+    r = _ocr_norm(raw)
+    for o in opts:
+        if _ocr_norm(o.get('label')) == r or _ocr_norm(o.get('value')) == r:
+            return o.get('value'), None
+    return None, '"{}" 不在选项里。可选: {}'.format(
+        raw, '/'.join(str(o.get('label')) for o in opts[:8]) or '(该题没有配选项)')
+
+
+def _ocr_coerce(it, raw):
+    """核对时就把人给的值校到位。返回 (存库用的字符串, 显示用的值, error)。
+
+    刻意放在核对这一步而不是提交那一步: 提交时才报"这不是数字", 人已经核完
+    几十个字段了, 还得回头找是哪个; 而且那时原件那一块早就不在眼前了。
+    """
+    t = it.get('type')
+    if t == 'number':
+        try:
+            fv = float(str(raw).strip())
+        except (TypeError, ValueError):
+            return None, None, '"{}" 不是数字'.format(raw)
+        lo, hi = it.get('min'), it.get('max')
+        if (lo is not None and fv < lo) or (hi is not None and fv > hi):
+            return None, None, '{} 超出该题允许范围 {}~{}'.format(
+                raw, lo if lo is not None else '-', hi if hi is not None else '-')
+        return str(raw).strip(), fv, None
+    if t == 'date':
+        s = re.sub(r'[./年月]', '-', str(raw).strip()).rstrip('-日')
+        m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})$', s)
+        if not m:
+            return None, None, '"{}" 不是日期。格式 YYYY-MM-DD'.format(raw)
+        s = '%04d-%02d-%02d' % (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return s, s, None
+    if t in ('single', 'select'):
+        v, err = _ocr_option_value(it, raw)
+        if err:
+            return None, None, err
+        return json.dumps(v, ensure_ascii=False), v, None
+    if t == 'multi':
+        parts = [x for x in re.split(r'[,，、;；]', str(raw)) if x.strip()]
+        vals = []
+        for p in parts:
+            v, err = _ocr_option_value(it, p)
+            if err:
+                return None, None, err
+            vals.append(v)
+        if not vals:
+            return None, None, '多选题至少要选一项'
+        return json.dumps(vals, ensure_ascii=False), vals, None
+    return str(raw).strip(), str(raw).strip(), None
+
+
+# ---- 落库 ----
+
+def ensure_platform_ocr_tables():
+    """M25: OCR 任务表 + 待核字段表 + 留痕表 (idempotent)。"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_ocr_job (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                job_no VARCHAR(32) NOT NULL,
+                crf_code VARCHAR(64) NOT NULL,
+                crf_version VARCHAR(32) NOT NULL COMMENT '识别时钉的版本 —— CRF 改版后
+                    旧任务仍按旧版核对, 否则待核清单会和当初看到的原件对不上',
+                patient_no VARCHAR(64) DEFAULT NULL,
+                visit_name VARCHAR(100) DEFAULT NULL,
+                plan_id BIGINT DEFAULT NULL,
+                orig_name VARCHAR(255) DEFAULT NULL COMMENT '仅供显示',
+                stored_name VARCHAR(160) NOT NULL COMMENT '磁盘上的名字, 服务端生成',
+                ext VARCHAR(8) NOT NULL,
+                size_bytes BIGINT NOT NULL,
+                sha256 CHAR(64) NOT NULL,
+                page_count INT DEFAULT NULL,
+                engine VARCHAR(40) DEFAULT NULL,
+                ocr_ms INT DEFAULT NULL,
+                line_count INT DEFAULT 0,
+                mean_conf DECIMAL(6,4) DEFAULT NULL,
+                lines_json MEDIUMTEXT DEFAULT NULL COMMENT '每行 text/conf/box/page/source',
+                meta_json TEXT DEFAULT NULL COMMENT '分流结果: 哪几页走文字层/OCR/没读成',
+                status ENUM('recognized','verifying','committed','failed','abandoned')
+                    DEFAULT 'recognized',
+                response_id BIGINT DEFAULT NULL COMMENT '核完后落到哪条 CRF 填报',
+                uploader VARCHAR(64) DEFAULT NULL,
+                note VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_ocr_job (job_no),
+                INDEX idx_patient (patient_no),
+                INDEX idx_status (status),
+                INDEX idx_crf (crf_code, crf_version)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M25 OCR 识别任务'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_ocr_field (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                job_no VARCHAR(32) NOT NULL,
+                field_key VARCHAR(64) NOT NULL,
+                field_label VARCHAR(200) DEFAULT NULL,
+                value_type VARCHAR(24) NOT NULL,
+                is_required TINYINT(1) DEFAULT 0,
+                ocr_value VARCHAR(1000) DEFAULT NULL COMMENT '识别原值。只读, 任何时候都不修改
+                    —— 留着才能事后算这套引擎在本院单据上的真实准确率',
+                ocr_confidence DECIMAL(6,4) DEFAULT NULL,
+                ocr_source VARCHAR(16) DEFAULT 'ocr' COMMENT 'ocr / text_layer',
+                ocr_page INT DEFAULT NULL,
+                ocr_box VARCHAR(64) DEFAULT NULL COMMENT 'x0,y0,x1,y1 供裁原图',
+                final_value MEDIUMTEXT DEFAULT NULL COMMENT '人工确认后的值。写进 CRF 的只能是它',
+                verify_state ENUM('unverified','match','corrected','not_found','na')
+                    DEFAULT 'unverified',
+                verified_by VARCHAR(64) DEFAULT NULL,
+                verified_at DATETIME DEFAULT NULL,
+                note VARCHAR(500) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uk_ocr_field (job_no, field_key),
+                INDEX idx_state (job_no, verify_state)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M25 待人工核对的候选字段'
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS platform_ocr_log (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                job_no VARCHAR(32) NOT NULL,
+                field_key VARCHAR(64) DEFAULT NULL,
+                action VARCHAR(24) NOT NULL COMMENT 'recognize/verify/commit/abandon',
+                operator VARCHAR(64) DEFAULT NULL,
+                detail VARCHAR(1000) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_job (job_no)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='随访平台 M25 识别与核对留痕(只增不改)'
+        """)
+        print('[启动] platform_ocr_job / platform_ocr_field / platform_ocr_log 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_platform_ocr_tables 失败:', e)
+    finally:
+        conn.close()
+
+
+def _ocr_log(job_no, action, operator=None, detail=None, field_key=None):
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute('INSERT INTO platform_ocr_log (job_no, field_key, action, operator, detail) '
+                    'VALUES (%s,%s,%s,%s,%s)',
+                    (job_no, field_key, action, operator, (detail or '')[:1000] or None))
+        cur.close()
+        conn.close()
+    except Exception:
+        traceback.print_exc()
+
+
+def _ocr_crf_definition(code, version=None):
+    """取一份 CRF 定义。version 给了就取那一版 —— 识别任务钉的是识别当时那一版。"""
+    ensure_platform_crf_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        if version:
+            cur.execute('SELECT version, definition FROM platform_crf WHERE code=%s AND version=%s',
+                        (str(code), str(version)))
+        else:
+            cur.execute('SELECT version, definition FROM platform_crf WHERE code=%s AND active=1 '
+                        'ORDER BY updated_at DESC LIMIT 1', (str(code),))
+        row = cur.fetchone()
+        cur.close()
+    finally:
+        conn.close()
+    if not row:
+        return None, 'CRF 不存在或已停用: {}{}'.format(code, ' v' + str(version) if version else '')
+    d = row[1]
+    if isinstance(d, str):
+        d = json.loads(d)
+    return d, None
+
+
+def ocr_recognize(body):
+    """识别一份材料, 产出**待人工核对**的候选字段。
+
+    {crf_code, crf_version?, filename, content_base64, patient_no?, visit_name?,
+     plan_id?, operator?, note?}
+
+    这个函数不写任何患者数据 —— 它的全部产出是一张待核清单。
+    """
+    code = str(body.get('crf_code') or body.get('code') or '').strip()
+    if not code:
+        return None, 'crf_code 必填 —— 识别结果要按哪张 CRF 的题目去核对, 必须先定下来'
+    ext = _ocr_safe_ext(body.get('filename'))
+    if not ext:
+        return None, '只接受这些格式: {}'.format('/'.join(OCR_ALLOWED_EXT))
+    try:
+        import base64 as _b64
+        raw = _b64.b64decode(body.get('content_base64') or '')
+    except Exception:
+        return None, 'content_base64 不是合法 base64'
+    if not raw:
+        return None, '文件是空的'
+    if len(raw) > OCR_MAX_BYTES:
+        return None, '文件超过 {}MB'.format(OCR_MAX_BYTES // 1024 // 1024)
+
+    version = body.get('crf_version') or body.get('version')
+    definition, err = _ocr_crf_definition(code, version)
+    if err:
+        return None, err
+    if not version:
+        ensure_platform_crf_tables()
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute('SELECT version FROM platform_crf WHERE code=%s AND active=1 '
+                        'ORDER BY updated_at DESC LIMIT 1', (code,))
+            version = cur.fetchone()[0]
+            cur.close()
+        finally:
+            conn.close()
+
+    lines, meta, err = ocr_read_source(raw, ext)
+    if err:
+        return None, err
+
+    import hashlib
+    import secrets as _secrets
+    sha = hashlib.sha256(raw).hexdigest()
+    job_no = 'OCR' + _secrets.token_hex(5).upper()
+    stored = '{}_{}.{}'.format(job_no, sha[:12], ext)
+    try:
+        if not os.path.isdir(OCR_DIR):
+            os.makedirs(OCR_DIR)
+        with open(os.path.join(OCR_DIR, stored), 'wb') as f:
+            f.write(raw)
+    except Exception as e:
+        return None, '原件写入失败({}): {}'.format(OCR_DIR, e)
+
+    cands = build_ocr_candidates(definition, lines)
+    confs = [l['conf'] for l in lines if l.get('source') == 'ocr']
+    mean_conf = round(sum(confs) / len(confs), 4) if confs else None
+
+    ensure_platform_ocr_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO platform_ocr_job
+              (job_no, crf_code, crf_version, patient_no, visit_name, plan_id,
+               orig_name, stored_name, ext, size_bytes, sha256, page_count, engine,
+               ocr_ms, line_count, mean_conf, lines_json, meta_json, status, uploader, note)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'recognized',%s,%s)
+        """, (job_no, code, str(version), body.get('patient_no') or None,
+              body.get('visit_name') or None, body.get('plan_id'),
+              str(body.get('filename') or '')[:255] or None, stored, ext, len(raw), sha,
+              meta.get('page_count'), meta.get('engine'), meta.get('ocr_ms'),
+              len(lines), mean_conf,
+              json.dumps(lines, ensure_ascii=False),
+              json.dumps(meta, ensure_ascii=False),
+              body.get('operator') or None, (body.get('note') or None)))
+        for c in cands:
+            cur.execute("""
+                INSERT INTO platform_ocr_field
+                  (job_no, field_key, field_label, value_type, is_required, ocr_value,
+                   ocr_confidence, ocr_source, ocr_page, ocr_box)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (job_no, c['field_key'], c['field_label'][:200], c['value_type'],
+                  1 if c['required'] else 0,
+                  (c['ocr_value'] or None) if c['ocr_value'] is None else str(c['ocr_value'])[:1000],
+                  c['ocr_confidence'], c['ocr_source'], c['ocr_page'],
+                  ','.join(str(x) for x in c['ocr_box']) if c['ocr_box'] else None))
+        cur.close()
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+    hit = sum(1 for c in cands if c['ocr_value'] not in (None, ''))
+    _ocr_log(job_no, 'recognize', body.get('operator'),
+             '{} 页 / {} 行 / 命中 {}·共 {} 个待核字段'.format(
+                 meta.get('page_count'), len(lines), hit, len(cands)))
+    return {'ok': True, 'job_no': job_no, 'crf_code': code, 'crf_version': str(version),
+            'page_count': meta.get('page_count'), 'line_count': len(lines),
+            'mean_conf': mean_conf, 'fields_total': len(cands), 'fields_prefilled': hit,
+            'meta': meta, 'table_rows_hint': cluster_table_rows(lines),
+            'notice': ('识别结果**尚未进入任何患者数据**。下面 {} 个字段要逐个人工核对, '
+                       '其中 {} 个识别到了候选值、{} 个没识别到(仍需处置)。'
+                       '数字/日期/表格题不提供"采纳识别值", 只能对着原件键入。'
+                       .format(len(cands), hit, len(cands) - hit))}, None
+
+
+def ocr_job_fetch(job_no, with_lines=False):
+    """取一个识别任务: 任务本身 + 全部待核字段 (+ 可选的原始识别行)。"""
+    job_no = str(job_no or '').strip()
+    if not job_no:
+        return None, 'job_no 必填'
+    ensure_platform_ocr_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor(pymysql.cursors.DictCursor)
+        cur.execute('SELECT * FROM platform_ocr_job WHERE job_no=%s', (job_no,))
+        job = cur.fetchone()
+        if not job:
+            cur.close()
+            return None, '识别任务不存在: {}'.format(job_no)
+        lines = job.pop('lines_json', None)
+        meta = job.pop('meta_json', None)
+        job['meta'] = json.loads(meta) if isinstance(meta, str) else (meta or {})
+        for k in ('created_at', 'updated_at'):
+            if job.get(k) is not None:
+                job[k] = job[k].strftime('%Y-%m-%d %H:%M:%S')
+        if job.get('mean_conf') is not None:
+            job['mean_conf'] = float(job['mean_conf'])
+        cur.execute('SELECT * FROM platform_ocr_field WHERE job_no=%s ORDER BY id', (job_no,))
+        fields = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+
+    for f in fields:
+        if f.get('ocr_confidence') is not None:
+            f['ocr_confidence'] = float(f['ocr_confidence'])
+        if f.get('verified_at') is not None:
+            f['verified_at'] = f['verified_at'].strftime('%Y-%m-%d %H:%M:%S')
+        f.pop('created_at', None)
+        f['box'] = [int(x) for x in f['ocr_box'].split(',')] if f.get('ocr_box') else None
+        ok, why = _can_accept(f)
+        f['can_accept'] = ok
+        f['accept_blocked_reason'] = why or None
+        f['state_label'] = OCR_VERIFY_STATES.get(f['verify_state'], f['verify_state'])
+    pending = [f['field_key'] for f in fields if f['verify_state'] == 'unverified']
+    out = {'ok': True, 'job': job, 'fields': fields,
+           'pending': pending, 'pending_count': len(pending),
+           'verified_count': len(fields) - len(pending),
+           'can_commit': not pending and job['status'] not in ('committed', 'abandoned')}
+    if with_lines:
+        out['lines'] = json.loads(lines) if isinstance(lines, str) else (lines or [])
+    return out, None
+
+
+def ocr_verify_field(body):
+    """人工核对**一个**字段。{job_no, field_key, action, value?/rows?, operator, note?}
+
+    action: typed(键入) / accept(采纳识别值) / not_found(原件没有) / na(不适用)
+
+    刻意不做批量接口。"全部采纳"这个动作只要存在, 核对就会退化成点一下 ——
+    而这套东西的全部意义就在于每个值都被人看过一眼原件。
+    """
+    job_no = str(body.get('job_no') or '').strip()
+    field_key = body.get('field_key')
+    operator = str(body.get('operator') or '').strip()
+    action = str(body.get('action') or '').strip()
+    if not job_no or not field_key:
+        return None, 'job_no 和 field_key 必填'
+    if isinstance(field_key, (list, tuple)):
+        return None, '一次只能核一个字段 —— 没有批量核对接口, 理由见 M25 注释'
+    if not operator:
+        return None, 'operator 必填 —— 核对记录要落到具体的人, 这是 GCP 的最低要求'
+    if action not in ('typed', 'accept', 'not_found', 'na'):
+        return None, "action 必须是 typed / accept / not_found / na 之一"
+
+    ensure_platform_ocr_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor(pymysql.cursors.DictCursor)
+        cur.execute('SELECT status, crf_code, crf_version FROM platform_ocr_job '
+                    'WHERE job_no=%s', (job_no,))
+        job = cur.fetchone()
+        if not job:
+            cur.close()
+            return None, '识别任务不存在: {}'.format(job_no)
+        if job['status'] == 'committed':
+            cur.close()
+            return None, '这个任务已经提交进 CRF 了, 要改数据请走 CRF 的修订(revision_of), ' \
+                         '不要回头改核对记录 —— 那会让留痕和实际入库的数据对不上'
+        if job['status'] == 'abandoned':
+            cur.close()
+            return None, '这个任务已作废'
+        cur.execute('SELECT * FROM platform_ocr_field WHERE job_no=%s AND field_key=%s',
+                    (job_no, str(field_key)))
+        fld = cur.fetchone()
+        cur.close()
+    finally:
+        conn.close()
+    if not fld:
+        return None, '字段不存在: {}'.format(field_key)
+    if fld.get('ocr_confidence') is not None:
+        fld['ocr_confidence'] = float(fld['ocr_confidence'])
+
+    definition, err = _ocr_crf_definition(job['crf_code'], job['crf_version'])
+    if err:
+        return None, err
+    item = _ocr_find_item(definition, str(field_key)) or {'type': fld['value_type'],
+                                                          'id': str(field_key)}
+
+    state, final = None, None
+    if action == 'na':
+        state, final = 'na', None
+    elif action == 'not_found':
+        state, final = 'not_found', None
+    elif action == 'accept':
+        ok, why = _can_accept(fld)
+        if not ok:
+            return None, why
+        final, _shown, err = _ocr_coerce(item, fld['ocr_value'])
+        if err:
+            return None, '识别值不能直接采纳: {} —— 请人工键入'.format(err)
+        state = 'match'
+    else:                       # typed
+        if fld['value_type'] in CRF_TABLE_TYPES:
+            rows = body.get('rows')
+            if not isinstance(rows, list):
+                return None, '表格题要给 rows(数组, 一个元素一行), 且必须是人工逐格键入的'
+            errs = _validate_crf_table_data(item, rows) if item.get('columns') else []
+            if errs:
+                return None, '表格内容不合法: {}'.format(errs[0].get('error'))
+            final = json.dumps(rows, ensure_ascii=False)
+            # 表格题没有识别原值可比(见 build_ocr_candidates), 一律记成人工填入
+            state = 'corrected'
+        else:
+            if 'value' not in body:
+                return None, 'typed 必须给 value'
+            v = body.get('value')
+            if v is None or str(v).strip() == '':
+                return None, 'value 是空的。原件上确实没有请用 action=not_found, ' \
+                             '本次不适用请用 action=na —— 空值和"没有"不是一回事'
+            final, _shown, err = _ocr_coerce(item, v)
+            if err:
+                return None, err
+            state = 'match' if (fld['ocr_value'] is not None and
+                                _ocr_norm(v) == _ocr_norm(fld['ocr_value'])) else 'corrected'
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""UPDATE platform_ocr_field
+                       SET final_value=%s, verify_state=%s, verified_by=%s, verified_at=NOW(),
+                           note=%s
+                       WHERE job_no=%s AND field_key=%s""",
+                    (final, state, operator, (body.get('note') or None),
+                     job_no, str(field_key)))
+        cur.execute("UPDATE platform_ocr_job SET status='verifying' "
+                    "WHERE job_no=%s AND status='recognized'", (job_no,))
+        cur.close()
+    except Exception as e:
+        traceback.print_exc()
+        return None, str(e)
+    finally:
+        conn.close()
+
+    _ocr_log(job_no, 'verify', operator, '{} -> {} (识别值: {})'.format(
+        action, state, fld['ocr_value']), field_key=str(field_key))
+    res, err = ocr_job_fetch(job_no)
+    if err:
+        return None, err
+    return {'ok': True, 'field_key': str(field_key), 'verify_state': state,
+            'state_label': OCR_VERIFY_STATES[state],
+            'matched_ocr': state == 'match',
+            'pending_count': res['pending_count'], 'can_commit': res['can_commit']}, None
+
+
+def ocr_commit(body):
+    """把核完的字段写进 CRF。{job_no, patient_no?, operator, visit_name?, allow_warnings?}
+
+    三条硬性前提, 缺一不可:
+      - 每一个待核字段都已处置(没有 unverified)
+      - 写进去的只能是 final_value —— ocr_value 在这个函数里根本不参与取值
+      - 走 submit_crf_response, 也就是照样过 M14 的逻辑与强弱校验
+    """
+    job_no = str(body.get('job_no') or '').strip()
+    operator = str(body.get('operator') or '').strip()
+    if not job_no:
+        return None, 'job_no 必填'
+    if not operator:
+        return None, 'operator 必填'
+
+    res, err = ocr_job_fetch(job_no)
+    if err:
+        return None, err
+    job, fields = res['job'], res['fields']
+    if job['status'] == 'committed':
+        return None, '已经提交过了 (CRF 填报 id={})'.format(job.get('response_id'))
+    if job['status'] == 'abandoned':
+        return None, '这个任务已作废'
+    if res['pending']:
+        return None, ('还有 {} 个字段没核对: {}{}。识别结果不能整体入库 —— '
+                      '没核过的字段里既可能是识别错的, 也可能是识别整个漏掉的'
+                      .format(len(res['pending']), '、'.join(res['pending'][:8]),
+                              ' 等' if len(res['pending']) > 8 else ''))
+    patient_no = str(body.get('patient_no') or job.get('patient_no') or '').strip()
+    if not patient_no:
+        return None, 'patient_no 必填(识别时没填, 提交时要补上)'
+
+    data, unwritten = {}, []
+    for f in fields:
+        if f['verify_state'] not in ('match', 'corrected'):
+            unwritten.append({'field': f['field_key'], 'state': f['verify_state']})
+            continue
+        v, t = f['final_value'], f['value_type']
+        if t in OCR_JSON_VALUE_TYPES:
+            # 选项题和表格题在核对那一步就已经存成 JSON 了(选项 value 可能是数字,
+            # 存成字符串会被 validate_crf_data 判成"不在选项范围内")
+            try:
+                data[f['field_key']] = json.loads(v)
+            except Exception:
+                return None, '{} 的答案不是合法 JSON —— 这条核对记录坏了, 请重核该字段'.format(
+                    f['field_key'])
+        elif t == 'number':
+            try:
+                fv = float(v)
+                data[f['field_key']] = int(fv) if fv == int(fv) else fv
+            except (TypeError, ValueError):
+                return None, '{} 核对后的值 "{}" 不是数字'.format(f['field_key'], v)
+        else:
+            data[f['field_key']] = v
+
+    payload = {'crf_code': job['crf_code'], 'crf_version': job['crf_version'],
+               'patient_no': patient_no, 'data': data,
+               'visit_name': body.get('visit_name') or job.get('visit_name'),
+               'plan_id': body.get('plan_id') or job.get('plan_id'),
+               'operator': operator, 'allow_warnings': body.get('allow_warnings')}
+    out, err = submit_crf_response(payload)
+    if err:
+        return None, err
+    if not out.get('accepted'):
+        out['job_no'] = job_no
+        out['hint'] = (out.get('hint') or '') + ' (CRF 校验没过, 本次未入库; 识别任务仍是待提交状态)'
+        return out, None
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE platform_ocr_job SET status='committed', response_id=%s, "
+                    "patient_no=%s WHERE job_no=%s", (out['id'], patient_no, job_no))
+        cur.close()
+    finally:
+        conn.close()
+    corrected = [f['field_key'] for f in fields if f['verify_state'] == 'corrected']
+    _ocr_log(job_no, 'commit', operator,
+             'CRF 填报 id={} | 写入 {} 项 | 人工改正 {} 项 | 未写入 {} 项'.format(
+                 out['id'], len(data), len(corrected), len(unwritten)))
+    return {'ok': True, 'job_no': job_no, 'response_id': out['id'],
+            'crf_code': job['crf_code'], 'crf_version': job['crf_version'],
+            'patient_no': patient_no, 'written_fields': len(data),
+            'corrected_fields': corrected, 'unwritten': unwritten,
+            'warnings': out.get('warnings') or [],
+            'note': '写进 CRF 的全部是人工核对后的值; 识别原值留在 platform_ocr_field 里可追溯'}, None
+
+
+def ocr_abandon(body):
+    """作废一个识别任务(照片拍糊了/传错人了)。原件和留痕都留着, 不物理删。"""
+    job_no = str(body.get('job_no') or '').strip()
+    operator = str(body.get('operator') or '').strip()
+    reason = str(body.get('reason') or '').strip()
+    if not job_no or not operator:
+        return None, 'job_no 和 operator 必填'
+    if not reason:
+        return None, 'reason 必填 —— 作废要说明理由'
+    ensure_platform_ocr_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT status FROM platform_ocr_job WHERE job_no=%s", (job_no,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '识别任务不存在: {}'.format(job_no)
+        if row[0] == 'committed':
+            cur.close()
+            return None, '已提交进 CRF 的任务不能作废 —— 要改数据走 CRF 修订'
+        cur.execute("UPDATE platform_ocr_job SET status='abandoned' WHERE job_no=%s", (job_no,))
+        cur.close()
+    finally:
+        conn.close()
+    _ocr_log(job_no, 'abandon', operator, reason)
+    return {'ok': True, 'job_no': job_no, 'status': 'abandoned',
+            'note': '原件与识别记录都留着, 没有物理删除'}, None
+
+
+def ocr_job_list(patient_no=None, crf_code=None, status=None, limit=50):
+    """识别任务列表。"""
+    ensure_platform_ocr_tables()
+    where, params = [], []
+    if patient_no:
+        where.append('j.patient_no=%s'); params.append(str(patient_no))
+    if crf_code:
+        where.append('j.crf_code=%s'); params.append(str(crf_code))
+    if status:
+        if status not in OCR_JOB_STATUSES:
+            return None, 'status 必须是 {} 之一'.format('/'.join(OCR_JOB_STATUSES))
+        where.append('j.status=%s'); params.append(status)
+    try:
+        limit = max(1, min(int(limit or 50), 500))
+    except (TypeError, ValueError):
+        limit = 50
+    sql = ("SELECT j.job_no, j.crf_code, j.crf_version, j.patient_no, j.visit_name, "
+           "j.orig_name, j.ext, j.page_count, j.line_count, j.mean_conf, j.status, "
+           "j.response_id, j.uploader, j.created_at, "
+           "(SELECT COUNT(*) FROM platform_ocr_field f WHERE f.job_no=j.job_no) AS fields_total, "
+           "(SELECT COUNT(*) FROM platform_ocr_field f WHERE f.job_no=j.job_no "
+           " AND f.verify_state='unverified') AS fields_pending "
+           "FROM platform_ocr_job j")
+    if where:
+        sql += ' WHERE ' + ' AND '.join(where)
+    sql += ' ORDER BY j.id DESC LIMIT %d' % limit
+    conn = get_connection()
+    try:
+        cur = conn.cursor(pymysql.cursors.DictCursor)
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+    for r in rows:
+        if r.get('created_at') is not None:
+            r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        if r.get('mean_conf') is not None:
+            r['mean_conf'] = float(r['mean_conf'])
+        r['fields_total'] = int(r['fields_total'] or 0)
+        r['fields_pending'] = int(r['fields_pending'] or 0)
+    return {'ok': True, 'count': len(rows), 'jobs': rows}, None
+
+
+OCR_CROP_MAX_SIDE = 1600
+
+
+def ocr_crop(job_no, field_key=None, page=None, box=None, pad=12):
+    """裁一块原件图片出来。返回 (png_bytes, error)。
+
+    核对界面必须把原图那一块摆在输入框旁边。让人凭记忆核对等于没核对,
+    而回原件里逐行找位置又慢到没人愿意做 —— 这个接口就是为了消掉这个摩擦。
+
+    **一律经 PIL 重新编码成 PNG, 绝不把上传的原字节直接回给浏览器。**
+    这个响应是要 <img> 内联显示的(不像 M17 的资料下载是 attachment), 而
+    "扩展名是 .png 的文件"和"真的是 PNG"是两回事 —— 直接透传就等于让人上传
+    任意字节再由我们的域内联发出去。重编码之后回的必然是我们自己生成的 PNG。
+    """
+    job_no = str(job_no or '').strip()
+    if not job_no:
+        return None, 'job_no 必填'
+    ensure_platform_ocr_tables()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT stored_name, ext FROM platform_ocr_job WHERE job_no=%s', (job_no,))
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            return None, '识别任务不存在: {}'.format(job_no)
+        stored, ext = row
+        if field_key and box is None:
+            cur.execute('SELECT ocr_page, ocr_box FROM platform_ocr_field '
+                        'WHERE job_no=%s AND field_key=%s', (job_no, str(field_key)))
+            f = cur.fetchone()
+            if not f:
+                cur.close()
+                return None, '字段不存在: {}'.format(field_key)
+            page = f[0] or 1
+            box = [int(x) for x in f[1].split(',')] if f[1] else None
+        cur.close()
+    finally:
+        conn.close()
+
+    path = os.path.join(OCR_DIR, os.path.basename(stored))
+    if not os.path.isfile(path):
+        return None, '原件文件不在了: {}'.format(stored)
+    with open(path, 'rb') as fp:
+        raw = fp.read()
+
+    if ext == 'pdf':
+        png, err = _render_pdf_page(raw, int(page or 1) - 1)
+        if err:
+            return None, err
+        raw = png
+    return _ocr_to_png(raw, box, pad)
+
+
+def _ocr_to_png(raw, box=None, pad=12):
+    """任意上传字节 -> **我们自己生成的** PNG。返回 (png, error)。
+
+    单独抽出来是为了让"绝不透传原字节"这条能被直接测到: 传进一段带 .png 名字的
+    HTML 进来, 出去的要么是报错、要么是一张真 PNG, 不可能是那段 HTML 原样。
+    """
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError:
+        return None, '未安装 Pillow, 无法出图'
+    try:
+        img = Image.open(io.BytesIO(raw))
+        img.load()
+    except UnidentifiedImageError:
+        # 上传的东西根本不是图片。这是常规的输入拒绝, 不是服务端故障, 别打整条栈
+        return None, '这个文件不是图片(扩展名说是, 内容不是), 无法出图'
+    except Exception as e:
+        traceback.print_exc()
+        return None, '图片打不开: {}'.format(e)
+    try:
+        if box is not None:
+            x0, y0, x1, y1 = [int(v) for v in box]
+            pad = max(0, min(int(pad or 0), 200))
+            img = img.crop((max(0, x0 - pad), max(0, y0 - pad),
+                            min(img.width, x1 + pad), min(img.height, y1 + pad)))
+        else:
+            # 没有坐标(文字层字段, 或前端要整页预览)就给整页, 但缩到能看清即可 ——
+            # 原图可能是 4000px 的手机照片, 原样发出去核对界面要等好几秒
+            long_side = max(img.width, img.height)
+            if long_side > OCR_CROP_MAX_SIDE:
+                k = float(OCR_CROP_MAX_SIDE) / long_side
+                img = img.resize((max(1, int(img.width * k)), max(1, int(img.height * k))))
+        if img.mode not in ('RGB', 'L'):
+            img = img.convert('RGB')
+        buf = io.BytesIO()
+        img.save(buf, 'PNG')
+        return buf.getvalue(), None
+    except Exception as e:
+        traceback.print_exc()
+        return None, '出图失败: {}'.format(e)
+
+
+# ---------------------------------------------------------------------------
 # 随访平台 M6: 队列数据导出
 #
 # 平台此前 12 个端点全是"看", 没有一个是"拿" —— 研究者无法把队列数据取走做统计,
@@ -11262,6 +12479,23 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Expose-Headers', 'Content-Disposition, X-Content-SHA256')
         self.end_headers()
         self.wfile.write(raw)
+
+    def _send_image(self, png):
+        """内联下发一张 PNG (M25 核对界面要把原件那一块摆在输入框旁边)。
+
+        和 _send_file 的 attachment 相反, 这个是要在页面里显示的, 所以两件事必须成立:
+        字节是**我们自己用 PIL 重编码出来的** PNG (见 ocr_crop), 且带 nosniff ——
+        两条合起来才能保证浏览器不会把它当成别的东西渲染。
+        """
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/png')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Cache-Control', 'private, no-store')
+        self.send_header('Content-Length', str(len(png)))
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Platform-Token')
+        self.end_headers()
+        self.wfile.write(png)
 
     def _send_json(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -11663,6 +12897,46 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             result, err = query_version_history((query.get('kind') or [None])[0],
                                                 (query.get('code') or [None])[0])
             self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/ocr/status':
+            # 唯一不带门禁的 OCR 端点: 只报引擎装没装, 不碰任何任务或患者数据
+            self._send_json(200, {'ok': True, 'status': ocr_engine_status()})
+
+        elif pathname == '/api/platform/ocr/jobs':
+            if not check_platform_token(self):
+                return
+            result, err = ocr_job_list(
+                patient_no=(query.get('patientNo') or [None])[0],
+                crf_code=(query.get('crfCode') or [None])[0],
+                status=(query.get('status') or [None])[0],
+                limit=(query.get('limit') or ['50'])[0])
+            self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/ocr/job':
+            # 待核清单里带着识别出的姓名/门诊号, 按写接口标准鉴权(同 M17 资料下载的不对称)
+            if not check_platform_token(self):
+                return
+            result, err = ocr_job_fetch((query.get('job') or [None])[0],
+                                        with_lines=(query.get('withLines') or ['0'])[0] in ('1', 'true'))
+            self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/ocr/crop':
+            if not check_platform_token(self):
+                return
+            box = (query.get('box') or [None])[0]
+            try:
+                box = [int(x) for x in box.split(',')] if box else None
+                if box is not None and len(box) != 4:
+                    raise ValueError
+            except (TypeError, ValueError):
+                self._send_json(400, {'ok': False, 'error': 'box 形如 x0,y0,x1,y1'}); return
+            png, err = ocr_crop((query.get('job') or [None])[0],
+                                field_key=(query.get('field') or [None])[0],
+                                page=(query.get('page') or [None])[0], box=box,
+                                pad=(query.get('pad') or ['12'])[0])
+            if err:
+                self._send_json(400, {'ok': False, 'error': err}); return
+            self._send_image(png)
 
         elif pathname == '/api/platform/screen/tasks':
             st = (query.get('status') or [None])[0]
@@ -12114,7 +13388,9 @@ class HealthDataHandler(BaseHTTPRequestHandler):
 
         elif pathname == '/api/platform/export':
             # 随访平台 M6: 队列数据导出 (CSV / 全量 zip)。整队列 PHI 批量拉取, 走写接口同款
-            # token 门禁 —— 这是平台上唯一一个需要鉴权的 GET。
+            # token 门禁。GET 里需要鉴权的现在有这么几个, 判据都是"这一个响应里带出多少
+            # 患者身份信息", 而不是它是读还是写: 本接口、export/download、
+            # document/download(签好的知情同意书)、ocr/job 与 ocr/crop(病历原件照片)。
             if not check_platform_token(self):
                 return
             kind = (query.get('kind') or ['all'])[0]
@@ -12160,6 +13436,14 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/study/can': '随访平台 M24: 问这个状态下能不能做某动作 (?code=&action=enroll)',
                     'POST /api/platform/version/rollback': '随访平台 M24: 回滚 CRF/流程(产出新版本, 不删旧版)',
                     'GET  /api/platform/version/history': '随访平台 M24: 版本历史与回滚记录 (?kind=crf&code=)',
+                    'GET  /api/platform/ocr/status': '随访平台 M25: OCR 引擎可用性(本地引擎, 不出网)',
+                    'POST /api/platform/ocr/recognize': '随访平台 M25: 病历/检验单拍照 -> 待人工核对的候选字段(不入库)',
+                    'GET  /api/platform/ocr/job': '随访平台 M25: 取识别任务与待核清单 (?job=)',
+                    'GET  /api/platform/ocr/jobs': '随访平台 M25: 识别任务列表',
+                    'GET  /api/platform/ocr/crop': '随访平台 M25: 裁一块原件图供核对 (?job=&field=)',
+                    'POST /api/platform/ocr/verify': '随访平台 M25: 人工核对一个字段(一次一个, 数字/日期只能键入)',
+                    'POST /api/platform/ocr/commit': '随访平台 M25: 核完后写进 CRF(全部核完才允许)',
+                    'POST /api/platform/ocr/abandon': '随访平台 M25: 作废识别任务(不物理删)',
                     'GET  /api/platform/screen/tasks': '随访平台 M23: 筛查任务(含超期/待审批预警)',
                     'POST /api/platform/screen/task': '随访平台 M23: 建/改筛查任务',
                     'POST /api/platform/screen/task/transition': '随访平台 M23: 提交审批/批准/驳回/启停/结束',
@@ -12404,6 +13688,30 @@ class HealthDataHandler(BaseHTTPRequestHandler):
 
             elif pathname == '/api/platform/version/rollback':
                 result, err = rollback_version(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/ocr/recognize':
+                if not check_platform_token(self):
+                    return
+                result, err = ocr_recognize(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/ocr/verify':
+                if not check_platform_token(self):
+                    return
+                result, err = ocr_verify_field(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/ocr/commit':
+                if not check_platform_token(self):
+                    return
+                result, err = ocr_commit(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/ocr/abandon':
+                if not check_platform_token(self):
+                    return
+                result, err = ocr_abandon(body)
                 self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/screen/task':
@@ -12687,7 +13995,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     self._send_json(400, {'ok': False, 'error': '需要 text 或 pdf_base64'}); return
                 draft, report = parse_scale_text(str(text), body.get('code'), body.get('name'))
                 self._send_json(200, {'ok': True, 'draft': draft, 'report': report,
-                                      'pdf': meta, 'source_text': str(text)[:20000]})
+                                      'pdf': meta, 'source_text': str(text)[:20000],
+                                      # 有页读不出来时把话说到最外层。埋在 meta 里
+                                      # 前端很可能不看, 而"少了半份量表"是看不出来的
+                                      'warning': (meta or {}).get('warning')})
 
             elif pathname == '/api/platform/scale/response':
                 if not check_platform_token(self):
@@ -12841,6 +14152,8 @@ if __name__ == '__main__':
         ensure_platform_screen_tables()
         # M24: 研究数据库状态 + 版本留痕 (idempotent)
         ensure_platform_study_tables()
+        # M25: OCR 识别任务 + 待核字段 + 留痕 (idempotent)
+        ensure_platform_ocr_tables()
         # 5.06-v9 决定: 不动 wearable_device_data schema, 不再自动建 wx_openid 列 / ble_event 表.
         # 患者标识改为写入大 JSON 每条记录的 '门诊号' 字段, 切片仍按 deviceId 一台设备一行.
         # ensure_openid_column / ensure_ble_event_table 函数保留在文件中以备未来需要,
@@ -12937,6 +14250,12 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/edu/transition          随访平台 M15: 提交/发布/退回/归档')
     print('[端点] POST /api/platform/edu/generate            随访平台 M15: 生成宣教草稿')
     print('[端点] POST /api/platform/edu/scan                随访平台 M15: 内容体检')
+    print('[端点] GET  /api/platform/ocr/status              随访平台 M25: OCR 引擎可用性')
+    print('[端点] POST /api/platform/ocr/recognize           随访平台 M25: 拍照识别 -> 待核清单(不入库)')
+    print('[端点] GET  /api/platform/ocr/job                  随访平台 M25: 待核清单(需口令)')
+    print('[端点] GET  /api/platform/ocr/crop                 随访平台 M25: 原件裁图(需口令)')
+    print('[端点] POST /api/platform/ocr/verify               随访平台 M25: 逐字段人工核对')
+    print('[端点] POST /api/platform/ocr/commit               随访平台 M25: 核完写进 CRF')
     print('[端点] GET  /api/platform/crfs                    随访平台 M14: CRF 列表')
     print('[端点] POST /api/platform/crf                     随访平台 M14: 建/改 CRF (自动版本管理)')
     print('[端点] POST /api/platform/crf/copy                随访平台 M14: 拷贝 CRF')
