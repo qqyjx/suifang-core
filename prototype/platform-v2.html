@@ -584,7 +584,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>分类标签化管理、按场景/病种快速调用</td><td><span class="tag green">已建</span></td><td>按状态/主题/病种/关键词检索</td></tr>
               <tr><td>共享复用与权限控制</td><td><span class="tag amber">部分</span></td><td>私有/院内共享已分，但<b>权限不鉴权</b>——平台还没有账号体系</td></tr>
               <tr><td>内容安全把关</td><td><span class="tag green">已建</span></td><td>方案没写这一条，是我们加的：剂量/用药调整/劝阻就医三类高危表述在入库时就标出，发布必须逐条确认</td></tr>
-              <tr><td>文本编辑、内容布局调整</td><td><span class="tag amber">部分</span></td><td>纯文本编辑已通；富文本排版与图片上传未建</td></tr>
+              <tr><td>文本编辑、内容布局调整</td><td><span class="tag green">已建</span></td><td>走 <b>Markdown + 服务端转义渲染</b>，不存 HTML。所见即所得编辑器存的是 HTML，而这份内容最终要渲染给患者看——存 HTML 就意味着每次渲染都要相信库里那段标记是干净的，而它经过编辑器、剪贴板粘贴、历次修订，漏一个 <code>&lt;img onerror&gt;</code> 就是存储型 XSS。Markdown 把关系反过来：库里存纯文本，渲染时<b>先整体转义再只生成我们认识的那几种标签</b>，存进去的东西不可能变成标签。支持标题/加粗/斜体/列表/引用/分隔线/行内代码/图片/链接，有渲染预览。<b>图片只能指向本平台</b>——外部图片地址会让每个打开这份材料的患者向对方发一次请求，对方由此知道有人在什么时候看了它；外部地址会被移除并在预览里列出来。图片和音视频走同一条已验文件头的路，<b>不收 svg</b>（它是 XML，能塞脚本）</td></tr>
               <tr><td>推送给患者</td><td><span class="tag grey">未建设</span></td><td>材料库已通，但还没有接到随访计划的推送动作上</td></tr>
             </tbody></table></div>
           </div>

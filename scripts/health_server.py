@@ -6007,6 +6007,141 @@ EDU_TEMPLATE_SECTIONS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 宣教材料的排版与配图 —— §2.3「文本编辑、内容布局调整」
+#
+# 走 **Markdown + 服务端转义渲染**, 不存 HTML。
+#
+# 所见即所得编辑器存的是 HTML, 而这份内容最终要渲染给患者看。存 HTML 意味着
+# 每一次渲染都要相信库里那段标记是干净的, 而它经过编辑器、剪贴板粘贴、历次修订、
+# 可能还有导入 —— 任何一环漏一个 <img onerror> 就是存储型 XSS。要防住就得配一套
+# HTML 清洗器, 而清洗器的正确性取决于它对 HTML 解析歧义的覆盖程度, 那是个
+# 长期要跟进的东西。
+#
+# Markdown 这条路把关系反过来: 库里存的是**纯文本**, 渲染时先整体转义, 再只把
+# 我们自己认识的那几种记号变成标签。库里那段文本无论怎么来的, 都不可能变成标签。
+# 代价是编辑体验差一点(要写 ** 而不是点加粗按钮), 换的是"存进去的东西不可能执行"。
+#
+# 另一条同样重要: **图片只允许指向本平台**。一份宣教稿如果能引用外部图片地址,
+# 那么每个打开它的患者都会向那个地址发一次请求 —— 对方由此知道"有人在什么时候
+# 看了这份材料", 而这是可以反推出患者行为的。所以 img/链接的地址一律只收
+# /api/platform/media 那一条路径, 外部 URL 直接丢掉并记账。
+# ---------------------------------------------------------------------------
+
+MD_MAX_CHARS = 60000
+# 图片/链接允许指向的地方。只有本平台的媒体接口 —— 理由见上。
+#
+# 注意要认 &amp;: 地址是在**整体转义之后**才被这个正则看到的, 那时 URL 里的
+# & 已经变成 &amp; 了。不认的话, 我们自己生成的合法地址会被自己判成外部地址,
+# 表现是"上传的图片一张也显示不出来", 而错误信息说的是"只允许本平台图片"。
+MD_ALLOWED_SRC = re.compile(r'^/api/platform/media\?(?:[A-Za-z0-9=_\-%.]|&amp;)+$')
+
+
+def _md_inline(text, notes):
+    """行内记号。**输入必须是已经转义过的文本。**"""
+    # 代码优先, 免得代码里的星号被当成加粗
+    text = re.sub(r'`([^`]+)`', lambda m: '<code>' + m.group(1) + '</code>', text)
+
+    def _img(m):
+        alt, src = m.group(1), m.group(2)
+        if not MD_ALLOWED_SRC.match(src):
+            notes.append({'kind': 'external_image_dropped', 'detail': src[:120]})
+            return '[图片已移除: 只允许本平台上传的图片]'
+        return '<img src="{}" alt="{}" style="max-width:100%">'.format(src, alt)
+    text = re.sub(r'!\[([^\]]*)\]\(([^)\s]+)\)', _img, text)
+
+    def _link(m):
+        label, href = m.group(1), m.group(2)
+        if not MD_ALLOWED_SRC.match(href):
+            notes.append({'kind': 'external_link_dropped', 'detail': href[:120]})
+            return label
+        return '<a href="{}">{}</a>'.format(href, label)
+    text = re.sub(r'\[([^\]]+)\]\(([^)\s]+)\)', _link, text)
+
+    text = re.sub(r'\*\*([^*]+)\*\*', lambda m: '<strong>' + m.group(1) + '</strong>', text)
+    text = re.sub(r'(?<![*\w])\*([^*\n]+)\*(?!\*)', lambda m: '<em>' + m.group(1) + '</em>', text)
+    return text
+
+
+def render_markdown_safe(text):
+    """Markdown -> 可以直接放进页面的 HTML。返回 (html, notes)。
+
+    顺序是这一段的全部要害: **先整体转义, 再生成标签**。
+    反过来(先生成标签再转义)会把我们自己生成的标签也转义掉; 而只转义不生成,
+    就是纯文本。中间任何一步引入"把库里的原文当标记插进去"的写法, 这层保护就没了。
+    """
+    notes = []
+    text = str(text or '')
+    if len(text) > MD_MAX_CHARS:
+        text = text[:MD_MAX_CHARS]
+        notes.append({'kind': 'truncated', 'detail': '超过 {} 字已截断'.format(MD_MAX_CHARS)})
+    # 第一步: 整体转义。这之后原文里的 < > & " 都已经不可能构成标签
+    esc = (text.replace('&', '&amp;').replace('<', '&lt;')
+               .replace('>', '&gt;').replace('"', '&quot;'))
+
+    out, in_list, in_quote = [], False, False
+
+    def _close():
+        nonlocal in_list, in_quote
+        if in_list:
+            out.append('</ul>'); in_list = False
+        if in_quote:
+            out.append('</blockquote>'); in_quote = False
+
+    for raw_line in esc.split('\n'):
+        line = raw_line.rstrip()
+        if not line.strip():
+            _close(); continue
+        m = re.match(r'^(#{1,4})\s+(.*)$', line)
+        if m:
+            _close()
+            lv = min(len(m.group(1)) + 1, 5)      # # -> h2, 页面上 h1 是标题本身
+            out.append('<h{0}>{1}</h{0}>'.format(lv, _md_inline(m.group(2), notes)))
+            continue
+        if re.match(r'^\s*([-*_])\s*\1\s*\1[\s\1]*$', line):
+            _close(); out.append('<hr>'); continue
+        m = re.match(r'^\s*[-*]\s+(.*)$', line)
+        if m:
+            if in_quote:
+                out.append('</blockquote>'); in_quote = False
+            if not in_list:
+                out.append('<ul>'); in_list = True
+            out.append('<li>' + _md_inline(m.group(1), notes) + '</li>')
+            continue
+        m = re.match(r'^\s*&gt;\s?(.*)$', line)     # 转义之后 > 变成 &gt;
+        if m:
+            if in_list:
+                out.append('</ul>'); in_list = False
+            if not in_quote:
+                out.append('<blockquote>'); in_quote = True
+            out.append(_md_inline(m.group(1), notes) + '<br>')
+            continue
+        _close()
+        out.append('<p>' + _md_inline(line, notes) + '</p>')
+    _close()
+    return '\n'.join(out), notes
+
+
+def edu_preview(body):
+    """宣教正文的渲染预览。返回 (info, error)。
+
+    发布前让人看到"患者会看到什么样子", 顺便把被丢掉的外部图片/链接列出来 ——
+    悄悄丢掉的话, 写稿的人会以为图片没显示是浏览器的问题。
+    """
+    if body is None:
+        return None, 'body 必填'
+    html_out, notes = render_markdown_safe(body)
+    dropped = [n for n in notes if n['kind'].endswith('_dropped')]
+    return {'ok': True, 'html': html_out, 'notes': notes,
+            'dropped_external': dropped,
+            'note': ('正文按 Markdown 渲染: 库里存的是纯文本, 渲染时先整体转义再生成标签, '
+                     '所以正文里出现的任何标记都不会变成可执行内容。'
+                     + ('有 {} 处外部图片/链接被移除 —— 只允许引用本平台上传的图片: '
+                        '外部地址会让每个打开这份材料的患者向对方发一次请求, '
+                        '对方由此知道有人在什么时候看了它。'.format(len(dropped))
+                        if dropped else ''))}, None
+
+
 def generate_edu_draft(spec):
     """§2.3(1): 生成宣教材料草稿。返回 (draft, report)。
 
@@ -6795,7 +6930,16 @@ MEDIA_TYPES = {
     'm4a':  'audio/mp4',
     'ogg':  'audio/ogg',
     'wav':  'audio/wav',
+    # 图片也走这条路(宣教材料配图)。理由和音视频完全一样: 要 inline 显示,
+    # 就必须验文件头 + nosniff, 而这两件事已经在这里做好了, 没必要再开一条路。
+    # 明确不收 svg —— 它是 XML, 里面可以塞脚本, 和"图片"不是一类东西。
+    'png':  'image/png',
+    'jpg':  'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'gif':  'image/gif',
+    'webp': 'image/webp',
 }
+MEDIA_IMAGE_EXT = ('png', 'jpg', 'jpeg', 'gif', 'webp')
 MEDIA_MAX_BYTES = int(os.environ.get('PLATFORM_MEDIA_MAX_MB') or 200) * 1024 * 1024
 CRF_MEDIA_MAX = 8          # 一张表挂太多片子, 填表的人一个也不会看
 
@@ -6821,6 +6965,14 @@ def _sniff_media(raw, ext):
         ok = head[:4] == b'OggS'
     elif ext == 'wav':
         ok = head[:4] == b'RIFF' and raw[8:12] == b'WAVE'
+    elif ext == 'png':
+        ok = head[:8] == b'\x89PNG\r\n\x1a\n'
+    elif ext in ('jpg', 'jpeg'):
+        ok = head[:3] == b'\xff\xd8\xff'
+    elif ext == 'gif':
+        ok = head[:6] in (b'GIF87a', b'GIF89a')
+    elif ext == 'webp':
+        ok = head[:4] == b'RIFF' and raw[8:12] == b'WEBP'
     if not ok:
         return None, ('文件头和扩展名对不上 —— 这个文件不是 {}。'
                       '播放要以 inline 方式发回浏览器, 只按扩展名放行等于让浏览器'
@@ -14783,6 +14935,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/study/can': '随访平台 M24: 问这个状态下能不能做某动作 (?code=&action=enroll)',
                     'POST /api/platform/version/rollback': '随访平台 M24: 回滚 CRF/流程(产出新版本, 不删旧版)',
                     'GET  /api/platform/version/history': '随访平台 M24: 版本历史与回滚记录 (?kind=crf&code=)',
+                    'POST /api/platform/edu/preview': '随访平台 §2.3: 宣教正文 Markdown 渲染预览(先转义再生成标签)',
                     'GET  /api/platform/response/history': '随访平台 §4.3: 填报的修订链 + 逐题改前改后 (?kind=crf&id=)',
                     'POST /api/platform/response/revert': '随访平台 §4.3: 把填报退回某一历史版(产出新修订, 不删旧版)',
                     'GET  /api/platform/snapshots': '随访平台: 配置快照列表(只含配置, 不含患者数据)',
@@ -15044,6 +15197,11 @@ class HealthDataHandler(BaseHTTPRequestHandler):
 
             elif pathname == '/api/platform/version/rollback':
                 result, err = rollback_version(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/edu/preview':
+                # 只渲染不落库, 不花钱不出网 -> 不走门禁
+                result, err = edu_preview(body.get('body'))
                 self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/response/revert':
@@ -15653,6 +15811,7 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/edu/transition          随访平台 M15: 提交/发布/退回/归档')
     print('[端点] POST /api/platform/edu/generate            随访平台 M15: 生成宣教草稿')
     print('[端点] POST /api/platform/edu/scan                随访平台 M15: 内容体检')
+    print('[端点] POST /api/platform/edu/preview            随访平台 M15: 宣教正文渲染预览')
     print('[端点] GET  /api/platform/response/history      随访平台: 填报修订链 + 改前改后')
     print('[端点] POST /api/platform/response/revert       随访平台: 填报回退(产出新修订)')
     print('[端点] GET  /api/platform/snapshots              随访平台: 配置快照列表')
