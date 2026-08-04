@@ -89,8 +89,29 @@ check('一路同档两次一样不误报 —— 筛查量表上这是常态, 报
 装法(生产):
 ```bash
 ssh root@192.168.4.104 'pip3 install segno pyzipper openpyxl'
-ssh root@192.168.4.104 'pip3 install rapidocr-onnxruntime pypdfium2'   # M25, 约 25MB
+```
+
+**M25 的 OCR 依赖要按下面这个顺序装, 不能直接 `pip install rapidocr-onnxruntime`:**
+
+```bash
+ssh root@192.168.4.104 '
+  /root/miniconda3/bin/pip install opencv-python-headless pyclipper numpy six \
+      Shapely PyYAML Pillow onnxruntime tqdm &&
+  /root/miniconda3/bin/pip install --no-deps rapidocr-onnxruntime pypdfium2'
 systemctl restart suifang     # 重启后接口才会认到新库
 ```
+
+原因: rapidocr 的依赖里写的是 `opencv-python`(带 GUI 的完整版), 它 `import cv2` 时要
+`libGL.so.1`。服务器是无头的, 装完之后 OCR 一调就 ImportError, 而且报的是一个和 OCR
+毫无关系的图形库名字, 很难联想。`opencv-python-headless` 提供同一个 cv2 模块、去掉了
+GUI 部分, rapidocr 只做图像运算, 用它完全够。所以先把 headless 装上, 再用 `--no-deps`
+装 rapidocr, 避免 pip 又把完整版拉回来(两个包会互相覆盖同一个 cv2)。
+
+这套装法在本机 venv 里实测跑通(cv2 只有 headless 一个来源, 识别正常出 75 行)。
+各依赖的 py3.8 wheel 都存在(生产是 Python 3.8): rapidocr 1.4.4 / onnxruntime 1.16.3 /
+pypdfium2 5.12.1 / opencv-python-headless 5.0.0.93(cp37-abi3) / pyclipper 1.3.0.post6 /
+shapely 2.0.7。总下载量约 90MB。
+
 OCR 全部在本院服务器上跑, 不联网、不需要 key。这是刻意的: 输入是病历和检验单的照片,
 上面有姓名、身份证号、门诊号, 送云 OCR 等于把一整份 PHI 交给第三方。
+`test_m25_ocr.py` 里有一条源码级断言守着这件事(M25 整段不得出现任何出网/密钥调用)。
