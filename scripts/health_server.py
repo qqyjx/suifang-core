@@ -11745,7 +11745,9 @@ def ocr_recognize(body):
     stored = '{}_{}.{}'.format(job_no, sha[:12], ext)
     try:
         if not os.path.isdir(OCR_DIR):
-            os.makedirs(OCR_DIR)
+            # exist_ok: 两个请求同时上传时, 一个刚建完另一个的 makedirs 就会炸,
+            # 报出来是"原件写入失败", 看着像磁盘问题, 实际只是撞了一下
+            os.makedirs(OCR_DIR, exist_ok=True)
         with open(os.path.join(OCR_DIR, stored), 'wb') as f:
             f.write(raw)
     except Exception as e:
