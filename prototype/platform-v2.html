@@ -557,7 +557,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>Excel + 大模型辅助建表</td><td><span class="tag green">已建</span></td><td>两条路各自可用：Excel 侧配置式与数据式两种排布都能解析、每列给出推断依据；大模型侧见上一行。<b>两者尚未串起来</b>——还不能「上传 Excel 再让模型补全题型与选项」，现在是二选一</td></tr>
               <tr><td>字段与临床数据元映射</td><td><span class="tag grey">未建设</span></td><td>需要一套院内数据元字典做对照，目前没有</td></tr>
               <tr><td>实时备份</td><td><span class="tag amber">部分</span></td><td>一键回滚已建（M24：把 CRF/流程的<b>定义</b>回到任一旧版，产出新版本、不删旧版、必须署名并写明原因）。缺的是<b>定时快照</b>——现在只有「每改一次留一版」，没有按时间点的自动备份</td></tr>
-              <tr><td>附带音视频指导文件</td><td><span class="tag grey">未建设</span></td><td>表结构留了 media 字段，还没有上传与播放</td></tr>
+              <tr><td>附带音视频指导文件</td><td><span class="tag green">已建</span></td><td>上传与播放都通了，文件存在 M17 资料库里（共用内容哈希与版本管理，不另起一套）。<b>按文件头校验</b>而不只看扩展名——指导片是内联播放的，一个 .mp4 里装 HTML 在下载场景无所谓，在播放场景就是从我们自己的域发出一段可执行内容；配合 nosniff，浏览器只能按我们声明的类型解析。播放支持 Range，否则拖进度条会整段重下、有的浏览器干脆不给播</td></tr>
             </tbody></table></div>
           </div>
         </div>
@@ -4656,6 +4656,81 @@ function condText(c) {
   return c.field + ' ' + (OP[c.op] || c.op) + ' ' + JSON.stringify(c.value);
 }
 
+/* ---------------- §2.1(3) 音视频指导文件 ----------------
+   播放地址要带 X-Platform-Token, 而 <video src> 带不了请求头 ——
+   和 M25 的原件裁图一个处境, 同样走 fetch -> blob URL。
+   代价是不能流式边下边播(整段拉完才起播), 对几十兆的操作示范片可以接受。 */
+function crfMediaHtml(media) {
+  if (!media || !media.length) return '';
+  return '<div class="detail-card" style="margin-top:12px"><h4>指导片 ('+media.length+')</h4>'+
+    media.map((m, i) => {
+      const isVideo = String(m.mime || '').indexOf('video') === 0;
+      return '<div style="margin:8px 0">'+
+        '<div style="font-size:13px;margin-bottom:4px">'+esc(m.title)+
+          ' <span class="sub">'+esc(m.code)+' v'+esc(m.version)+' · '+esc(m.ext)+'</span></div>'+
+        '<'+(isVideo ? 'video' : 'audio')+' id="cmed'+i+'" controls '+
+          (isVideo ? 'style="max-width:100%;border-radius:8px"' : 'style="width:100%"')+'></'+
+          (isVideo ? 'video' : 'audio')+'>'+
+        '</div>';
+    }).join('')+
+    '<div class="sub">填这张表之前先看一遍，操作口径不一致是后面所有数据对不齐的根源。</div></div>';
+}
+
+async function loadCrfMedia(media) {
+  for (let i = 0; i < (media || []).length; i++) {
+    try {
+      const res = await apiFetch(API_BASE + media[i].play_url, { headers: headers(false) });
+      if (!res.ok) continue;
+      const url = URL.createObjectURL(await res.blob());
+      OCR.blobs.push(url);            /* 关抽屉时统一 revoke */
+      const el = document.getElementById('cmed' + i);
+      if (el) el.src = url;
+    } catch (e) { /* 放不出来不影响看表结构 */ }
+  }
+}
+
+function attachCrfMedia(code) {
+  openModal('挂载指导片', '"这项测量怎么做"的示范片，填表的人在表单里直接看',
+    '<div class="field"><label>标题</label><input id="amTitle" placeholder="例如：血压测量操作示范"></div>'+
+    '<div class="field"><label>选择文件</label>'+
+      '<input type="file" id="amFile" accept=".mp4,.webm,.mp3,.m4a,.ogg,.wav"></div>'+
+    '<div class="err" style="margin-top:4px">支持 mp4/webm/mp3/m4a/ogg/wav，200MB 以内。'+
+      '<b>会校验文件头</b>——扩展名是上传者说的，文件头是文件自己说的；'+
+      '指导片是内联播放的，只按扩展名放行等于让浏览器自己猜内容是什么。</div>',
+    '<button class="secondary" onclick="closeModal()">取消</button>'+
+    '<button class="primary" id="amGo">上传并挂载</button>');
+  document.getElementById('amGo').onclick = async () => {
+    const f = document.getElementById('amFile').files[0];
+    const title = document.getElementById('amTitle').value.trim();
+    if (!f) { toast('请选择文件'); return; }
+    if (!title) { toast('请填写标题'); return; }
+    const btn = document.getElementById('amGo'); btn.disabled = true; btn.textContent = '上传中…';
+    try {
+      const buf = await f.arrayBuffer();
+      let bin = ''; const b = new Uint8Array(buf);
+      for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+      let res = await apiFetch(API_BASE + '/api/platform/media', {
+        method: 'POST', headers: headers(true),
+        body: JSON.stringify({ title: title, filename: f.name, content_base64: btoa(bin),
+                               uploader: localStorage.getItem(LS_OP) || null }) });
+      let d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      /* 挂到 CRF 上: 取现有 media 再追加, 不覆盖 */
+      const cur = await getJSON('/api/platform/crfs?code=' + encodeURIComponent(code) + '&withDefinition=1');
+      const c = (cur.crfs || [])[0];
+      if (!c) throw new Error('CRF 不存在');
+      const media = (c.media || []).concat([{ code: d.code, version: d.version, title: title }]);
+      res = await apiFetch(API_BASE + '/api/platform/crf', {
+        method: 'POST', headers: headers(true),
+        body: JSON.stringify({ code: c.code, name: c.name, definition: c.definition,
+                               version: c.version, media: media, owner: c.owner }) });
+      d = await res.json();
+      if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+      closeModal(); toast('已挂载「' + title + '」'); viewCrf(code);
+    } catch (e) { btn.disabled = false; btn.textContent = '上传并挂载'; toast('失败：' + e.message, 6000); }
+  };
+}
+
 async function viewCrf(code) {
   try {
     const d = await getJSON('/api/platform/crfs?code=' + encodeURIComponent(code) + '&allVersions=1');
@@ -4673,10 +4748,13 @@ async function viewCrf(code) {
         list.map(v => '· v'+esc(v.version)+'（'+v.item_count+' 题，'+v.response_count+' 份填报）').join('<br>')+
         '</div>';
     }
+    h += crfMediaHtml(cur.media);
     h += crfStructureHtml(cur.definition, null);
     openDrawer(cur.name, '结构预览 · 只读', h,
       '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+      '<button class="white-btn" onclick="attachCrfMedia(\''+esc(code)+'\')">＋ 指导片</button>'+
       '<button class="primary" onclick="fillCrf(\''+esc(code)+'\')">填报这张表</button>');
+    loadCrfMedia(cur.media);
   } catch (e) { toast('加载失败：' + e.message, 5000); }
 }
 

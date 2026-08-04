@@ -4941,6 +4941,12 @@ def upsert_platform_crf(body):
     if errs:
         return None, 'CRF 定义有 {} 处问题: {}'.format(len(errs), '; '.join(errs[:6]))
 
+    # §2.1(3) 音视频指导文件。在这里当场把引用查实 —— 存一个指向不存在资料的引用,
+    # 表现是填表页上有个播放器点了没反应, 而配这张表的人早就走了。
+    clean_media, err = validate_crf_media(body.get('media'))
+    if err:
+        return None, err
+
     ensure_platform_crf_tables()
     conn = get_connection()
     try:
@@ -4990,7 +4996,7 @@ def upsert_platform_crf(body):
               body.get('copied_from') or None,
               json.dumps(definition, ensure_ascii=False),
               len(_crf_items(definition)),
-              json.dumps(body.get('media') or [], ensure_ascii=False),
+              json.dumps(clean_media, ensure_ascii=False),
               body.get('status') or 'draft',
               0 if body.get('active') in (0, False, '0') else 1))
         cur.close()
@@ -6400,6 +6406,7 @@ def search_field_catalog():
 #    所以**文件下载要带写接口口令**, 尽管它是个读操作。这个不对称是刻意的。
 
 DOC_TYPES = {
+    'media':     '音视频指导文件',
     'consent':   '知情同意书',
     'protocol':  '研究方案',
     'ethics':    '伦理批件',
@@ -6410,7 +6417,11 @@ DOC_TYPES = {
 # 扩展名白名单。明确排掉 html/htm/svg/js —— 这些从服务器发回去时浏览器可能当成
 # 可执行内容渲染, 一份上传的 svg 里塞段脚本就是存储型 XSS。
 DOC_ALLOWED_EXT = ('pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-                   'jpg', 'jpeg', 'png', 'txt', 'md', 'csv', 'zip')
+                   'jpg', 'jpeg', 'png', 'txt', 'md', 'csv', 'zip',
+                   # §2.1(3) 音视频指导文件。只有走 upload_media 才验文件头,
+                   # 而**只有验过头的才可能被 inline 播放** —— 从这里直接传进来的
+                   # 音视频照样只能 attachment 下载, 见 fetch_media_bytes
+                   'mp4', 'webm', 'mp3', 'm4a', 'ogg', 'wav')
 DOC_MAX_BYTES = 30 * 1024 * 1024
 DOC_DIR = os.environ.get('PLATFORM_DOC_DIR') or '/opt/suifang/uploads'
 
@@ -6419,6 +6430,182 @@ CONSENT_SIGNER_ROLES = {'patient': '受试者本人', 'guardian': '监护人/法
 CONSENT_DISCLAIMER = ('本签署记录为流程留痕(签署人、时间、来源、文件内容哈希与手写签名图), '
                       '不是《电子签名法》意义上的可靠电子签名。可靠电子签名需第三方 CA 数字证书, '
                       '本平台尚未接入 —— 本记录可用于内部追溯, 不能作为法律证据。')
+
+
+# ---- §2.1(3) 音视频指导文件 ----
+#
+# CRF 上可以挂音视频("这项测量怎么做"的示范片)。表里的 media 字段一直留着,
+# 但没有上传也没有播放, 等于摆设。这一节把它补上。
+#
+# 不另起一套文件存储: 复用 M17 的资料库(platform_document)。那边已经有内容哈希、
+# 版本管理、路径穿越防护和取用鉴权, 再造一份只会多一处要维护的地方, 而且两处的
+# 安全属性迟早不一致。CRF 的 media 只存"指向哪份资料"的引用。
+#
+# 播放和 M17 的下载是两回事, 差别就在这一条上:
+#   下载走 Content-Disposition: attachment —— 浏览器不渲染, 存储型 XSS 无从谈起
+#   播放要 inline —— 浏览器会解析这个字节流
+# 所以 inline 这条路上多两道闸:
+#   1) 扩展名白名单只认音视频
+#   2) **验文件头**。扩展名是上传者说的, 文件头是文件自己说的。一个 .mp4 里装 HTML
+#      在 attachment 下无所谓, 在 inline 下就是从我们自己的域发出去一段可执行内容。
+#      配合 nosniff, 浏览器就只能按我们声明的类型解析。
+
+MEDIA_TYPES = {
+    'mp4':  'video/mp4',
+    'webm': 'video/webm',
+    'mp3':  'audio/mpeg',
+    'm4a':  'audio/mp4',
+    'ogg':  'audio/ogg',
+    'wav':  'audio/wav',
+}
+MEDIA_MAX_BYTES = int(os.environ.get('PLATFORM_MEDIA_MAX_MB') or 200) * 1024 * 1024
+CRF_MEDIA_MAX = 8          # 一张表挂太多片子, 填表的人一个也不会看
+
+
+def _sniff_media(raw, ext):
+    """按文件头判断这是不是它自称的那种音视频。返回 (mime, error)。
+
+    只认几种容器的魔数, 认不出就拒 —— 这里宁可错杀。放行一个认不出的文件,
+    等于让浏览器自己去猜它是什么, 而"浏览器猜出来是 HTML"正是要防的那件事。
+    """
+    if ext not in MEDIA_TYPES:
+        return None, '只接受这些格式: {}'.format('/'.join(sorted(MEDIA_TYPES)))
+    head = raw[:16]
+    ok = False
+    if ext in ('mp4', 'm4a'):
+        # ISO BMFF: 前 4 字节是 box 大小, 紧接着 'ftyp'
+        ok = len(raw) > 12 and raw[4:8] == b'ftyp'
+    elif ext == 'webm':
+        ok = head[:4] == b'\x1a\x45\xdf\xa3'          # EBML
+    elif ext == 'mp3':
+        ok = head[:3] == b'ID3' or head[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2')
+    elif ext == 'ogg':
+        ok = head[:4] == b'OggS'
+    elif ext == 'wav':
+        ok = head[:4] == b'RIFF' and raw[8:12] == b'WAVE'
+    if not ok:
+        return None, ('文件头和扩展名对不上 —— 这个文件不是 {}。'
+                      '播放要以 inline 方式发回浏览器, 只按扩展名放行等于让浏览器'
+                      '自己猜内容是什么, 所以这里必须拒'.format(ext))
+    return MEDIA_TYPES[ext], None
+
+
+def upload_media(body):
+    """上传一份音视频指导文件。参数同 upload_document, 但只收音视频。
+
+    落到 platform_document 里(doc_type='media'), 与其他资料共用一套版本与哈希。
+    """
+    ext = str(body.get('filename') or '').rsplit('.', 1)[-1].lower() if '.' in str(
+        body.get('filename') or '') else ''
+    ext = re.sub(r'[^a-z0-9]', '', ext)[:8]
+    if ext not in MEDIA_TYPES:
+        return None, '只接受这些格式: {}'.format('/'.join(sorted(MEDIA_TYPES)))
+    try:
+        import base64 as _b64
+        raw = _b64.b64decode(body.get('content_base64') or '')
+    except Exception:
+        return None, 'content_base64 不是合法 base64'
+    if not raw:
+        return None, '文件是空的'
+    if len(raw) > MEDIA_MAX_BYTES:
+        return None, '文件超过 {}MB'.format(MEDIA_MAX_BYTES // 1024 // 1024)
+    mime, err = _sniff_media(raw, ext)
+    if err:
+        return None, err
+    res, err = upload_document(dict(body, doc_type='media'))
+    if err:
+        return None, err
+    res['mime'] = mime
+    res['play_url'] = '/api/platform/media?code={}&version={}'.format(res['code'], res['version'])
+    res['note'] = ('已入资料库(doc_type=media)。挂到 CRF 上用 /api/platform/crf 的 media 字段, '
+                   '填 [{"code":"%s","version":"%s"}]' % (res['code'], res['version']))
+    return res, None
+
+
+def fetch_media_bytes(code, version=None):
+    """取一份音视频的字节 + 播放用的 mime。返回 (bytes, meta, error)。
+
+    走 fetch_document_bytes, 所以那边的哈希校验(磁盘文件被换过就拒发)一样生效。
+    取回来之后**再验一次文件头** —— 上传时验过不代表现在还对, 而这一份是要 inline
+    发出去的, 多验一次比事后解释便宜。
+    """
+    raw, meta, err = fetch_document_bytes(code, version)
+    if err:
+        return None, None, err
+    mime, err = _sniff_media(raw, (meta or {}).get('ext') or '')
+    if err:
+        return None, None, '这份资料不能作为音视频播放: {}'.format(err)
+    meta['mime'] = mime
+    return raw, meta, None
+
+
+def validate_crf_media(media):
+    """校验 CRF 的 media 引用。返回 (clean, error)。
+
+    引用的资料必须**当场查得到**。存一个指向不存在资料的引用, 表现是填表页面上
+    有个播放器点了没反应, 而配表的人早就走了。
+    """
+    if media in (None, ''):
+        return [], None
+    if not isinstance(media, list):
+        return None, 'media 必须是数组, 形如 [{"code":"MEDIA1","version":"1","title":"操作示范"}]'
+    if len(media) > CRF_MEDIA_MAX:
+        return None, '一张表最多挂 {} 个音视频 —— 挂太多, 填表的人一个也不会看'.format(CRF_MEDIA_MAX)
+    ensure_platform_doc_tables()
+    conn = get_connection()
+    clean = []
+    try:
+        cur = conn.cursor()
+        for m in media:
+            if not isinstance(m, dict) or not str(m.get('code') or '').strip():
+                cur.close()
+                return None, 'media 每一项都要有 code'
+            code = str(m['code']).strip()
+            ver = str(m.get('version') or '').strip()
+            if ver:
+                cur.execute('SELECT version, title, ext FROM platform_document '
+                            'WHERE code=%s AND version=%s', (code, ver))
+            else:
+                cur.execute('SELECT version, title, ext FROM platform_document '
+                            'WHERE code=%s ORDER BY id DESC LIMIT 1', (code,))
+            row = cur.fetchone()
+            if not row:
+                cur.close()
+                return None, '引用的资料不存在: {}{}'.format(code, (' v' + ver) if ver else '')
+            v, title, ext = row
+            if ext not in MEDIA_TYPES:
+                cur.close()
+                return None, '{} 不是音视频(它是 .{})'.format(code, ext)
+            clean.append({'code': code, 'version': str(v),
+                          'title': str(m.get('title') or title or code)[:120],
+                          'ext': ext, 'mime': MEDIA_TYPES[ext],
+                          'play_url': '/api/platform/media?code={}&version={}'.format(code, v)})
+        cur.close()
+    finally:
+        conn.close()
+    return clean, None
+
+
+def _parse_range(header, total):
+    """解析 Range: bytes=a-b。返回 (start, end) 或 None。
+
+    视频必须支持 Range: 不支持的话拖进度条会整段重下, 有些浏览器干脆不给播 ——
+    表现是"这个视频打不开", 而日志里一切正常。
+    """
+    m = re.match(r'^bytes=(\d*)-(\d*)$', str(header or '').strip())
+    if not m:
+        return None
+    a, b = m.group(1), m.group(2)
+    if a == '' and b == '':
+        return None
+    if a == '':                       # bytes=-500 表示最后 500 字节
+        length = min(int(b), total)
+        return total - length, total - 1
+    start = int(a)
+    end = int(b) if b else total - 1
+    if start >= total:
+        return None
+    return start, min(end, total - 1)
 
 
 def _doc_safe_ext(filename):
@@ -12905,6 +13092,37 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _send_media(self, raw, meta, range_header=None):
+        """inline 下发音视频, 支持 Range。
+
+        Range 不是锦上添花: 不支持时拖进度条会整段重下, 而且有些浏览器干脆不给播 ——
+        表现是"这个视频打不开", 服务端日志里却一切正常。
+
+        和 _send_file(attachment) 的差别在于浏览器会解析这个流, 所以:
+          Content-Type 用**嗅探出来的**类型, 不按扩展名猜(见 _sniff_media)
+          nosniff 关掉浏览器的类型嗅探, 两条合起来它才只能按我们说的类型解析
+        """
+        total = len(raw)
+        rng = _parse_range(range_header, total) if range_header else None
+        body = raw
+        if rng:
+            start, end = rng
+            body = raw[start:end + 1]
+            self.send_response(206)
+            self.send_header('Content-Range', 'bytes {}-{}/{}'.format(start, end, total))
+        else:
+            self.send_response(200)
+        self.send_header('Content-Type', meta.get('mime') or 'application/octet-stream')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'private, max-age=300')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Platform-Token, Range')
+        self.send_header('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges')
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_image(self, png):
         """内联下发一张 PNG (M25 核对界面要把原件那一块摆在输入框旁边)。
 
@@ -13322,6 +13540,17 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             result, err = query_version_history((query.get('kind') or [None])[0],
                                                 (query.get('code') or [None])[0])
             self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/media':
+            # 指导片挂在 CRF 上给填表的人看, 内容是操作示范不是患者数据 ——
+            # 但它和知情同意书同住一个资料库, 所以照样走口令, 免得口子开偏
+            if not check_platform_token(self):
+                return
+            raw, meta, err = fetch_media_bytes((query.get('code') or [None])[0],
+                                               (query.get('version') or [None])[0])
+            if err:
+                self._send_json(400, {'ok': False, 'error': err}); return
+            self._send_media(raw, meta, self.headers.get('Range'))
 
         elif pathname == '/api/platform/gen/backends':
             # 前端据此画"用哪个后端生成"的下拉。不在前端硬编码一份列表 ——
@@ -13866,6 +14095,8 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/study/can': '随访平台 M24: 问这个状态下能不能做某动作 (?code=&action=enroll)',
                     'POST /api/platform/version/rollback': '随访平台 M24: 回滚 CRF/流程(产出新版本, 不删旧版)',
                     'GET  /api/platform/version/history': '随访平台 M24: 版本历史与回滚记录 (?kind=crf&code=)',
+                    'POST /api/platform/media': '随访平台 M14 §2.1(3): 上传音视频指导文件(验文件头)',
+                    'GET  /api/platform/media': '随访平台 M14 §2.1(3): 播放音视频(inline, 支持 Range; 需口令)',
                     'GET  /api/platform/gen/backends': '随访平台 M12/M14/M15: 生成后端可用性(template/claude/deepseek)',
                     'GET  /api/platform/ocr/status': '随访平台 M25: OCR 引擎可用性(本地引擎, 不出网)',
                     'POST /api/platform/ocr/recognize': '随访平台 M25: 病历/检验单拍照 -> 待人工核对的候选字段(不入库)',
@@ -14120,6 +14351,13 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             elif pathname == '/api/platform/version/rollback':
                 result, err = rollback_version(body)
                 self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/media':
+                if not check_platform_token(self):
+                    return
+                result, err = upload_media(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else
+                                dict(result, ok=True))
 
             elif pathname == '/api/platform/ocr/recognize':
                 if not check_platform_token(self):
@@ -14681,6 +14919,8 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/edu/transition          随访平台 M15: 提交/发布/退回/归档')
     print('[端点] POST /api/platform/edu/generate            随访平台 M15: 生成宣教草稿')
     print('[端点] POST /api/platform/edu/scan                随访平台 M15: 内容体检')
+    print('[端点] POST /api/platform/media                  随访平台 M14: 上传音视频指导文件')
+    print('[端点] GET  /api/platform/media                  随访平台 M14: 播放音视频(支持 Range)')
     print('[端点] GET  /api/platform/gen/backends           随访平台 M12/M14/M15: 生成后端可用性')
     print('[端点] GET  /api/platform/ocr/status              随访平台 M25: OCR 引擎可用性')
     print('[端点] POST /api/platform/ocr/recognize           随访平台 M25: 拍照识别 -> 待核清单(不入库)')
