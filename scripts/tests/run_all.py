@@ -19,7 +19,8 @@ BACKEND = ['test_platform_safety.py', 'test_m13_qc.py', 'test_m14_crf.py',
            'test_m21_export.py', 'test_m22_consult.py', 'test_m23_screen.py',
            'test_m24_study.py', 'test_m25_ocr.py', 'test_gen_backends.py',
            'test_media.py',
-           'test_snapshot.py']
+           'test_snapshot.py',
+           'test_revision.py']
 UI = ['test_ui_platform_v2.py']
 
 if not os.environ.get('DB_PASSWORD'):

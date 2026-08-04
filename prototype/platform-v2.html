@@ -709,7 +709,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>对比结果导出</td><td><span class="tag green">已建</span></td><td>对比抽屉里导出 CSV（UTF-8 BOM，Excel 直读）；变化的格子在文件里缀「←变化」，拿到文件的人不用记得屏幕上哪几格是红的</td></tr>
               <tr><td>质疑—核查—修正闭环，全程留痕</td><td><span class="tag green">已建</span></td><td>raise/answer/close/reopen 四步，每步追一行只增不改的日志</td></tr>
               <tr><td>单位级 / 数据库级两级质控员 + 第三方稽查员</td><td><span class="tag amber">部分</span></td><td><b>角色只记录、不鉴权</b>——平台还没有账号体系，任何人都能写任意角色。要满足 GCP 权责分离必须先做鉴权</td></tr>
-              <tr><td>修改留痕：改前改后值、历史版本、回退</td><td><span class="tag amber">部分</span></td><td><b>定义</b>层面的回退已建（M24 回滚 CRF/流程版本）；<b>填报数据</b>层面仍只有修订——「新增一条 + 旧版标 superseded」，历史版查得到，但没有「退回上一版」这个动作，且只覆盖量表与 CRF 填报，体征等其他数据类型没接</td></tr>
+              <tr><td>修改留痕：改前改后值、历史版本、回退</td><td><span class="tag green">已建</span></td><td>三件都有了：<b>改前改后值</b>（逐题列出，按题干显示而不是字段 id，改值/新答/<b>删答</b>三种变化都报——删答最容易被漏而恰恰最该看）、<b>历史版本</b>（整条修订链，谁在什么时候改的）、<b>回退</b>（产出新的一条修订，<b>不复活旧记录</b>——把 superseded 改回 submitted 等于让「曾经被改过」从记录里消失，那正是留痕要留的东西；回退走正常提交路径，照样过校验）。覆盖量表与 CRF 填报；体征等设备直采数据不适用（不是人工录入的）</td></tr>
               <tr><td>OCR 辅助采集（病历/检验单拍照填 CRF）</td><td><span class="tag green">已建</span></td><td>本地 RapidOCR（模型打包在包里，纯 CPU，<b>不联网不要 key</b>——输入是带姓名身份证号的病历照片，不外发第三方）。<b>识别结果一律不自动入库</b>：待核字段按 CRF 定义全量生成（不是按识别命中了什么），逐字段人工核对，数字/日期/表格只能键入。PDF 走 pdf-inspector 分流，有文字层的页直接取字、只有照片页才送识别</td></tr>
             </tbody>
           </table></div>
@@ -1867,6 +1867,66 @@ async function submitFill() {
   } catch (e) { btn.disabled = false; btn.textContent = '提交'; toast('提交失败：' + e.message, 4000); }
 }
 
+/* ---------------- §4.3 修改留痕: 修订链 · 改前改后 · 回退 ----------------
+   稽查真正要用的是这三样。库里一直有 revision_of, 但没有界面把它串起来给人看,
+   于是"这条数据被改过几次、每次改了哪道题"只能靠人去比两份 JSON。 */
+const CHG_TAG = { changed: '<span class="tag orange">改值</span>',
+                  added: '<span class="tag blue">新答</span>',
+                  removed: '<span class="tag red">删答</span>' };
+
+function changesHtml(changes) {
+  if (!changes || !changes.length) return '<div class="sub">这一版和上一版的答案完全一样</div>';
+  return '<div class="table-wrap"><table><thead><tr><th>题目</th><th>改前</th><th>改后</th><th></th></tr></thead><tbody>'+
+    changes.map(c => '<tr><td>'+esc(c.label)+'</td>'+
+      '<td class="mono" style="color:var(--muted)">'+esc(c.before)+'</td>'+
+      '<td class="mono"><b>'+esc(c.after)+'</b></td>'+
+      '<td>'+(CHG_TAG[c.change] || '')+'</td></tr>').join('')+
+    '</tbody></table></div>';
+}
+
+async function showRevisions(kind, id) {
+  try {
+    const res = await apiFetch(API_BASE + '/api/platform/response/history?kind=' +
+      encodeURIComponent(kind) + '&id=' + id, { headers: headers(false) });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
+    let h = '<div class="note-strip">这条填报被改过 <b>'+(d.revision_count - 1)+'</b> 次。'+
+      '修订走「新插一条 + 旧版标 superseded」，<b>没有任何一版被删除或改写</b>；'+
+      '下面按时间从旧到新，每一步都列出改了哪道题、从什么改成什么。</div>';
+    d.revisions.forEach(r => {
+      h += '<div class="detail-card" style="margin-top:12px">'+
+        '<h4>第 '+r.seq+' 版 · #'+r.id+
+          (r.is_current ? ' <span class="tag green">现行</span>' : ' <span class="tag grey">历史</span>')+'</h4>'+
+        '<div class="detail-row"><span>填报人 / 时间</span><b>'+esc(r.operator || '匿名')+' · '+esc(r.created_at || '')+'</b></div>'+
+        (r.seq === 1 ? '<div class="sub">最初那一版</div>' : changesHtml(r.changes))+
+        (r.note ? '<div class="sub" style="margin-top:6px">'+esc(r.note)+'</div>' : '')+
+        (!r.is_current ? '<div style="margin-top:8px"><button class="white-btn" '+
+          'onclick="revertTo(\''+kind+'\','+d.current_id+','+r.id+')">回退到这一版</button></div>' : '')+
+        '</div>';
+    });
+    openDrawer('修订链 · ' + d.code, d.patient_no + ' · 共 ' + d.revision_count + ' 版', h,
+      '<button class="secondary" onclick="closeDrawer()">关闭</button>');
+  } catch (e) { toast('取修订链失败：' + e.message, 5000); }
+}
+
+function revertTo(kind, curId, toId) {
+  const op = localStorage.getItem(LS_OP) || '';
+  if (!op) { toast('请先到「系统管理」里填操作人——回退要落到具体的人', 5000); return; }
+  const reason = prompt('回退原因（会写进留痕，必填）：\n这会改变这位患者的现行数据。', '');
+  if (!reason || !reason.trim()) return;
+  apiFetch(API_BASE + '/api/platform/response/revert', {
+    method: 'POST', headers: headers(true),
+    body: JSON.stringify({ kind: kind, id: curId, to_id: toId,
+                           operator: op, reason: reason.trim() }) })
+    .then(r => r.json()).then(d => {
+      if (d.ok === false) throw new Error(d.error);
+      toast('已回退：新产出 #'+d.new_id+'，改动 '+d.change_count+' 项；'+
+            '原来的 #'+d.superseded+' 仍留在库里标为历史版', 7000);
+      showRevisions(kind, d.new_id);
+      if (typeof loadResponses === 'function') loadResponses();
+    }).catch(e => toast('回退失败：' + e.message, 7000));
+}
+
 async function loadResponses() {
   const wrap = document.getElementById('respWrap');
   try {
@@ -1882,7 +1942,8 @@ async function loadResponses() {
           '<span class="sub">'+esc(RATER_LABEL[r.rater_type] || r.rater_type)+' · '+esc(r.operator || '匿名')+'</span></div>'+
         '<div>'+esc(r.created_at)+'<span class="sub">'+(r.revision_of ? '修订自 #'+r.revision_of : '首次填报')+'</span></div>'+
         '<div style="display:flex;gap:8px"><button class="secondary" onclick="viewResponse('+r.id+')">详情</button>'+
-          '<button class="link" onclick="reviseResponse('+r.id+')">修订</button></div>'+
+          '<button class="link" onclick="reviseResponse('+r.id+')">修订</button>'+
+          (r.revision_of ? '<button class="link" onclick="showRevisions(\'scale\','+r.id+')">改动历史</button>' : '')+'</div>'+
       '</div>').join('')
       : emptyBox('📝', '还没有填报记录', '到「量表库」选一份量表点「填报」。');
   } catch (e) { wrap.innerHTML = errBox(e); }
@@ -1907,6 +1968,7 @@ function viewResponse(id) {
   }
   openDrawer('填报详情 #' + r.id, r.scale_code, h,
     '<button class="secondary" onclick="closeDrawer()">关闭</button>'+
+    '<button class="white-btn" onclick="showRevisions(\'scale\','+r.id+')">改动历史</button>'+
     '<button class="primary" onclick="reviseResponse('+r.id+')">修订</button>');
 }
 async function reviseResponse(id) {

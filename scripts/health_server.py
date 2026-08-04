@@ -5583,6 +5583,285 @@ def parse_excel_to_crf(xlsx_bytes, code=None, name=None):
     return draft, report, None
 
 
+# ---------------------------------------------------------------------------
+# 填报数据的修订链: 历史 · 改前改后 · 回退  —— §4.3「修改留痕」剩下的那半
+#
+# 已经有的: 改一条填报走"新插一条 + 旧的标 superseded", 两条都留在库里。
+# 缺的三件, 恰好是稽查时真正要用的三件:
+#
+#   1) 修订链查不出来。库里躺着 revision_of, 但没有接口把"这条改过几次、
+#      每次是谁改的"串起来给人看。
+#   2) 没有**改前改后值**。只知道"改过", 不知道改了哪道题、从什么改成什么。
+#      稽查问"这个不良事件为什么从无变成有", 现在只能人工去比两份 JSON。
+#   3) 没有回退。发现这次改错了, 只能靠人照着旧值再填一遍 —— 手抄一遍本身
+#      又是一次可能出错的录入, 而且看不出这是"回退"还是"又一次修改"。
+#
+# 回退沿用全平台一致的原则: **产出新的一条修订, 不删也不复活旧记录**。
+# 把 superseded 改回 submitted 是最容易想到的做法, 也是最坏的 —— 那等于让
+# "这条曾经被改过"这件事从记录里消失, 而这正是留痕要留的东西。
+#
+# 改前改后按**题目**呈现而不是按字段 id: 稽查看到 "q7: 2 -> 3" 是没有意义的,
+# 要看到 "本次随访期间是否发生不良事件: 否 -> 是"。所以这里要去把当时那一版的
+# 定义取出来翻译, 而不是直接吐 JSON 差异。
+# ---------------------------------------------------------------------------
+
+REVISION_KINDS = {
+    'crf': {'table': 'platform_crf_response', 'data_col': 'data',
+            'code_col': 'crf_code', 'ver_col': 'crf_version',
+            'def_table': 'platform_crf', 'label': 'CRF 填报'},
+    'scale': {'table': 'platform_scale_response', 'data_col': 'answers',
+              'code_col': 'scale_code', 'ver_col': 'scale_version',
+              'def_table': 'platform_scale', 'label': '量表填报'},
+}
+
+
+def _rev_definition(kind, code, version):
+    """取填报当时那一版的定义(用来把字段 id 翻译成题干)。取不到就返回 None。"""
+    meta = REVISION_KINDS[kind]
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT definition FROM {} WHERE code=%s AND version=%s'.format(
+            meta['def_table']), (code, str(version)))
+        row = cur.fetchone()
+        cur.close()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    d = row[0]
+    return json.loads(d) if isinstance(d, str) else d
+
+
+def _rev_item_map(kind, definition):
+    """{字段id: (题干, {选项值: 选项标签})}。定义取不到时返回空表, 差异照样出, 只是显示 id。"""
+    out = {}
+    if not definition:
+        return out
+    if kind == 'crf':
+        pairs = [(sec, it) for sec, it in _crf_items(definition)]
+    else:
+        pairs = [('', it) for it in (definition.get('items') or [])]
+    for sec, it in pairs:
+        iid = it.get('id')
+        if not iid:
+            continue
+        opts = {}
+        for o in (it.get('options') or []):
+            if isinstance(o, dict):
+                opts[json.dumps(o.get('value'), ensure_ascii=False)] = o.get('label')
+        out[iid] = ((sec + ' / ' if sec else '') + (it.get('text') or iid), opts)
+    return out
+
+
+def _rev_show(value, opts):
+    """把一个答案渲染成人看的样子。选项题显示标签, 其余原样。"""
+    if value is None:
+        return '(空)'
+    if isinstance(value, list):
+        return '、'.join(_rev_show(v, opts) for v in value) if value else '(空)'
+    key = json.dumps(value, ensure_ascii=False)
+    if key in opts:
+        return '{}({})'.format(opts[key], value)
+    if isinstance(value, (dict,)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def diff_response_data(kind, old_data, new_data, item_map):
+    """两份填报的逐题差异。返回 [{field, label, before, after, change}]。
+
+    三种变化都要报出来, 少报哪一种都会让稽查看不到全貌:
+      changed  改了值
+      added    原来没答, 现在答了
+      removed  原来答了, 现在空了  <- 最容易被忽略, 而"把答案删掉"恰恰是最该看的
+    """
+    old_data, new_data = old_data or {}, new_data or {}
+    out = []
+    for fid in sorted(set(old_data) | set(new_data)):
+        before, after = old_data.get(fid), new_data.get(fid)
+        if before == after:
+            continue
+        label, opts = item_map.get(fid, (fid, {}))
+        if fid not in old_data or before in (None, '', []):
+            kind_ = 'added'
+        elif fid not in new_data or after in (None, '', []):
+            kind_ = 'removed'
+        else:
+            kind_ = 'changed'
+        out.append({'field': fid, 'label': label, 'change': kind_,
+                    'before': _rev_show(before, opts), 'after': _rev_show(after, opts),
+                    'before_raw': before, 'after_raw': after})
+    return out
+
+
+def response_history(kind, response_id):
+    """一条填报的完整修订链 + 每一步的改前改后。返回 (info, error)。
+
+    给的是**整条链**, 不是"上一版": 稽查要看的是这条数据被动过几次、
+    每次谁动的、动了哪道题。只给最近一次等于把前面的修改藏起来了。
+    """
+    if kind not in REVISION_KINDS:
+        return None, 'kind 必须是 crf 或 scale'
+    try:
+        response_id = int(response_id)
+    except (TypeError, ValueError):
+        return None, 'id 必须是整数'
+    meta = REVISION_KINDS[kind]
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor(pymysql.cursors.DictCursor)
+        # 先顺着 revision_of 往前走到链首, 再从链首往后收集整条链
+        cur.execute('SELECT * FROM {} WHERE id=%s'.format(meta['table']), (response_id,))
+        cur0 = cur.fetchone()
+        if not cur0:
+            cur.close()
+            return None, '{}不存在: {}'.format(meta['label'], response_id)
+        chain = [cur0]
+        seen = {cur0['id']}
+        node = cur0
+        while node.get('revision_of'):
+            cur.execute('SELECT * FROM {} WHERE id=%s'.format(meta['table']),
+                        (node['revision_of'],))
+            node = cur.fetchone()
+            if not node or node['id'] in seen:      # 环形引用兜底, 正常不会有
+                break
+            seen.add(node['id'])
+            chain.insert(0, node)
+        node = cur0
+        while True:
+            cur.execute('SELECT * FROM {} WHERE revision_of=%s ORDER BY id LIMIT 1'.format(
+                meta['table']), (node['id'],))
+            nxt = cur.fetchone()
+            if not nxt or nxt['id'] in seen:
+                break
+            seen.add(nxt['id'])
+            chain.append(nxt)
+            node = nxt
+        cur.close()
+    finally:
+        conn.close()
+
+    code = chain[0][meta['code_col']]
+    revisions, prev = [], None
+    for i, r in enumerate(chain):
+        data = r[meta['data_col']]
+        if isinstance(data, str):
+            data = json.loads(data)
+        item_map = _rev_item_map(kind, _rev_definition(kind, code, r[meta['ver_col']]))
+        entry = {'id': r['id'], 'seq': i + 1, 'version': str(r[meta['ver_col']]),
+                 'operator': r.get('operator'), 'status': r['status'],
+                 'created_at': r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+                 if r.get('created_at') else None,
+                 'is_current': r['status'] != 'superseded',
+                 'changes': diff_response_data(kind, prev, data, item_map) if prev is not None else [],
+                 'field_count': len(data or {})}
+        if prev is not None and not entry['changes']:
+            entry['note'] = ('这一版和上一版的答案完全一样 —— 可能是误操作重复提交, '
+                             '也可能只改了备注一类不在答案里的东西')
+        revisions.append(entry)
+        prev = data
+
+    current = next((r for r in revisions if r['is_current']), revisions[-1])
+    return {'ok': True, 'kind': kind, 'code': code,
+            'patient_no': chain[0]['patient_no'],
+            'revision_count': len(revisions), 'current_id': current['id'],
+            'revisions': revisions,
+            'note': ('修订走"新插一条 + 旧版标 superseded", 没有任何一版被删除或改写。'
+                     '这里给的是整条链, 不是最近一次')}, None
+
+
+def revert_response(body):
+    """把一条填报退回到它某一个历史版本。{kind, id, to_id, operator, reason}
+
+    **产出新的一条修订**, 不删、不改写、也不把旧记录从 superseded 复活。
+    复活是最容易想到的做法, 也是最坏的: 那等于让"这条曾经被改过"从记录里消失,
+    而那恰恰是留痕要留的东西。
+    """
+    kind = body.get('kind')
+    if kind not in REVISION_KINDS:
+        return None, 'kind 必须是 crf 或 scale'
+    op = str(body.get('operator') or '').strip()
+    reason = str(body.get('reason') or '').strip()
+    if not op:
+        return None, '回退必须署名'
+    if not reason:
+        return None, '回退必须写明原因 —— 这会改变这位患者的现行数据, 得说清为什么'
+    try:
+        rid = int(body.get('id'))
+        to_id = int(body.get('to_id'))
+    except (TypeError, ValueError):
+        return None, 'id 和 to_id 必填且是整数'
+
+    hist, err = response_history(kind, rid)
+    if err:
+        return None, err
+    ids = [r['id'] for r in hist['revisions']]
+    if to_id not in ids:
+        return None, '{} 不在这条填报的修订链里(链上是 {})'.format(to_id, ids)
+    if to_id == hist['current_id']:
+        return None, '目标就是当前版本, 不需要回退'
+
+    meta = REVISION_KINDS[kind]
+    conn = get_connection()
+    try:
+        cur = conn.cursor(pymysql.cursors.DictCursor)
+        cur.execute('SELECT * FROM {} WHERE id=%s'.format(meta['table']), (to_id,))
+        target = cur.fetchone()
+        cur.execute('SELECT * FROM {} WHERE id=%s'.format(meta['table']),
+                    (hist['current_id'],))
+        current = cur.fetchone()
+        cur.close()
+    finally:
+        conn.close()
+
+    data = target[meta['data_col']]
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    # 走各自正常的提交路径, 而不是直接 INSERT —— 回退产生的数据同样要过校验。
+    # 不过校验的话, 一次回退可以把不合法的历史值悄悄塞回现行数据里。
+    payload = {'patient_no': target['patient_no'], 'operator': op,
+               'revision_of': hist['current_id'], 'plan_id': target.get('plan_id')}
+    if kind == 'crf':
+        payload.update({'crf_code': target['crf_code'], 'crf_version': target['crf_version'],
+                        'data': data, 'visit_name': target.get('visit_name'),
+                        'allow_warnings': True})
+        res, err = submit_crf_response(payload)
+    else:
+        payload.update({'scale_code': target['scale_code'],
+                        'scale_version': target['scale_version'], 'answers': data,
+                        'rater_type': target.get('rater_type') or 'clinician',
+                        'allow_errors': False})
+        res, err = submit_scale_response(payload)
+    if err:
+        return None, '回退失败: {}'.format(err)
+    if isinstance(res, dict) and res.get('accepted') is False:
+        return None, ('回退没能通过校验: {} —— 那一版的答案按现在的规则不合法。'
+                      '常见两种原因: 那之后表单改过; 或者这条历史记录当初就是绕过校验写进来的'
+                      '(早期代码/迁移导入)。回退走的是正常提交路径, 所以拦下了 —— '
+                      '要用这份旧值得先把它改到合规'.format(
+                          '; '.join('{} {}'.format(e.get('field'), e.get('error'))
+                                    for e in (res.get('errors') or [])[:3])))
+
+    new_id = res.get('id')
+    item_map = _rev_item_map(kind, _rev_definition(kind, hist['code'], target[meta['ver_col']]))
+    cur_data = current[meta['data_col']]
+    if isinstance(cur_data, str):
+        cur_data = json.loads(cur_data)
+    changes = diff_response_data(kind, cur_data, data, item_map)
+    return {'ok': True, 'kind': kind, 'new_id': new_id, 'reverted_to': to_id,
+            'superseded': hist['current_id'], 'changes': changes,
+            'change_count': len(changes),
+            'note': ('回退产出的是**新的一条**(id={}), 内容等于 id={} 那一版; '
+                     '被它取代的 id={} 仍然留在库里并标成 superseded —— '
+                     '整条链一版没少, "曾经改过"这件事不会因为回退而消失'.format(
+                         new_id, to_id, hist['current_id']))}, None
+
+
 def query_crf_responses(patient_no=None, code=None, include_superseded=False, limit=100):
     """CRF 填报记录列表。"""
     ensure_platform_crf_tables()
@@ -13929,6 +14208,14 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                                                 (query.get('code') or [None])[0])
             self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/response/history':
+            # 修订链里带着这位患者的逐题答案 —— 按 PHI 的标准鉴权, 同资料下载
+            if not check_platform_token(self):
+                return
+            result, err = response_history((query.get('kind') or ['crf'])[0],
+                                           (query.get('id') or [None])[0])
+            self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
         elif pathname == '/api/platform/snapshots':
             if not check_platform_token(self):
                 return
@@ -14496,6 +14783,8 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/study/can': '随访平台 M24: 问这个状态下能不能做某动作 (?code=&action=enroll)',
                     'POST /api/platform/version/rollback': '随访平台 M24: 回滚 CRF/流程(产出新版本, 不删旧版)',
                     'GET  /api/platform/version/history': '随访平台 M24: 版本历史与回滚记录 (?kind=crf&code=)',
+                    'GET  /api/platform/response/history': '随访平台 §4.3: 填报的修订链 + 逐题改前改后 (?kind=crf&id=)',
+                    'POST /api/platform/response/revert': '随访平台 §4.3: 把填报退回某一历史版(产出新修订, 不删旧版)',
                     'GET  /api/platform/snapshots': '随访平台: 配置快照列表(只含配置, 不含患者数据)',
                     'POST /api/platform/snapshot': '随访平台: 立刻做一份配置快照',
                     'GET  /api/platform/snapshot/diff': '随访平台: 快照 vs 现状的差异 (?file=&table=)',
@@ -14755,6 +15044,12 @@ class HealthDataHandler(BaseHTTPRequestHandler):
 
             elif pathname == '/api/platform/version/rollback':
                 result, err = rollback_version(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/response/revert':
+                if not check_platform_token(self):
+                    return
+                result, err = revert_response(body)
                 self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/snapshot':
@@ -15358,6 +15653,8 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/edu/transition          随访平台 M15: 提交/发布/退回/归档')
     print('[端点] POST /api/platform/edu/generate            随访平台 M15: 生成宣教草稿')
     print('[端点] POST /api/platform/edu/scan                随访平台 M15: 内容体检')
+    print('[端点] GET  /api/platform/response/history      随访平台: 填报修订链 + 改前改后')
+    print('[端点] POST /api/platform/response/revert       随访平台: 填报回退(产出新修订)')
     print('[端点] GET  /api/platform/snapshots              随访平台: 配置快照列表')
     print('[端点] POST /api/platform/snapshot               随访平台: 立刻做一份配置快照')
     print('[端点] POST /api/platform/snapshot/restore       随访平台: 从快照恢复(产出新版本)')
