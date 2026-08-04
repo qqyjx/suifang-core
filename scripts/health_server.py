@@ -3366,7 +3366,7 @@ def submit_scale_response(body):
                         (code, str(version)))
         else:
             cur.execute('SELECT version, definition FROM platform_scale WHERE code=%s AND active=1 '
-                        'ORDER BY updated_at DESC LIMIT 1', (code,))
+                        'ORDER BY updated_at DESC, id DESC LIMIT 1', (code,))
         row = cur.fetchone()
         if not row:
             cur.close()
@@ -4957,7 +4957,7 @@ def upsert_platform_crf(body):
                         (code, version))
         else:
             cur.execute('SELECT definition, owner, version FROM platform_crf WHERE code=%s '
-                        'ORDER BY updated_at DESC LIMIT 1', (code,))
+                        'ORDER BY updated_at DESC, id DESC LIMIT 1', (code,))
         row = cur.fetchone()
 
         change, note = None, None
@@ -5031,7 +5031,11 @@ def query_platform_crfs(code=None, version=None, scope=None, category=None,
             where.append('c.owner=%s'); params.append(owner)
         if not (all_versions or version):
             # 每个 code 只留最新一版 —— 列表页给人看的是"有哪些表", 不是"有哪些版本"
-            where.append("c.updated_at = (SELECT MAX(x.updated_at) FROM platform_crf x WHERE x.code=c.code)")
+            # 用 id 定位而不是比 updated_at: updated_at 只精确到秒, 同一秒里写进去的
+            # 几个版本会**同时**等于 MAX, 于是列表页把同一张表列出好几行 ——
+            # 脚本化建表、连续快速改动、恢复紧接着一次编辑, 都能撞上。
+            where.append("c.id = (SELECT x.id FROM platform_crf x WHERE x.code=c.code "
+                         "ORDER BY x.updated_at DESC, x.id DESC LIMIT 1)")
         cols = ("c.id, c.code, c.name, c.category, c.visit_type, c.version, c.scope, c.owner, "
                 "c.source, c.copied_from, c.media, c.status, c.active, c.created_at, c.updated_at, "
                 "c.item_count, "
@@ -5092,7 +5096,7 @@ def copy_platform_crf(body):
                         'FROM platform_crf WHERE code=%s AND version=%s', (src, str(body['version'])))
         else:
             cur.execute('SELECT name, category, visit_type, version, definition, media '
-                        'FROM platform_crf WHERE code=%s ORDER BY updated_at DESC LIMIT 1', (src,))
+                        'FROM platform_crf WHERE code=%s ORDER BY updated_at DESC, id DESC LIMIT 1', (src,))
         row = cur.fetchone()
         if not row:
             cur.close()
@@ -5145,7 +5149,7 @@ def submit_crf_response(body):
                         (code, str(version)))
         else:
             cur.execute('SELECT version, definition FROM platform_crf WHERE code=%s AND active=1 '
-                        'ORDER BY updated_at DESC LIMIT 1', (code,))
+                        'ORDER BY updated_at DESC, id DESC LIMIT 1', (code,))
         row = cur.fetchone()
         if not row:
             cur.close()
@@ -8399,7 +8403,9 @@ def query_flows(code=None, scope=None, category=None, all_versions=False,
         if category:
             where.append('f.category=%s'); params.append(category)
         if not (all_versions or code):
-            where.append('f.updated_at = (SELECT MAX(x.updated_at) FROM platform_flow x WHERE x.code=f.code)')
+            # 同 query_platform_crfs: updated_at 只到秒, 同秒的几版会一起命中 MAX
+            where.append('f.id = (SELECT x.id FROM platform_flow x WHERE x.code=f.code '
+                         'ORDER BY x.updated_at DESC, x.id DESC LIMIT 1)')
         cols = ('f.id, f.code, f.version, f.name, f.category, f.scope, f.owner, f.source, '
                 'f.copied_from, f.node_count, f.visit_count, f.status, f.created_at, f.updated_at, '
                 '(SELECT COUNT(*) FROM platform_flow_instance i WHERE i.flow_code=f.code '
@@ -12291,7 +12297,7 @@ def _ocr_crf_definition(code, version=None):
                         (str(code), str(version)))
         else:
             cur.execute('SELECT version, definition FROM platform_crf WHERE code=%s AND active=1 '
-                        'ORDER BY updated_at DESC LIMIT 1', (str(code),))
+                        'ORDER BY updated_at DESC, id DESC LIMIT 1', (str(code),))
         row = cur.fetchone()
         cur.close()
     finally:
@@ -12338,7 +12344,7 @@ def ocr_recognize(body):
         try:
             cur = conn.cursor()
             cur.execute('SELECT version FROM platform_crf WHERE code=%s AND active=1 '
-                        'ORDER BY updated_at DESC LIMIT 1', (code,))
+                        'ORDER BY updated_at DESC, id DESC LIMIT 1', (code,))
             version = cur.fetchone()[0]
             cur.close()
         finally:
@@ -13029,6 +13035,333 @@ def platform_export(kind, patient_no=None, days=90):
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# 定时快照 —— §CRF「实时备份」的另一半
+#
+# M24 已经做了一键回滚(把某张表的定义退回它自己的某一旧版)。缺的是**定时快照**:
+# 按时间点、跨全部表单的一份整体留底。两者解决的不是同一个问题 ——
+#
+#   版本   回答"这张表以前长什么样"        逐表、逐次改动
+#   快照   回答"上周三整个平台长什么样"    跨表、按时间点
+#
+# 版本记录活在数据库里, 表单定义没了它也就没了。快照落在磁盘上, 是库外的一份。
+#
+# **快照只含配置, 不含患者数据。** 这一条必须写在最显眼的地方, 因为"备份"两个字
+# 太容易被理解成"患者数据也备份了"。患者数据的备份是数据库运维的事, 不在这里,
+# 拿这个快照去恢复患者数据是恢复不出来的 —— 而等到需要恢复的那天才发现, 就太晚了。
+#
+# 恢复沿用 M24 的原则: **产出新版本, 不覆盖也不删**。理由同 rollback_version ——
+# 已经按某一版填过的数据还钉在那一版上, 把它改掉那些数据就读不懂了。
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_DIR = os.environ.get('PLATFORM_SNAPSHOT_DIR') or os.path.join(DOC_DIR, 'snapshots')
+SNAPSHOT_KEEP = int(os.environ.get('PLATFORM_SNAPSHOT_KEEP') or 30)
+# 快照内容: 表名 -> (取哪些列, 用哪几列当业务主键)
+SNAPSHOT_TABLES = (
+    ('platform_crf',  'code, version, name, category, visit_type, scope, owner, source, '
+                      'definition, item_count, media, status, active'),
+    ('platform_flow', 'code, version, name, category, definition, status, owner'),
+    ('platform_scale', 'code, version, name, category, rater, source, stages, '
+                       'definition, active'),
+    ('platform_edu_material', 'code, version, title, category, stage, topic, format, '
+                              'body, status, tags'),
+)
+
+SNAPSHOT_NOT_PATIENT_DATA = (
+    '快照只含表单/流程/量表/宣教的**配置定义**, 不含任何患者数据。'
+    '患者数据的备份是数据库运维的事, 不在这里 —— 拿这份快照恢复不出患者数据。'
+)
+
+
+def take_snapshot(reason='auto', operator=None):
+    """做一份快照。返回 (info, error)。
+
+    写不进去就明确报错。一个"看起来在跑、其实一直没落盘"的备份, 比没有备份更糟:
+    没有备份的时候人还知道自己没有备份。
+    """
+    try:
+        if not os.path.isdir(SNAPSHOT_DIR):
+            os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    except Exception as e:
+        return None, '快照目录建不出来({}): {}'.format(SNAPSHOT_DIR, e)
+
+    payload, counts = {}, {}
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        for table, cols in SNAPSHOT_TABLES:
+            try:
+                cur.execute('SELECT {} FROM {}'.format(cols, table))
+                names = [d[0] for d in cur.description]
+                rows = []
+                for r in cur.fetchall():
+                    row = {}
+                    for k, v in zip(names, r):
+                        if hasattr(v, 'strftime'):
+                            v = v.strftime('%Y-%m-%d %H:%M:%S')
+                        elif isinstance(v, bytes):
+                            v = v.decode('utf-8', 'replace')
+                        elif type(v).__name__ == 'Decimal':
+                            v = float(v)
+                        row[k] = v
+                    rows.append(row)
+                payload[table] = rows
+                counts[table] = len(rows)
+            except Exception as e:
+                # 某张表还没建出来不算失败 —— 平台是逐模块上线的
+                counts[table] = 'skipped: {}'.format(str(e)[:80])
+        cur.close()
+    except Exception as e:
+        traceback.print_exc()
+        return None, '读取配置失败: {}'.format(e)
+    finally:
+        conn.close()
+
+    if not any(isinstance(v, int) and v for v in counts.values()):
+        return None, '没有任何可备份的配置(相关表都不存在或为空)'
+
+    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    body = json.dumps({'taken_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                       'reason': reason, 'operator': operator,
+                       'counts': counts, 'not_patient_data': SNAPSHOT_NOT_PATIENT_DATA,
+                       'data': payload}, ensure_ascii=False).encode('utf-8')
+    blob = gzip.compress(body, compresslevel=6)
+    import hashlib
+    sha = hashlib.sha256(blob).hexdigest()
+    # 文件名带上内容哈希的前 6 位。只用到秒的话, 同一秒里做两次快照会同名互相覆盖 ——
+    # 定时那条路(默认 24 小时)撞不上, 但手动"立即快照"点两下就撞得上, 而且是**静默**的。
+    # 带上哈希之后: 内容相同就是同一份(覆盖无所谓), 内容不同就是两份。
+    name = 'snapshot_{}_{}.json.gz'.format(stamp, sha[:6])
+    path = os.path.join(SNAPSHOT_DIR, name)
+    try:
+        # 先写临时文件再改名: 中途断电/进程被杀时, 留下的要么是完整的一份,
+        # 要么什么都没有, 不会是一个半截的 .json.gz —— 那种文件在需要它的那天
+        # 才会被发现是坏的
+        tmp = path + '.part'
+        with open(tmp, 'wb') as f:
+            f.write(blob)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, path)
+    except Exception as e:
+        return None, '快照写入失败({}): {}'.format(SNAPSHOT_DIR, e)
+
+    pruned = _prune_snapshots()
+    return {'ok': True, 'file': name, 'size_bytes': len(blob), 'sha256': sha,
+            'taken_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'reason': reason, 'counts': counts, 'pruned': pruned,
+            'dir': SNAPSHOT_DIR, 'note': SNAPSHOT_NOT_PATIENT_DATA}, None
+
+
+def _snapshot_files():
+    """快照文件, 按**落盘时间**从旧到新。返回 [(mtime, filename)]。
+
+    刻意不按文件名排序: 文件名末尾带内容哈希, 同一秒内的几份按名字排是乱的,
+    照着删就会删错 —— 留下的不是最新的那几份, 而且这件事不会有任何报错。
+    """
+    try:
+        names = [f for f in os.listdir(SNAPSHOT_DIR)
+                 if f.startswith('snapshot_') and f.endswith('.json.gz')]
+    except OSError:
+        return []
+    out = []
+    for f in names:
+        try:
+            out.append((os.stat(os.path.join(SNAPSHOT_DIR, f)).st_mtime, f))
+        except OSError:
+            pass
+    return sorted(out)
+
+
+def _prune_snapshots():
+    """只留最近 SNAPSHOT_KEEP 份。返回删掉的文件名。"""
+    files = _snapshot_files()
+    dropped = []
+    for _mt, f in (files[:-SNAPSHOT_KEEP] if len(files) > SNAPSHOT_KEEP else []):
+        try:
+            os.remove(os.path.join(SNAPSHOT_DIR, f))
+            dropped.append(f)
+        except OSError:
+            pass
+    return dropped
+
+
+def list_snapshots(limit=50):
+    """快照列表(不解压, 只看文件)。"""
+    if not os.path.isdir(SNAPSHOT_DIR):
+        return {'ok': True, 'count': 0, 'snapshots': [], 'dir': SNAPSHOT_DIR,
+                'note': '还没有任何快照。' + SNAPSHOT_NOT_PATIENT_DATA}, None
+    out = []
+    for mtime, f in reversed(_snapshot_files()):      # 新的在前
+        try:
+            size = os.stat(os.path.join(SNAPSHOT_DIR, f)).st_size
+        except OSError:
+            continue
+        out.append({'file': f, 'size_bytes': size,
+                    'taken_at': datetime.datetime.fromtimestamp(
+                        mtime).strftime('%Y-%m-%d %H:%M:%S')})
+        if len(out) >= max(1, min(int(limit or 50), 200)):
+            break
+    return {'ok': True, 'count': len(out), 'snapshots': out, 'dir': SNAPSHOT_DIR,
+            'keep': SNAPSHOT_KEEP, 'note': SNAPSHOT_NOT_PATIENT_DATA}, None
+
+
+def read_snapshot(fname):
+    """读一份快照。返回 (data, error)。"""
+    fname = os.path.basename(str(fname or ''))
+    if not (fname.startswith('snapshot_') and fname.endswith('.json.gz')):
+        return None, '文件名不合法: {}'.format(fname)
+    path = os.path.join(SNAPSHOT_DIR, fname)
+    if not os.path.isfile(path):
+        return None, '快照不存在: {}'.format(fname)
+    try:
+        with open(path, 'rb') as f:
+            return json.loads(gzip.decompress(f.read()).decode('utf-8')), None
+    except Exception as e:
+        return None, '快照读取失败(可能已损坏): {}'.format(e)
+
+
+def snapshot_diff(fname, table='platform_crf'):
+    """快照里的配置 vs 现在的配置, 差在哪。返回 (diff, error)。
+
+    恢复之前先看这个。直接恢复而不看差异, 等于用一份不知道差在哪的旧配置盖掉现状。
+    """
+    snap, err = read_snapshot(fname)
+    if err:
+        return None, err
+    if table not in dict(SNAPSHOT_TABLES):
+        return None, 'table 必须是 {} 之一'.format('/'.join(t for t, _ in SNAPSHOT_TABLES))
+    old = {(r.get('code'), str(r.get('version'))): r for r in (snap['data'].get(table) or [])}
+    cols = dict(SNAPSHOT_TABLES)[table]
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT {} FROM {}'.format(cols, table))
+        names = [d[0] for d in cur.description]
+        cur_map = {}
+        for r in cur.fetchall():
+            row = dict(zip(names, r))
+            cur_map[(row.get('code'), str(row.get('version')))] = row
+        cur.close()
+    except Exception as e:
+        return None, '读取现状失败: {}'.format(e)
+    finally:
+        conn.close()
+
+    def _defn(r):
+        d = r.get('definition') or r.get('body')
+        return json.dumps(d, ensure_ascii=False, sort_keys=True) if not isinstance(d, str) else d
+
+    only_snap = [k for k in old if k not in cur_map]
+    only_now = [k for k in cur_map if k not in old]
+    changed = [k for k in old if k in cur_map and _defn(old[k]) != _defn(cur_map[k])]
+    return {'ok': True, 'file': fname, 'table': table,
+            'taken_at': snap.get('taken_at'),
+            'only_in_snapshot': ['{} v{}'.format(*k) for k in sorted(only_snap)][:50],
+            'only_now': ['{} v{}'.format(*k) for k in sorted(only_now)][:50],
+            'content_differs': ['{} v{}'.format(*k) for k in sorted(changed)][:50],
+            'same_count': len(old) - len(only_snap) - len(changed),
+            'note': ('content_differs 指的是同一个 code+version 的内容变了 —— '
+                     '这本不该发生(有填报后改动会自动开新版), 出现就要查一下是谁就地改了')}, None
+
+
+def restore_from_snapshot(body):
+    """把快照里的某张表单/流程恢复回来。{file, table?, code, operator, reason}
+
+    **产出新版本, 不覆盖也不删** —— 同 M24 回滚的理由: 已经按某一版填过的数据
+    还钉在那一版上, 把它改掉那些数据就读不懂了。
+    """
+    fname = str(body.get('file') or '').strip()
+    code = str(body.get('code') or '').strip()
+    table = body.get('table') or 'platform_crf'
+    op = str(body.get('operator') or '').strip()
+    reason = str(body.get('reason') or '').strip()
+    if not fname or not code:
+        return None, 'file 和 code 必填'
+    if not op:
+        return None, '恢复必须署名'
+    if not reason:
+        return None, '恢复必须写明原因 —— 这会让线上换成另一份配置, 得说清为什么'
+    if table not in ('platform_crf', 'platform_flow'):
+        return None, '目前只支持恢复 platform_crf / platform_flow'
+
+    snap, err = read_snapshot(fname)
+    if err:
+        return None, err
+    rows = [r for r in (snap['data'].get(table) or []) if r.get('code') == code]
+    if not rows:
+        return None, '快照里没有 {}'.format(code)
+    row = sorted(rows, key=lambda r: _version_key(str(r.get('version') or '0')))[-1]
+    defn = row.get('definition')
+    if isinstance(defn, str):
+        defn = json.loads(defn)
+
+    # **版本号必须在这里算好显式传下去。** 不传的话 upsert 会挑"最新的一版"往上写,
+    # 而它对"破坏性改动但该版本还没有填报"的处理是**就地修改** —— 那正好就是恢复
+    # 最常见的场景(刚改坏、还没人填、赶紧恢复), 结果是把刚才那一版直接盖掉。
+    # 恢复要留下的恰恰是"改坏的那一版长什么样", 盖掉了就查不出当时发生了什么。
+    # M24 的 rollback_version 也是这么做的, 理由相同。
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT version FROM {} WHERE code=%s'.format(table), (code,))
+        latest = sorted((str(r[0]) for r in cur.fetchall()), key=_version_key)[-1]
+        cur.close()
+    finally:
+        conn.close()
+    new_ver = _bump_version(latest)
+
+    payload = {'code': code, 'name': row.get('name') or code, 'definition': defn,
+               'version': new_ver, 'owner': op, 'status': 'active',
+               'note': '恢复自快照 {} 的 v{}: {}'.format(fname, row.get('version'), reason)}
+    if table == 'platform_crf':
+        payload['category'] = row.get('category')
+        payload['visit_type'] = row.get('visit_type')
+        res, err = upsert_platform_crf(payload)
+    else:
+        res, err = upsert_flow(payload)
+    if err:
+        return None, '恢复失败: {}'.format(err)
+
+    try:
+        ensure_platform_study_tables()
+        conn = get_connection(); cur = conn.cursor()
+        cur.execute("""INSERT INTO platform_study_log
+                       (study_code, action, from_status, to_status, operator, reason)
+                       VALUES (%s,'restore',%s,%s,%s,%s)""",
+                    ('{}:{}'.format(table, code), fname, 'v' + str(res['version']), op,
+                     '从快照恢复: {}'.format(reason)[:500]))
+        cur.close(); conn.close()
+    except Exception:
+        traceback.print_exc()
+
+    return {'ok': True, 'code': code, 'from_file': fname,
+            'snapshot_version': str(row.get('version')), 'new_version': res['version'],
+            'note': ('恢复产出的是**新版本 v{}**(内容取自快照里的 v{}), 原有版本一个没动 —— '
+                     '已经按旧版填报的数据还钉在旧版上'.format(res['version'], row.get('version')))}, None
+
+
+def _version_key(v):
+    """版本号排序用。'10' 要排在 '9' 后面, 按字符串比会反过来。"""
+    return [int(x) if x.isdigit() else x for x in re.split(r'(\d+)', str(v)) if x != '']
+
+
+def snapshot_loop(interval_hours):
+    """定时快照线程。异常一律吞掉继续下一轮 —— 不能让备份线程自己挂掉。"""
+    while True:
+        time.sleep(max(1, interval_hours) * 3600)
+        try:
+            info, err = take_snapshot(reason='auto')
+            if err:
+                print('[定时快照] 失败:', err)
+            else:
+                print('[定时快照] {} ({} KB){}'.format(
+                    info['file'], info['size_bytes'] // 1024,
+                    ', 清理 {} 份旧的'.format(len(info['pruned'])) if info['pruned'] else ''))
+        except Exception as e:
+            print('[定时快照] 线程内异常(已捕获, 继续下一轮):', e)
+
+
 def platform_auto_ingest_loop(interval_min):
     """随访平台 M4: 报警自动摄入后台线程 (design doc §3.4 提到的自动化 ingest, 替代人工点
     "拉取新报警"按钮)。每 interval_min 分钟跑两件事 —— 都与各自的 POST 端点复用同一份
@@ -13539,6 +13872,19 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         elif pathname == '/api/platform/version/history':
             result, err = query_version_history((query.get('kind') or [None])[0],
                                                 (query.get('code') or [None])[0])
+            self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/snapshots':
+            if not check_platform_token(self):
+                return
+            result, err = list_snapshots((query.get('limit') or ['50'])[0])
+            self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+        elif pathname == '/api/platform/snapshot/diff':
+            if not check_platform_token(self):
+                return
+            result, err = snapshot_diff((query.get('file') or [None])[0],
+                                        (query.get('table') or ['platform_crf'])[0])
             self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
         elif pathname == '/api/platform/media':
@@ -14095,6 +14441,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/study/can': '随访平台 M24: 问这个状态下能不能做某动作 (?code=&action=enroll)',
                     'POST /api/platform/version/rollback': '随访平台 M24: 回滚 CRF/流程(产出新版本, 不删旧版)',
                     'GET  /api/platform/version/history': '随访平台 M24: 版本历史与回滚记录 (?kind=crf&code=)',
+                    'GET  /api/platform/snapshots': '随访平台: 配置快照列表(只含配置, 不含患者数据)',
+                    'POST /api/platform/snapshot': '随访平台: 立刻做一份配置快照',
+                    'GET  /api/platform/snapshot/diff': '随访平台: 快照 vs 现状的差异 (?file=&table=)',
+                    'POST /api/platform/snapshot/restore': '随访平台: 从快照恢复(产出新版本, 不删旧版)',
                     'POST /api/platform/media': '随访平台 M14 §2.1(3): 上传音视频指导文件(验文件头)',
                     'GET  /api/platform/media': '随访平台 M14 §2.1(3): 播放音视频(inline, 支持 Range; 需口令)',
                     'GET  /api/platform/gen/backends': '随访平台 M12/M14/M15: 生成后端可用性(template/claude/deepseek)',
@@ -14350,6 +14700,19 @@ class HealthDataHandler(BaseHTTPRequestHandler):
 
             elif pathname == '/api/platform/version/rollback':
                 result, err = rollback_version(body)
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/snapshot':
+                if not check_platform_token(self):
+                    return
+                result, err = take_snapshot(reason=body.get('reason') or 'manual',
+                                            operator=body.get('operator'))
+                self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
+
+            elif pathname == '/api/platform/snapshot/restore':
+                if not check_platform_token(self):
+                    return
+                result, err = restore_from_snapshot(body)
                 self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/media':
@@ -14856,6 +15219,20 @@ if __name__ == '__main__':
     else:
         print('[启动] 报警自动摄入线程已禁用 (PLATFORM_INGEST_INTERVAL_MIN=0), 只能手动 POST /api/platform/alarm/ingest')
 
+    # 定时配置快照。PLATFORM_SNAPSHOT_HOURS 未设时默认 24 小时一份, 设为 0 关闭。
+    # 只备份配置(表单/流程/量表/宣教的定义), **不含患者数据** —— 患者数据的备份
+    # 是数据库运维的事, 别让"备份"这两个字造成误解。
+    try:
+        _snap_hours = int(os.environ.get('PLATFORM_SNAPSHOT_HOURS') or '24')
+    except (TypeError, ValueError):
+        _snap_hours = 24
+    if _snap_hours > 0:
+        threading.Thread(target=snapshot_loop, args=(_snap_hours,), daemon=True).start()
+        print('[启动] 定时配置快照线程已启动, 每 {} 小时一份, 保留最近 {} 份 -> {} '
+              '(PLATFORM_SNAPSHOT_HOURS=0 关闭)'.format(_snap_hours, SNAPSHOT_KEEP, SNAPSHOT_DIR))
+    else:
+        print('[启动] 定时配置快照已禁用 (PLATFORM_SNAPSHOT_HOURS=0), 只能手动 POST /api/platform/snapshot')
+
     server = HTTPServer(('0.0.0.0', PORT), HealthDataHandler)
     print('[启动] 智能随访数据接收服务 v5.06-v9: http://0.0.0.0:{}'.format(PORT))
     print('[模式] 一台设备一行 + 大 JSON 汇总; 患者标识 = 大 JSON 每条记录的 "门诊号" 字段')
@@ -14919,6 +15296,9 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/edu/transition          随访平台 M15: 提交/发布/退回/归档')
     print('[端点] POST /api/platform/edu/generate            随访平台 M15: 生成宣教草稿')
     print('[端点] POST /api/platform/edu/scan                随访平台 M15: 内容体检')
+    print('[端点] GET  /api/platform/snapshots              随访平台: 配置快照列表')
+    print('[端点] POST /api/platform/snapshot               随访平台: 立刻做一份配置快照')
+    print('[端点] POST /api/platform/snapshot/restore       随访平台: 从快照恢复(产出新版本)')
     print('[端点] POST /api/platform/media                  随访平台 M14: 上传音视频指导文件')
     print('[端点] GET  /api/platform/media                  随访平台 M14: 播放音视频(支持 Range)')
     print('[端点] GET  /api/platform/gen/backends           随访平台 M12/M14/M15: 生成后端可用性')
