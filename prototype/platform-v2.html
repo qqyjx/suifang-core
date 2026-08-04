@@ -15,7 +15,7 @@
 
   模块与真实能力的对应:
     运营驾驶舱   真实   患者数/待建档数/未处理报警/今日任务, 均现算
-    随访资料准备 部分   M10-12 量表库 + M14 CRF 引擎已通; 宣教材料与知情资料未建设
+    随访资料准备 真实   M10-12 量表库 + M14 CRF + M15 宣教 + M17 知情资料已通; 生成类可选本地模板/大模型
     随访计划编排 真实   M5 platform_plan
     随访执行中心 真实   M2 报警闭环 + M7 体征阈值/趋势预警 + M5 今日任务
     患者管理     真实   M1 建档/绑定/体征 + M4 佩戴依从性 + M8 待建档发现
@@ -553,8 +553,8 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>强校验阻断 / 弱校验提示</td><td><span class="tag green">已建</span></td><td>强校验直接拒收；弱校验需确认后才落库</td></tr>
               <tr><td>项目开展中增改变量、调整顺序，且不影响已有数据</td><td><span class="tag green">已建</span></td><td>改动分安全/破坏性两类，破坏性且已有填报时自动开新版</td></tr>
               <tr><td>私有 / 共享 CRF · 拷贝 · 实时预览</td><td><span class="tag green">已建</span></td><td>拷贝生成的是独立新表的第 1 版，不是原表的新版本——否则改动会牵连原表的填报</td></tr>
-              <tr><td>AI 辅助生成 CRF 模板</td><td><span class="tag amber">部分</span></td><td>本地模板已通（基础骨架 + 按字段名猜题型 + 三条逻辑规则）；接大模型需服务器另配 SDK 与密钥</td></tr>
-              <tr><td>Excel + 大模型辅助建表</td><td><span class="tag amber">部分</span></td><td>配置式与数据式两种排布都能解析，每列都给出推断依据；「大模型」部分同上</td></tr>
+              <tr><td>AI 辅助生成 CRF 模板</td><td><span class="tag green">已建</span></td><td>本地模板（基础骨架 + 按字段名猜题型 + 三条逻辑规则）与大模型（DeepSeek／Claude）两条路都通，在生成弹窗里选。大模型产出的是<b>病种专项字段</b>，接在通用骨架后面，要过三道过滤才进草稿：题型白名单 → 与骨架的 id 冲突检查 → 合并后整体结构校验，任何一道没过就整体撤掉并说明。<b>默认仍是本地模板</b>——服务器上有 key 不等于自动拿去用，把内容发给外部大模型是数据治理决策</td></tr>
+              <tr><td>Excel + 大模型辅助建表</td><td><span class="tag green">已建</span></td><td>两条路各自可用：Excel 侧配置式与数据式两种排布都能解析、每列给出推断依据；大模型侧见上一行。<b>两者尚未串起来</b>——还不能「上传 Excel 再让模型补全题型与选项」，现在是二选一</td></tr>
               <tr><td>字段与临床数据元映射</td><td><span class="tag grey">未建设</span></td><td>需要一套院内数据元字典做对照，目前没有</td></tr>
               <tr><td>实时备份</td><td><span class="tag amber">部分</span></td><td>一键回滚已建（M24：把 CRF/流程的<b>定义</b>回到任一旧版，产出新版本、不删旧版、必须署名并写明原因）。缺的是<b>定时快照</b>——现在只有「每改一次留一版」，没有按时间点的自动备份</td></tr>
               <tr><td>附带音视频指导文件</td><td><span class="tag grey">未建设</span></td><td>表结构留了 media 字段，还没有上传与播放</td></tr>
@@ -578,7 +578,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
           <div class="card panel" style="margin-top:16px">
             <div class="panel-head"><h3>方案 §2.3 逐条对照</h3></div>
             <div class="table-wrap"><table><thead><tr><th>要求</th><th>状态</th><th>说明</th></tr></thead><tbody>
-              <tr><td>按病种/病程阶段生成宣教内容</td><td><span class="tag amber">部分</span></td><td>本地模板生成结构骨架（含强制的「什么情况下必须联系医生」一节）；医学内容须临床方填写，接大模型需服务器另配</td></tr>
+              <tr><td>按病种/病程阶段生成宣教内容</td><td><span class="tag green">已建</span></td><td>选本地模板出结构骨架，选大模型则<b>真的写正文</b>。敢让模型写正文是因为后面有两道闸：生成完立刻跑内容体检（具体剂量、「可自行停药」这类一律 block，模型写的和人写的同样要过），且材料必须走 draft→待审核→已发布的署名审核才推得到患者。「什么情况下必须联系医生」这一节模型漏写会自动补占位，任何情况下不会消失。视频脚本刻意不走大模型——分镜的画面与旁白要配合拍摄条件，模型写出来的看着像样但拍不了</td></tr>
               <tr><td>文章 / 图文科普 / 视频脚本三种形态</td><td><span class="tag green">已建</span></td><td>视频脚本按镜头分节</td></tr>
               <tr><td>覆盖疾病知识/用药/康复/饮食/心理五个方向</td><td><span class="tag green">已建</span></td><td>每个方向有各自的章节骨架</td></tr>
               <tr><td>分类标签化管理、按场景/病种快速调用</td><td><span class="tag green">已建</span></td><td>按状态/主题/病种/关键词检索</td></tr>
@@ -2233,14 +2233,13 @@ document.getElementById('scaleGenBtn').onclick = () => {
       '<textarea id="gnDims" style="height:80px" placeholder="服药依从性&#10;饮食控制&#10;运动习惯"></textarea></div>'+
     '<div class="form-row">'+
       '<div class="field"><label>每个维度题目数</label><input id="gnPer" type="number" min="1" max="20" value="3"></div>'+
-      '<div class="field"><label>生成后端</label><select id="gnBackend">'+
-        '<option value="template">模板（本地，不联网）</option>'+
-        '<option value="claude">Claude（需服务器另行配置）</option></select></div>'+
+      genBackendField('gnBackend')+
     '</div>'+
     '<div class="err" style="margin-top:4px">生成的量表<b>不会包含划界值分级</b>。'+
       '「轻度／中度／重度」这类判定必须来自目标人群上的实证研究，模型推导不出来——'+
       '编出来的阈值会让每一份评估报告都给出看似正常的错误结论。总分能算，分级要临床方补。</div>',
     '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="gnGo">生成草稿</button>');
+  bindGenBackendNote('gnBackend');
   document.getElementById('gnGo').onclick = async () => {
     const btn = document.getElementById('gnGo');
     const goal = document.getElementById('gnGoal').value.trim();
@@ -2447,6 +2446,47 @@ document.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => {
   if (t === 'edu') loadEdu();
   if (t === 'doc') { loadDocs(); loadConsents(); }
 });
+
+/* ================================================================ 生成后端 (M12/M14/M15 共用)
+
+   后端列表从 /gen/backends 拉, 前端不硬编码 —— 硬编码那份迟早和服务端漂移,
+   表现是"界面上能选、一点就报后端不可用", 而使用者无从判断是哪边的问题。
+
+   另外一件刻意为之的事: 即便服务器上有 DeepSeek 的 key, 默认项也是「本地模板」。
+   把患者宣教稿、CRF 题目发给外部大模型是数据治理决策, 该由人在这个下拉里选,
+   不由代码替人决定。下拉里每一项都标着会不会出网。 */
+const GENB = { backends: null, default: 'template' };
+
+async function loadGenBackends() {
+  try {
+    const d = await getJSON('/api/platform/gen/backends');
+    GENB.backends = d.gen.backends; GENB.default = d.gen.default || 'template';
+  } catch (e) { GENB.backends = null; }
+}
+
+function genBackendField(id) {
+  const bs = GENB.backends || [{ id: 'template', label: '本地模板', ready: true, sends_data_out: false, note: '' }];
+  return '<div class="field"><label>生成后端</label><select id="' + id + '">' +
+    bs.map(b => '<option value="' + b.id + '"' + (b.id === GENB.default ? ' selected' : '') +
+      (b.ready ? '' : ' disabled') + '>' + esc(b.label) +
+      (b.sends_data_out ? '（内容会发给外部）' : '（本地，不联网）') +
+      (b.ready ? '' : ' — 不可用') + '</option>').join('') +
+    '</select>' +
+    '<div class="sub" id="' + id + 'Note" style="margin-top:4px"></div></div>';
+}
+
+/* 选中项的说明要跟着变 —— 「会不会把内容发出去」是选这个下拉时唯一真正重要的信息 */
+function bindGenBackendNote(id) {
+  const sel = document.getElementById(id), note = document.getElementById(id + 'Note');
+  if (!sel || !note) return;
+  const upd = () => {
+    const b = (GENB.backends || []).find(x => x.id === sel.value);
+    note.textContent = b ? (b.sends_data_out
+      ? '⚠ 这一项会把你填的病种/维度发给外部大模型（不含任何患者数据）。' + (b.note || '')
+      : b.note || '') : '';
+  };
+  sel.onchange = upd; upd();
+}
 
 /* ================================================================ M25 OCR 辅助采集 (方案 §4.3)
 
@@ -4458,10 +4498,12 @@ document.getElementById('eduGenBtn').onclick = () => {
         '<option value="article">健康宣教文章</option><option value="illustrated">图文科普</option>'+
         '<option value="video_script">视频脚本</option></select></div>'+
     '</div>'+
+    genBackendField('egBackend')+
     '<div class="err" style="margin-top:4px">生成的是<b>结构骨架</b>，医学内容留「待填写」由临床方写。'+
       '这一节的内容会被患者当成医嘱照做，模板编不出也不该编——它只负责保证不漏掉'+
       '「什么情况下必须联系医生」这一节。</div>',
     '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="egGo">生成草稿</button>');
+  bindGenBackendNote('egBackend');
   document.getElementById('egGo').onclick = async () => {
     const btn = document.getElementById('egGo');
     const disease = document.getElementById('egDisease').value.trim();
@@ -4472,7 +4514,8 @@ document.getElementById('eduGenBtn').onclick = () => {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ disease: disease, stage: document.getElementById('egStage').value.trim(),
           topic: document.getElementById('egTopic').value,
-          format: document.getElementById('egFormat').value }),
+          format: document.getElementById('egFormat').value,
+          backend: document.getElementById('egBackend').value }),
       });
       const d = await res.json();
       if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
@@ -4906,9 +4949,11 @@ document.getElementById('crfGenBtn').onclick = () => {
     '<div class="field"><label>需要采集的字段<span class="sub">一行一个；题型会按字段名里的关键词推测</span></label>'+
       '<textarea id="cgFields" style="height:90px" placeholder="末次糖化血红蛋白&#10;是否发生低血糖&#10;足部检查日期&#10;并发症情况"></textarea></div>'+
     '<div class="field"><label>表单编码<span class="sub">留空自动生成</span></label><input id="cgCode" placeholder="选填"></div>'+
+    genBackendField('cgBackend')+
     '<div class="err" style="margin-top:4px">题型是按字段名<b>猜</b>的（含「日期」→日期题、含「是否」→单选…），'+
       '猜不准的一律给文本题。保存前请逐题核对——表单一旦有了填报，改题型属破坏性改动、会开新版。</div>',
     '<button class="secondary" onclick="closeModal()">取消</button><button class="primary" id="cgGo">生成草稿</button>');
+  bindGenBackendNote('cgBackend');
   document.getElementById('cgGo').onclick = async () => {
     const btn = document.getElementById('cgGo');
     const disease = document.getElementById('cgDisease').value.trim();
@@ -4919,7 +4964,8 @@ document.getElementById('crfGenBtn').onclick = () => {
       const res = await fetch(API_BASE + '/api/platform/crf/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ disease: disease, visit_type: document.getElementById('cgVisit').value,
-          fields: fields, code: document.getElementById('cgCode').value.trim() || undefined }),
+          fields: fields, code: document.getElementById('cgCode').value.trim() || undefined,
+          backend: document.getElementById('cgBackend').value }),
       });
       const d = await res.json();
       if (!res.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + res.status));
@@ -5081,7 +5127,7 @@ async function loadAll() {
   await loadStatus();
   await Promise.all([
     loadPatients(), loadCandidates(), loadOpenAlarmCount(), loadTasks(),
-    loadPlans(), renderDashChains(),
+    loadPlans(), renderDashChains(), loadGenBackends(),
   ]);
   const n = new Date();
   const hh = n.getHours();

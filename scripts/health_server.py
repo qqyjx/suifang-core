@@ -2579,8 +2579,9 @@ def extract_pdf_text(pdf_bytes):
 #    也不给一个像模像样的假阈值。生成的量表只有原始总分, 没有"重度抑郁"这种判定。
 #
 # 2) 默认后端是模板, 不联网、不需要 key。医院内网服务器把内容发给外部 LLM 是数据治理
-#    决策, 不该由这段代码替人做主。要启用 Claude 后端必须显式配置
-#    SCALE_LLM_PROVIDER=claude + ANTHROPIC_API_KEY, 且服务器上要装 anthropic SDK。
+#    决策, 不该由这段代码替人做主。要启用必须**显式**指定后端(SCALE_LLM_PROVIDER 或
+#    调用时传 backend), 可选 claude / deepseek —— 见 resolve_gen_backend 那一节:
+#    平台为健康咨询配了 DeepSeek key, 但"有 key"不等于"可以拿来生成量表", 不自动启用。
 #    注意即便启用, 送出去的也只是**评估规格**(评估目标/人群/维度), 绝不含任何患者数据。
 
 SCALE_RESPONSE_SETS = {
@@ -2717,65 +2718,440 @@ def _generate_via_template(spec, notes):
     return _build_scale_from_items(spec, name, instruction, raw, notes)
 
 
-def _generate_via_claude(spec, notes):
-    """Claude 后端。返回 (draft, error)。
+# ---- 生成类接口的后端选择与结构化调用 (M12 量表 / M14 CRF / M15 宣教 共用) ----
+#
+# 这里有一条**不能自动化**的判断: 要不要把内容发给外部大模型。
+#
+# 平台为健康咨询(M22)配了一把 DeepSeek key。技术上, 生成量表/CRF/宣教稿完全可以
+# 复用同一把 key, 而且不涉及任何患者数据。但"医院内网服务器把内容发给外部 LLM"
+# 是数据治理决策, 不是代码该替人做主的事 —— 为咨询开了口子, 不等于为建表也开了。
+# 所以: **有 key 不等于自动启用**, 必须显式 SCALE_LLM_PROVIDER=deepseek 或调用时
+# 传 backend。gen_backend_status() 负责把"现在有哪些后端可选"如实告诉前端,
+# 让人在界面上选, 而不是由这段代码悄悄决定。
 
-    默认不启用。启用需要三件事同时具备:
-      1. 服务器装了 anthropic SDK
-      2. 环境变量 SCALE_LLM_PROVIDER=claude
-      3. ANTHROPIC_API_KEY (或 ANTHROPIC_AUTH_TOKEN) 已配置
-    任何一件缺失都回退到模板后端并说明原因, 不静默失败也不硬报错。
+GEN_BACKENDS = ('template', 'claude', 'deepseek')
 
-    送出去的只有评估规格(目标/人群/维度), 不含任何患者数据 —— 生成量表这件事本身
-    不需要接触患者信息, 所以这条边界是天然的, 代码里也不给传患者字段的口子。
+
+def gen_backend_status():
+    """哪些生成后端现在能用。前端据此画后端下拉, 而不是硬编码一份列表。"""
+    out = {'default': 'template', 'backends': []}
+    out['backends'].append({
+        'id': 'template', 'label': '本地模板', 'ready': True, 'sends_data_out': False,
+        'note': '不联网、不需要 key。产出的是结构骨架, 医学内容留给临床方填'})
+    try:
+        import anthropic          # noqa: F401
+        has_sdk = True
+    except ImportError:
+        has_sdk = False
+    ok = has_sdk and bool(os.environ.get('ANTHROPIC_API_KEY') or
+                          os.environ.get('ANTHROPIC_AUTH_TOKEN'))
+    out['backends'].append({
+        'id': 'claude', 'label': 'Claude', 'ready': ok, 'sends_data_out': True,
+        'note': '' if ok else ('未安装 anthropic SDK' if not has_sdk else '未配置 ANTHROPIC_API_KEY')})
+    dk = bool(os.environ.get('DEEPSEEK_API_KEY'))
+    out['backends'].append({
+        'id': 'deepseek', 'label': 'DeepSeek', 'ready': dk, 'sends_data_out': True,
+        'note': ('已配置密钥, 但**默认不启用** —— 生成时显式选它, 或设 '
+                 'SCALE_LLM_PROVIDER=deepseek。把内容发给外部大模型是数据治理决策, '
+                 '不由代码替人决定') if dk else '未配置 DEEPSEEK_API_KEY'})
+    env = (os.environ.get('SCALE_LLM_PROVIDER') or '').lower().strip()
+    out['default'] = env if env in GEN_BACKENDS else 'template'
+    out['env_configured'] = env or None
+    return out
+
+
+def resolve_gen_backend(spec):
+    """这次生成走哪个后端。返回 backend 字符串。
+
+    优先级: 调用方显式指定 > SCALE_LLM_PROVIDER > template。
+    **不看有没有 key** —— 理由见本节顶部。
+    """
+    b = str((spec or {}).get('backend') or '').lower().strip()
+    if b in GEN_BACKENDS:
+        return b
+    env = (os.environ.get('SCALE_LLM_PROVIDER') or '').lower().strip()
+    return env if env in GEN_BACKENDS else 'template'
+
+
+def _json_shape_errors(data, schema, path='$'):
+    """按 JSON Schema 的一个小子集验结构。返回错误列表(空 = 合法)。
+
+    只支持 type / properties / required / items —— 够这几个生成接口用了。
+    存在的理由见 _deepseek_json: DeepSeek 那条路服务端不强制 schema, 不自己验的话
+    模型少给一个字段, 表现是"生成出一份空表单", 而不是报错。
+    """
+    errs = []
+    t = schema.get('type')
+    if t == 'object':
+        if not isinstance(data, dict):
+            return ['{} 应该是对象, 实际是 {}'.format(path, type(data).__name__)]
+        for k in schema.get('required') or []:
+            if k not in data:
+                errs.append('{} 缺字段 {}'.format(path, k))
+        for k, sub in (schema.get('properties') or {}).items():
+            if k in data and sub:
+                errs += _json_shape_errors(data[k], sub, path + '.' + k)
+    elif t == 'array':
+        if not isinstance(data, list):
+            return ['{} 应该是数组, 实际是 {}'.format(path, type(data).__name__)]
+        if not data:
+            errs.append('{} 是空数组'.format(path))
+        for i, v in enumerate(data[:50]):
+            if schema.get('items'):
+                errs += _json_shape_errors(v, schema['items'], '{}[{}]'.format(path, i))
+    elif t == 'string':
+        if not isinstance(data, str) or not data.strip():
+            errs.append('{} 应该是非空字符串'.format(path))
+    elif t == 'boolean':
+        if not isinstance(data, bool):
+            errs.append('{} 应该是布尔'.format(path))
+    return errs[:8]
+
+
+def _deepseek_json(system, user, schema, what, max_tokens=8000):
+    """让 DeepSeek 产出一份结构化 JSON。返回 (data, meta, error)。
+
+    与 Claude 那条路的关键差别, 必须留神:
+    Anthropic 那边是把 JSON Schema 交给服务端强制(output_config), 返回的结构一定合法;
+    DeepSeek 走 OpenAI 兼容协议, 只有 response_format={'type':'json_object'},
+    它保证的是"**能 parse 成 JSON**", 不保证字段对。所以这里自己验一遍再回。
+
+    不复用 _call_deepseek: 那个函数的 system prompt 写死成健康咨询的话术,
+    而且带对话历史与患者语境 —— 这里要的是干净的一次性结构化生成。
+    """
+    key = os.environ.get('DEEPSEEK_API_KEY') or ''
+    if not key:
+        return None, None, ('未配置 DEEPSEEK_API_KEY。密钥写进 /opt/suifang/wx.env(600 权限), '
+                            '不要写进代码或仓库')
+    base = os.environ.get('DEEPSEEK_BASE_URL') or 'https://api.deepseek.com'
+    model = os.environ.get('DEEPSEEK_MODEL') or 'deepseek-chat'
+    timeout = int(os.environ.get('GEN_LLM_TIMEOUT') or 120)
+    body = json.dumps({
+        'model': model,
+        'messages': [{'role': 'system', 'content': system},
+                     {'role': 'user', 'content': user + '\n\n只输出 JSON, 结构如下:\n'
+                      + json.dumps(schema, ensure_ascii=False)}],
+        'response_format': {'type': 'json_object'},
+        'temperature': 0.4, 'max_tokens': max_tokens, 'stream': False,
+    }).encode('utf-8')
+    req = urllib.request.Request(base.rstrip('/') + '/chat/completions', data=body,
+                                 headers={'Content-Type': 'application/json',
+                                          'Authorization': 'Bearer ' + key})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode('utf-8', 'replace')[:200]
+        except Exception:
+            detail = ''
+        return None, None, 'DeepSeek 返回 HTTP {}: {}'.format(e.code, detail)
+    except Exception as e:
+        return None, None, 'DeepSeek 调用失败: {}'.format(e)
+    try:
+        text = data['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        return None, None, 'DeepSeek 返回格式异常: {}'.format(str(data)[:200])
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None, None, '模型返回的不是合法 JSON'
+    errs = _json_shape_errors(parsed, schema)
+    if errs:
+        return None, None, '模型返回的结构不符合要求({}): {}'.format(what, '; '.join(errs))
+    usage = data.get('usage') or {}
+    return parsed, {'backend': 'deepseek', 'model': data.get('model') or model,
+                    'prompt_tokens': usage.get('prompt_tokens'),
+                    'completion_tokens': usage.get('completion_tokens'),
+                    'elapsed_ms': int((time.time() - t0) * 1000)}, None
+
+
+def _claude_json(system, user, schema, what, max_tokens=8000):
+    """让 Claude 产出一份结构化 JSON。返回 (data, meta, error)。
+
+    这条路 schema 是交给服务端强制的, 所以不需要像 DeepSeek 那样自己再验一遍结构 ——
+    但仍然验, 因为 additionalProperties 之类的宽松处照样可能漏字段, 而且两条路
+    走同一个下游合并逻辑, 前置条件不一致会让 bug 只在其中一条上出现。
     """
     try:
         import anthropic
     except ImportError:
-        return None, ('服务器未安装 anthropic SDK。启用 Claude 后端需要: '
-                      '/root/miniconda3/bin/pip install anthropic')
+        return None, None, ('服务器未安装 anthropic SDK: '
+                            '/root/miniconda3/bin/pip install anthropic')
     if not (os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('ANTHROPIC_AUTH_TOKEN')):
-        return None, '未配置 ANTHROPIC_API_KEY, Claude 后端不可用'
+        return None, None, '未配置 ANTHROPIC_API_KEY'
+    t0 = time.time()
+    try:
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model=os.environ.get('ANTHROPIC_MODEL') or 'claude-opus-5',
+            max_tokens=max_tokens, system=system,
+            output_config={'format': {'type': 'json_schema', 'schema': schema}},
+            messages=[{'role': 'user', 'content': user}],
+        )
+        # 安全分类器拒答时是 HTTP 200 + stop_reason='refusal', content 为空 ——
+        # 不先查就读 content[0] 会抛 IndexError
+        if getattr(resp, 'stop_reason', None) == 'refusal':
+            return None, None, '模型拒绝了该生成请求 (stop_reason=refusal)'
+        text = next((b.text for b in resp.content if b.type == 'text'), None)
+        if not text:
+            return None, None, '模型未返回文本内容'
+        parsed = json.loads(text)
+    except Exception as e:
+        traceback.print_exc()
+        return None, None, 'Claude 生成失败: {}'.format(e)
+    errs = _json_shape_errors(parsed, schema)
+    if errs:
+        return None, None, '模型返回的结构不符合要求({}): {}'.format(what, '; '.join(errs))
+    return parsed, {'backend': 'claude', 'elapsed_ms': int((time.time() - t0) * 1000)}, None
 
+
+# ---- CRF 的大模型生成 (M14 §2.1(1)) ----
+#
+# 这里原先是坏的, 坏得很难看出来: generate_crf_draft 里调的是 _generate_via_claude ——
+# 那是**量表**生成器, 返回的是量表的 items 结构, 和 CRF 的 sections/题型对不上。
+# 调完之后 draft 只被用来加一条 note("大模型产出已作为参考并入草稿"), 内容一个字
+# 都没进 definition。也就是说: 花了一次 API 调用, 结果扔了, 还告诉使用者"已并入"。
+# 现在换成专门的 schema + 真正的合并。
+
+CRF_GEN_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'title': {'type': 'string'},
+        'sections': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'name': {'type': 'string'},
+                    'items': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'id': {'type': 'string'},
+                                'text': {'type': 'string'},
+                                'type': {'type': 'string'},
+                            },
+                            'required': ['id', 'text', 'type'],
+                        },
+                    },
+                },
+                'required': ['name', 'items'],
+            },
+        },
+    },
+    'required': ['title', 'sections'],
+}
+
+CRF_GEN_SYSTEM = (
+    '你在为临床随访平台起草**数据采集表(CRF)**的题目。产出是草稿, 会由研究者逐题审核后才启用。\n'
+    '只设计"要采集哪些字段", 不给任何诊断、治疗建议或评分阈值。'
+)
+
+
+def _crf_items_via_llm(spec, notes, backend):
+    """让大模型产出病种专项的 CRF 题目。返回 (sections, error)。
+
+    产出会先过一遍题型白名单和 validate_crf_definition, 过不了就整体丢弃并记账 ——
+    宁可回落模板, 也不把一份结构非法的表单塞给使用者去改。
+    """
+    disease = str(spec.get('disease') or '').strip()
+    visit = str(spec.get('visit_type') or '随诊').strip()
+    fields = [str(x).strip() for x in (spec.get('fields') or []) if str(x).strip()]
+    user = (
+        '病种/项目: {d}\n访视类型: {v}\n需要采集的内容: {f}\n\n'
+        '请设计这个病种在这次访视需要采集的**专项**字段(不要重复"姓名/年龄/访视日期"'
+        '这类通用字段, 那部分平台已有)。\n'
+        '要求:\n'
+        '- 每道题的 type 只能取: text(文本) / paragraph(段落) / number(数字) / date(日期) '
+        '/ single(单选) / multi(多选) / select(下拉)\n'
+        '- single/multi/select 必须给 options, 形如 [{{"label":"是","value":1}}]\n'
+        '- id 用小写英文和下划线, 全表唯一\n'
+        '- 只设计采集项, 不要给出评分标准、分级或临床判定\n'
+        '- 分成 1-3 个 section, 每个 section 3-8 道题'
+    ).format(d=disease or '(未说明)', v=visit, f='、'.join(fields) or '(未指定, 由你判断)')
+
+    if backend == 'deepseek':
+        data, meta, err = _deepseek_json(CRF_GEN_SYSTEM, user, CRF_GEN_SCHEMA, 'CRF 题目')
+    elif backend == 'claude':
+        data, meta, err = _claude_json(CRF_GEN_SYSTEM, user, CRF_GEN_SCHEMA, 'CRF 题目')
+    else:
+        return None, '未知后端: {}'.format(backend)
+    if err:
+        return None, err
+
+    clean, dropped = [], []
+    seen = set()
+    for sec in data.get('sections') or []:
+        items = []
+        for it in sec.get('items') or []:
+            iid = re.sub(r'[^a-z0-9_]', '', str(it.get('id') or '').lower())[:40]
+            t = str(it.get('type') or '').strip()
+            text = str(it.get('text') or '').strip()
+            if not iid or not text or t not in CRF_BASIC_TYPES or t in CRF_NO_ANSWER_TYPES:
+                dropped.append(str(it.get('id') or it.get('text'))[:30]); continue
+            if iid in seen:
+                dropped.append(iid); continue
+            seen.add(iid)
+            node = {'id': iid, 'text': text, 'type': t}
+            if it.get('required'):
+                node['required'] = True
+            if t in CRF_OPTION_TYPES:
+                opts = [{'label': str(o.get('label')).strip(), 'value': o.get('value')}
+                        for o in (it.get('options') or [])
+                        if isinstance(o, dict) and str(o.get('label') or '').strip()
+                        and o.get('value') is not None]
+                if len(opts) < 2:
+                    dropped.append(iid); seen.discard(iid); continue
+                node['options'] = opts
+            items.append(node)
+        if items:
+            clean.append({'name': str(sec.get('name') or '专项采集').strip()[:60], 'items': items})
+    if not clean:
+        return None, '模型产出的题目全部没通过题型校验'
+    if dropped:
+        notes.append({'step': 'llm_items_dropped', 'confidence': 'high',
+                      'detail': '丢弃了 {} 道不合规的题({}) —— 题型不在白名单、'
+                                'id 重复、或选择题没给够选项'.format(
+                                    len(dropped), '、'.join(dropped[:5]))})
+    notes.append({'step': 'llm_items', 'confidence': 'low',
+                  'detail': '{} 后端生成 {} 个专项章节共 {} 道题, **已并入草稿**。'
+                            '题干、题型与选项都须逐条核对 —— 模型不知道你们的实际采集口径'
+                            .format(backend, len(clean), sum(len(s['items']) for s in clean))})
+    return clean, None
+
+
+# ---- 宣教材料的大模型生成 (M15 §2.3(1)) ----
+#
+# 和 CRF 那处一样的毛病: 原先调的是量表生成器, 拿回来的东西没进正文,
+# 却加了一条"大模型产出已作为参考"。现在改成真写正文。
+#
+# 让模型写正文这件事本身是可以的, 因为宣教稿有两道后置闸门:
+# scan_edu_content 会逐句体检(具体剂量、"可自行停药"这类一律 block),
+# 且材料要走 draft -> reviewing -> published 的署名审核才推得到患者。
+# 但有两条仍然守死: 不写具体剂量, 且"什么情况下必须联系医生"这一节不能少。
+
+EDU_GEN_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'title': {'type': 'string'},
+        'sections': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {'heading': {'type': 'string'}, 'body': {'type': 'string'}},
+                'required': ['heading', 'body'],
+            },
+        },
+    },
+    'required': ['title', 'sections'],
+}
+
+EDU_GEN_SYSTEM = (
+    '你在写给患者看的**健康宣教材料**草稿, 会由临床人员审核后才发布。\n'
+    '硬性要求:\n'
+    '- 用患者能懂的话, 不用专业术语; 每节 100-300 字\n'
+    '- **绝对不要写具体药物剂量、用药频次、或"可以自行停药/加量"这类话** —— '
+    '患者会照做, 而你不知道他的具体情况\n'
+    '- 不要下诊断, 不要承诺疗效\n'
+    '- 涉及用药与治疗方案时, 一律写成"请遵医嘱""请联系随访医生"'
+)
+
+
+def _edu_body_via_llm(spec, notes, backend, secs, title):
+    """让大模型写宣教正文。返回 (body, error)。"""
+    disease = str(spec.get('disease') or '').strip()
+    stage = str(spec.get('stage') or '').strip()
+    topic = spec.get('topic') or 'other'
+    user = (
+        '病种: {d}\n病程阶段: {s}\n材料主题: {t}\n\n'
+        '请按下面这几节写, heading 用原文, 不要增删或改名:\n{secs}\n\n'
+        '"什么情况下必须联系医生"这一节要写得具体可判断(出现什么症状、变化到什么程度), '
+        '并提醒留意随访医生的联系方式。'
+    ).format(d=disease or '(通用)', s=stage or '(未指定)',
+             t=EDU_TOPIC_LABELS.get(topic, topic),
+             secs='\n'.join('- ' + x for x in secs))
+
+    if backend == 'deepseek':
+        data, meta, err = _deepseek_json(EDU_GEN_SYSTEM, user, EDU_GEN_SCHEMA, '宣教正文')
+    elif backend == 'claude':
+        data, meta, err = _claude_json(EDU_GEN_SYSTEM, user, EDU_GEN_SCHEMA, '宣教正文')
+    else:
+        return None, '未知后端: {}'.format(backend)
+    if err:
+        return None, err
+
+    got = {str(s.get('heading') or '').strip(): str(s.get('body') or '').strip()
+           for s in (data.get('sections') or [])}
+    lines, missing = [], []
+    for s in secs:
+        body = got.get(s) or ''
+        if not body:
+            # 模型改了小标题时按包含关系再找一次, 找不到就留占位, 不静默跳过
+            body = next((v for k, v in got.items() if s in k or k in s), '')
+        if not body:
+            missing.append(s)
+            body = '【待填写】' + ('（这一节请务必写清楚: 出现哪些情况要立刻联系随访医生或就医, '
+                                  '并留下联系方式）' if s.startswith('什么情况下') else '')
+        lines.append('\n## {}\n{}'.format(s, body))
+    if missing:
+        notes.append({'step': 'llm_sections_missing', 'confidence': 'high',
+                      'detail': '模型没写这几节, 已留占位待人工补: {}'.format('、'.join(missing))})
+    lines.append('\n---\n' + EDU_DISCLAIMER)
+    notes.append({'step': 'llm_body', 'confidence': 'low',
+                  'detail': '{} 后端撰写了正文, **已写入草稿**。这是给患者看的内容, '
+                            '必须逐句核对后再提交审核 —— 下面的内容体检结果要一并看'
+                            .format(backend)})
+    return '\n'.join(lines).strip(), None
+
+
+SCALE_GEN_SYSTEM = (
+    '你在为临床随访平台起草一份评估量表的**题目草稿**, 产出会交给临床专业人员逐题审核后才使用。\n'
+    '不要给出任何评分阈值、分级或临床判定 —— 那部分必须由临床方依据目标人群的实证研究补充。'
+)
+
+
+def _generate_scale_via_llm(spec, notes, backend):
+    """量表的大模型后端(claude / deepseek 共用)。返回 (draft, error)。
+
+    默认不启用, 缺什么就带原因回落模板, 不静默失败也不硬报错。
+
+    送出去的只有评估规格(目标/人群/维度), 不含任何患者数据 —— 生成量表这件事本身
+    不需要接触患者信息, 所以这条边界是天然的, 代码里也不给传患者字段的口子。
+
+    注意产出仍然会被 _sanitize_generated 剥掉 levels: 那道闸不看后端是谁,
+    换后端、换模型、有人手改 schema, 划界值都进不来。
+    """
     dims = [d.strip() for d in (spec.get('dimensions') or []) if str(d).strip()]
     per = spec.get('items_per_dimension') or 3
-    prompt = (
-        '你在为临床随访平台起草一份评估量表的**题目草稿**, 产出会交给临床专业人员逐题审核后才使用。\n\n'
+    user = (
         '评估目标: {goal}\n目标人群: {pop}\n评估维度: {dims}\n每个维度题目数: {per}\n\n'
         '要求:\n'
         '- 每道题只问一件事, 用被评估者能直接判断的具体表现, 不要用专业术语\n'
         '- dimension 字段必须取自上面给定的维度列表\n'
         '- reverse 表示该题是否反向计分(表述方向与其余题目相反)\n'
-        '- 不要给出任何评分阈值、分级或临床判定 —— 那部分由临床方依据实证研究补充\n'
     ).format(goal=spec.get('goal') or '(未说明)', pop=spec.get('population') or '(未说明)',
              dims=' / '.join(dims) or '(未指定)', per=per)
 
-    try:
-        client = anthropic.Anthropic()
-        resp = client.messages.create(
-            model='claude-opus-5',
-            max_tokens=16000,
-            output_config={'format': {'type': 'json_schema', 'schema': SCALE_GEN_SCHEMA}},
-            messages=[{'role': 'user', 'content': prompt}],
-        )
-        # 安全分类器可能拒答, 此时是 HTTP 200 + stop_reason='refusal', content 为空。
-        # 不先查这个就直接读 content[0] 会抛 IndexError。
-        if getattr(resp, 'stop_reason', None) == 'refusal':
-            return None, '模型拒绝了该生成请求 (stop_reason=refusal)'
-        text = next((b.text for b in resp.content if b.type == 'text'), None)
-        if not text:
-            return None, '模型未返回文本内容'
-        data = json.loads(text)
-    except Exception as e:
-        traceback.print_exc()
-        return None, 'Claude 生成失败: {}'.format(e)
+    if backend == 'deepseek':
+        data, meta, err = _deepseek_json(SCALE_GEN_SYSTEM, user, SCALE_GEN_SCHEMA,
+                                         '量表题目', max_tokens=8000)
+    elif backend == 'claude':
+        data, meta, err = _claude_json(SCALE_GEN_SYSTEM, user, SCALE_GEN_SCHEMA,
+                                       '量表题目', max_tokens=16000)
+    else:
+        return None, '未知后端: {}'.format(backend)
+    if err:
+        return None, err
 
     raw = data.get('items') or []
     if not raw:
         return None, '模型返回的题目为空'
     notes.append({'step': 'backend', 'confidence': 'medium',
-                  'detail': 'Claude 后端 (claude-opus-5) 生成 {} 道题, 题干与维度归属均需人工审核'
-                            .format(len(raw))})
+                  'detail': '{} 后端({})生成 {} 道题, 题干与维度归属均需人工审核'
+                            .format(backend, (meta or {}).get('model') or backend, len(raw))})
     return _build_scale_from_items(spec, (data.get('name') or '').strip() or '未命名量表',
                                    (data.get('instruction') or '').strip(), raw, notes), None
 
@@ -2786,13 +3162,13 @@ def generate_scale_draft(spec):
     产出与 M11 的文档解析走**同一个审核界面**: 都是草稿, 都要人逐条确认后才入库。
     """
     notes = []
-    backend = (spec.get('backend') or os.environ.get('SCALE_LLM_PROVIDER') or 'template').lower()
+    backend = resolve_gen_backend(spec)
     draft = None
-    if backend == 'claude':
-        draft, err = _generate_via_claude(spec, notes)
+    if backend in ('claude', 'deepseek'):
+        draft, err = _generate_scale_via_llm(spec, notes, backend)
         if err:
             notes.append({'step': 'backend_fallback', 'confidence': 'high',
-                          'detail': 'Claude 后端不可用, 已回退到模板后端: {}'.format(err)})
+                          'detail': '{} 后端不可用, 已回退到模板后端: {}'.format(backend, err)})
     if draft is None:
         draft = _generate_via_template(spec, notes)
 
@@ -4882,23 +5258,25 @@ def _mk_crf_item(iid, text, itype, extra):
 def generate_crf_draft(spec):
     """§2.1(1): 按病种/访视/采集需求生成 CRF 草稿。返回 (draft, report)。
 
-    后端可插拔, 与 M12 同一惯例: 默认本地模板, 配了 SCALE_LLM_PROVIDER=claude 且装了
-    SDK 才走大模型, 否则带原因回落模板而不是报错。
+    后端可插拔, 与 M12 同一惯例: 默认本地模板, 显式指定 claude/deepseek 才走大模型,
+    否则带原因回落模板而不是报错。
+
+    大模型产出的是**病种专项字段**, 接在通用骨架(CRF_BASE_SECTIONS)后面, 且要过三道
+    过滤才进草稿: 题型白名单 -> 与骨架的 id 冲突检查 -> 合并后整体 validate_crf_definition。
+    任何一道没过就把大模型那部分整体撤掉。
     """
     notes = []
     disease = str(spec.get('disease') or '').strip()
     visit = str(spec.get('visit_type') or '随诊').strip()
     fields = [str(x).strip() for x in (spec.get('fields') or []) if str(x).strip()]
-    backend = (spec.get('backend') or os.environ.get('SCALE_LLM_PROVIDER') or 'template').lower()
+    backend = resolve_gen_backend(spec)
 
-    draft, err = (None, None)
-    if backend == 'claude':
-        draft, err = _generate_via_claude({
-            'goal': 'CRF: {} {}'.format(disease, visit), 'dimensions': fields}, notes)
+    llm_sections = None
+    if backend in ('claude', 'deepseek'):
+        llm_sections, err = _crf_items_via_llm(spec, notes, backend)
         if err:
             notes.append({'step': 'backend_fallback', 'confidence': 'high',
                           'detail': '大模型后端不可用({}), 已回落本地模板'.format(err)})
-            draft = None
 
     sections = []
     for sec_name, items in CRF_BASE_SECTIONS:
@@ -4907,6 +5285,25 @@ def generate_crf_draft(spec):
     notes.append({'step': 'base_template', 'confidence': 'high',
                   'detail': '生成 {} 个基础章节({}), 覆盖 CRF 的通用骨架'.format(
                       len(sections), '、'.join(s['name'] for s in sections))})
+
+    # 大模型产出的专项章节接在通用骨架后面。id 与骨架冲突的直接丢 ——
+    # 同一个 id 出现两次, 后一份的答案会把前一份盖掉, 而界面上看不出来。
+    if llm_sections:
+        used = {it['id'] for s in sections for it in s['items']}
+        kept, clashed = [], []
+        for sec in llm_sections:
+            items = [it for it in sec['items'] if it['id'] not in used]
+            clashed += [it['id'] for it in sec['items'] if it['id'] in used]
+            used |= {it['id'] for it in items}
+            if items:
+                kept.append({'name': sec['name'], 'items': items})
+        if clashed:
+            notes.append({'step': 'llm_id_clash', 'confidence': 'high',
+                          'detail': '丢弃了与通用骨架重名的 {} 个字段({}) —— '
+                                    '同一个 id 出现两次会让后一份答案盖掉前一份, 且界面上看不出来'
+                                    .format(len(clashed), '、'.join(clashed[:5]))})
+        sections += kept
+        fields = []          # 大模型已经把这些字段设计成题了, 不再走关键词猜类型那条路
 
     # 用户点名的采集字段单独成节。类型靠字段名里的线索猜, 猜不出一律给文本 ——
     # 猜错成日期/数字会让人填不进去, 给文本至少填得进去, 事后改类型也是安全改动。
@@ -4946,9 +5343,17 @@ def generate_crf_draft(spec):
 
     definition = {'title': '{}{} CRF'.format(disease or '通用', visit),
                   'sections': sections, 'logic': logic}
-    if draft and isinstance(draft.get('definition'), dict):
-        notes.append({'step': 'llm_merge', 'confidence': 'low',
-                      'detail': '大模型产出已作为参考并入草稿, 题干与题型仍须逐条核对'})
+    # 合并完整体再验一次。大模型那几节单独看是合规的, 但拼进骨架后仍可能出问题
+    # (逻辑规则指向的题被丢了之类)。验不过就把大模型那部分整体撤掉回落模板 ——
+    # 一份结构非法的草稿交到人手里, 他改不动也看不出哪儿不对。
+    if llm_sections:
+        bad = validate_crf_definition(definition)
+        if bad:
+            definition['sections'] = [s for s in sections
+                                      if s['name'] in [n for n, _ in CRF_BASE_SECTIONS]]
+            notes.append({'step': 'llm_rejected', 'confidence': 'high',
+                          'detail': '合并后整体结构校验没过({}), 已撤掉大模型那部分, '
+                                    '只保留通用骨架'.format('; '.join(bad[:2]))})
 
     # 不用内置 hash(): Python 的字符串 hash 每个进程都重新加盐, 同样的病种+访视
     # 在服务重启前后会算出不同的 code, 而这是个默认值, 使用者不会想到它会变。
@@ -5272,22 +5677,25 @@ def generate_edu_draft(spec):
     fmt = spec.get('format') or 'article'
     if fmt not in EDU_FORMATS:
         fmt = 'article'
-    backend = (spec.get('backend') or os.environ.get('SCALE_LLM_PROVIDER') or 'template').lower()
-
-    body_from_llm = None
-    if backend == 'claude':
-        draft, err = _generate_via_claude({
-            'goal': '患者宣教材料: {} {} {}'.format(disease, stage, EDU_TOPIC_LABELS[topic]),
-            'dimensions': EDU_TEMPLATE_SECTIONS[topic]}, notes)
-        if err:
-            notes.append({'step': 'backend_fallback', 'confidence': 'high',
-                          'detail': '大模型后端不可用({}), 已回落本地模板'.format(err)})
-        else:
-            body_from_llm = draft
+    backend = resolve_gen_backend(spec)
 
     title = '{}{}{}'.format(disease or '通用', ('·' + stage) if stage else '',
                             EDU_TOPIC_LABELS[topic])
     secs = EDU_TEMPLATE_SECTIONS[topic]
+
+    # 视频脚本不交给大模型: 分镜里"画面/旁白"的配合是拍摄侧的事, 模型写出来的
+    # 镜头描述看着像样但拍不了, 反而比留白更费事。文章与图文才走生成。
+    body_from_llm = None
+    if backend in ('claude', 'deepseek') and fmt != 'video_script':
+        body_from_llm, err = _edu_body_via_llm(spec, notes, backend, secs, title)
+        if err:
+            notes.append({'step': 'backend_fallback', 'confidence': 'high',
+                          'detail': '大模型后端不可用({}), 已回落本地模板'.format(err)})
+    elif backend in ('claude', 'deepseek'):
+        notes.append({'step': 'backend_skipped', 'confidence': 'high',
+                      'detail': '视频脚本不走大模型生成 —— 分镜的画面与旁白要配合拍摄条件, '
+                                '模型写出来的看着像样但拍不了'})
+
     lines = []
     if fmt == 'video_script':
         lines.append('【视频脚本 · 建议时长 2-3 分钟】')
@@ -5304,21 +5712,36 @@ def generate_edu_draft(spec):
         lines.append('\n## 配图建议')
         lines.append('【待填写 —— 每节配一张图, 图上不要出现具体剂量】')
     lines.append('\n---\n' + EDU_DISCLAIMER)
-    body = '\n'.join(lines).strip()
+    template_body = '\n'.join(lines).strip()
 
-    notes.append({'step': 'template', 'confidence': 'high',
-                  'detail': '按「{}」生成 {} 节骨架。模板只给结构和提问, 不给医学结论 —— '
-                            '这个病该注意什么、这个阶段最容易出什么问题, 必须由临床方写。'
-                            '模板负责保证不漏掉"什么时候该找医生"这一节'.format(
-                                EDU_FORMAT_LABELS[fmt], len(secs))})
+    # 大模型写出正文就用它, 否则用模板骨架。两条路都要过下面的内容体检。
+    body = body_from_llm or template_body
+    if body_from_llm and fmt == 'illustrated':
+        body += '\n\n## 配图建议\n【待填写 —— 每节配一张图, 图上不要出现具体剂量】'
+
+    if body_from_llm:
+        notes.append({'step': 'llm_written', 'confidence': 'low',
+                      'detail': '正文由 {} 后端撰写(不是模板占位)。这是要推给患者的内容, '
+                                '患者没有能力判断对不对而且多半会照做 —— 必须逐句核对, '
+                                '尤其看下面的内容体检结果'.format(backend)})
+    else:
+        notes.append({'step': 'template', 'confidence': 'high',
+                      'detail': '按「{}」生成 {} 节骨架。模板只给结构和提问, 不给医学结论 —— '
+                                '这个病该注意什么、这个阶段最容易出什么问题, 必须由临床方写。'
+                                '模板负责保证不漏掉"什么时候该找医生"这一节'.format(
+                                    EDU_FORMAT_LABELS[fmt], len(secs))})
     notes.append({'step': 'must_review', 'confidence': 'high',
                   'detail': '产出为草稿, 必须经人工审核发布后才能被随访计划调用。'
                             '宣教材料是直接推给患者的, 患者没有能力判断内容对不对, 而且多半会照做'})
-    if body_from_llm:
-        notes.append({'step': 'llm_note', 'confidence': 'low',
-                      'detail': '大模型产出已作为参考, 仍须逐句核对后替换占位文字'})
 
     findings = scan_edu_content(body, title)
+    # 内容体检是**生成之后**跑的, 所以模型写的正文一样要过。出现 block 级问题时
+    # 说清楚这份稿子不能就这么提交审核 —— 不然"AI 生成的"很容易被当成"已经检查过的"。
+    if body_from_llm and any(f['level'] == 'block' for f in findings):
+        notes.append({'step': 'llm_blocked_findings', 'confidence': 'high',
+                      'detail': '模型写的正文里有 {} 处 block 级问题(具体剂量、可自行停药一类), '
+                                '必须逐条改掉再提交审核。这类句子患者会照做'
+                                .format(sum(1 for f in findings if f['level'] == 'block'))})
     draft = {'title': title, 'category': disease or None, 'stage': stage or None,
              'topic': topic, 'format': fmt, 'body': body, 'source': 'ai',
              'status': 'draft', 'tags': [x for x in [disease, stage, EDU_TOPIC_LABELS[topic]] if x]}
@@ -12900,6 +13323,11 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                                                 (query.get('code') or [None])[0])
             self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
+        elif pathname == '/api/platform/gen/backends':
+            # 前端据此画"用哪个后端生成"的下拉。不在前端硬编码一份列表 ——
+            # 硬编码那份迟早和服务端漂移, 表现是界面上能选、一点就报后端不可用
+            self._send_json(200, {'ok': True, 'gen': gen_backend_status()})
+
         elif pathname == '/api/platform/ocr/status':
             # 唯一不带门禁的 OCR 端点: 只报引擎装没装, 不碰任何任务或患者数据
             self._send_json(200, {'ok': True, 'status': ocr_engine_status()})
@@ -13438,6 +13866,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'GET  /api/platform/study/can': '随访平台 M24: 问这个状态下能不能做某动作 (?code=&action=enroll)',
                     'POST /api/platform/version/rollback': '随访平台 M24: 回滚 CRF/流程(产出新版本, 不删旧版)',
                     'GET  /api/platform/version/history': '随访平台 M24: 版本历史与回滚记录 (?kind=crf&code=)',
+                    'GET  /api/platform/gen/backends': '随访平台 M12/M14/M15: 生成后端可用性(template/claude/deepseek)',
                     'GET  /api/platform/ocr/status': '随访平台 M25: OCR 引擎可用性(本地引擎, 不出网)',
                     'POST /api/platform/ocr/recognize': '随访平台 M25: 病历/检验单拍照 -> 待人工核对的候选字段(不入库)',
                     'GET  /api/platform/ocr/job': '随访平台 M25: 取识别任务与待核清单 (?job=)',
@@ -14252,6 +14681,7 @@ if __name__ == '__main__':
     print('[端点] POST /api/platform/edu/transition          随访平台 M15: 提交/发布/退回/归档')
     print('[端点] POST /api/platform/edu/generate            随访平台 M15: 生成宣教草稿')
     print('[端点] POST /api/platform/edu/scan                随访平台 M15: 内容体检')
+    print('[端点] GET  /api/platform/gen/backends           随访平台 M12/M14/M15: 生成后端可用性')
     print('[端点] GET  /api/platform/ocr/status              随访平台 M25: OCR 引擎可用性')
     print('[端点] POST /api/platform/ocr/recognize           随访平台 M25: 拍照识别 -> 待核清单(不入库)')
     print('[端点] GET  /api/platform/ocr/job                  随访平台 M25: 待核清单(需口令)')
