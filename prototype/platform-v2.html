@@ -556,7 +556,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>AI 辅助生成 CRF 模板</td><td><span class="tag amber">部分</span></td><td>本地模板已通（基础骨架 + 按字段名猜题型 + 三条逻辑规则）；接大模型需服务器另配 SDK 与密钥</td></tr>
               <tr><td>Excel + 大模型辅助建表</td><td><span class="tag amber">部分</span></td><td>配置式与数据式两种排布都能解析，每列都给出推断依据；「大模型」部分同上</td></tr>
               <tr><td>字段与临床数据元映射</td><td><span class="tag grey">未建设</span></td><td>需要一套院内数据元字典做对照，目前没有</td></tr>
-              <tr><td>实时备份</td><td><span class="tag grey">未建设</span></td><td>历史版本查得到，但没有定时快照与一键回滚</td></tr>
+              <tr><td>实时备份</td><td><span class="tag amber">部分</span></td><td>一键回滚已建（M24：把 CRF/流程的<b>定义</b>回到任一旧版，产出新版本、不删旧版、必须署名并写明原因）。缺的是<b>定时快照</b>——现在只有「每改一次留一版」，没有按时间点的自动备份</td></tr>
               <tr><td>附带音视频指导文件</td><td><span class="tag grey">未建设</span></td><td>表结构留了 media 字段，还没有上传与播放</td></tr>
             </tbody></table></div>
           </div>
@@ -709,7 +709,7 @@ select.mini,input.mini{padding:5px 8px;font-size:12px;border:1px solid var(--lin
               <tr><td>对比结果导出</td><td><span class="tag green">已建</span></td><td>对比抽屉里导出 CSV（UTF-8 BOM，Excel 直读）；变化的格子在文件里缀「←变化」，拿到文件的人不用记得屏幕上哪几格是红的</td></tr>
               <tr><td>质疑—核查—修正闭环，全程留痕</td><td><span class="tag green">已建</span></td><td>raise/answer/close/reopen 四步，每步追一行只增不改的日志</td></tr>
               <tr><td>单位级 / 数据库级两级质控员 + 第三方稽查员</td><td><span class="tag amber">部分</span></td><td><b>角色只记录、不鉴权</b>——平台还没有账号体系，任何人都能写任意角色。要满足 GCP 权责分离必须先做鉴权</td></tr>
-              <tr><td>修改留痕：改前改后值、历史版本、回退</td><td><span class="tag amber">部分</span></td><td>量表填报已是「新增一条 + 旧版标 superseded」，历史版查得到；但还没有回退操作，其他数据类型也没接</td></tr>
+              <tr><td>修改留痕：改前改后值、历史版本、回退</td><td><span class="tag amber">部分</span></td><td><b>定义</b>层面的回退已建（M24 回滚 CRF/流程版本）；<b>填报数据</b>层面仍只有修订——「新增一条 + 旧版标 superseded」，历史版查得到，但没有「退回上一版」这个动作，且只覆盖量表与 CRF 填报，体征等其他数据类型没接</td></tr>
               <tr><td>OCR 辅助采集（病历/检验单拍照填 CRF）</td><td><span class="tag green">已建</span></td><td>本地 RapidOCR（模型打包在包里，纯 CPU，<b>不联网不要 key</b>——输入是带姓名身份证号的病历照片，不外发第三方）。<b>识别结果一律不自动入库</b>：待核字段按 CRF 定义全量生成（不是按识别命中了什么），逐字段人工核对，数字/日期/表格只能键入。PDF 走 pdf-inspector 分流，有文字层的页直接取字、只有照片页才送识别</td></tr>
             </tbody>
           </table></div>
