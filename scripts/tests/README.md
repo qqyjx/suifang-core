@@ -71,9 +71,11 @@ check('一路同档两次一样不误报 —— 筛查量表上这是常态, 报
 | `pyzipper` | 导出文件 AES-256 加密 | ✅ 0.4.0 已装 |
 | `openpyxl` | Excel → CRF 建表 | ✅ 3.1.5 已装 |
 | `pdf-inspector` | PDF 分流(判断哪几页需要 OCR) + 取文字层 | ✅ 0.2.6 已装 |
-| `rapidocr-onnxruntime` | M25 OCR 引擎 | ⬜ 待装 |
-| `onnxruntime` | 同上(rapidocr 的运行时) | ⬜ 待装 |
-| `pypdfium2` | 把没有文字层的 PDF 页渲成图送识别 | ⬜ 待装 |
+| `rapidocr-onnxruntime` | M25 OCR 引擎 | ✅ 1.4.4 已装 |
+| `onnxruntime` | 同上(rapidocr 的运行时) | ✅ 1.16.3 已装 |
+| `opencv-python-headless` | 同上(**必须是 headless 版**, 见下) | ✅ 5.0.0.93 已装 |
+| `pypdfium2` | 把没有文字层的 PDF 页渲成图送识别 | ✅ 5.12.1 已装 |
+| `Pillow` | 裁原件图供人工核对 | ✅ 10.4.0 已装 |
 | anthropic SDK | 量表/CRF 生成走大模型 | ❌ 未装(回落本地模板) |
 | `DEEPSEEK_API_KEY` | 健康咨询 | ✅ 已配(在 /opt/suifang/wx.env) |
 
@@ -91,15 +93,23 @@ check('一路同档两次一样不误报 —— 筛查量表上这是常态, 报
 ssh root@192.168.4.104 'pip3 install segno pyzipper openpyxl'
 ```
 
-**M25 的 OCR 依赖要按下面这个顺序装, 不能直接 `pip install rapidocr-onnxruntime`:**
+**M25 的 OCR 依赖已于 2026-08-03 装好。**要重装或换机时按下面这个顺序,
+不能直接 `pip install rapidocr-onnxruntime`:
 
 ```bash
-ssh root@192.168.4.104 '
-  /root/miniconda3/bin/pip install opencv-python-headless pyclipper numpy six \
-      Shapely PyYAML Pillow onnxruntime tqdm &&
-  /root/miniconda3/bin/pip install --no-deps rapidocr-onnxruntime pypdfium2'
+M=https://pypi.tuna.tsinghua.edu.cn/simple; H=pypi.tuna.tsinghua.edu.cn
+ssh root@192.168.4.104 "
+  /root/miniconda3/bin/pip install -i $M --trusted-host $H \
+      opencv-python-headless pyclipper numpy six Shapely PyYAML Pillow onnxruntime tqdm &&
+  /root/miniconda3/bin/pip install -i $M --trusted-host $H \
+      --no-deps rapidocr-onnxruntime pypdfium2"
 systemctl restart suifang     # 重启后接口才会认到新库
 ```
+
+**必须走清华镜像。** 这台服务器直连 pypi.org 是不通的(curl 25 秒拿不到首字节),
+而清华镜像 0.7 秒返回 200。之前 segno/pyzipper 那几个小包能装上纯粹是因为体积小,
+换成 OCR 这 90MB 就会一直卡住 —— 而 `pip install --quiet` 卡住时没有任何输出,
+看起来像装完了。服务器上**没有配 pip.conf**, 所以每次都得显式 `-i`。
 
 原因: rapidocr 的依赖里写的是 `opencv-python`(带 GUI 的完整版), 它 `import cv2` 时要
 `libGL.so.1`。服务器是无头的, 装完之后 OCR 一调就 ImportError, 而且报的是一个和 OCR
@@ -107,10 +117,9 @@ systemctl restart suifang     # 重启后接口才会认到新库
 GUI 部分, rapidocr 只做图像运算, 用它完全够。所以先把 headless 装上, 再用 `--no-deps`
 装 rapidocr, 避免 pip 又把完整版拉回来(两个包会互相覆盖同一个 cv2)。
 
-这套装法在本机 venv 里实测跑通(cv2 只有 headless 一个来源, 识别正常出 75 行)。
-各依赖的 py3.8 wheel 都存在(生产是 Python 3.8): rapidocr 1.4.4 / onnxruntime 1.16.3 /
-pypdfium2 5.12.1 / opencv-python-headless 5.0.0.93(cp37-abi3) / pyclipper 1.3.0.post6 /
-shapely 2.0.7。总下载量约 90MB。
+生产实测(2026-08-03): `import cv2` 正常(无 libGL 问题), 引擎初始化 0.55s,
+一张 A4 检验单识别 3.16s / 75 行。`pip list | grep opencv` 只有 headless 一个,
+说明 `--no-deps` 确实挡住了完整版。总下载量约 90MB。
 
 OCR 全部在本院服务器上跑, 不联网、不需要 key。这是刻意的: 输入是病历和检验单的照片,
 上面有姓名、身份证号、门诊号, 送云 OCR 等于把一整份 PHI 交给第三方。
