@@ -37,8 +37,9 @@ class Stub(object):
     def __enter__(self):
         self._orig = hs._deepseek_json
 
-        def fake(system, user, schema, what, max_tokens=8000):
-            self.calls.append({'system': system, 'user': user, 'what': what})
+        def fake(system, user, schema, what, example=None, max_tokens=8000):
+            self.calls.append({'system': system, 'user': user, 'what': what,
+                               'example': example})
             if self.error:
                 return None, None, self.error
             return self.payload, {'backend': 'deepseek', 'model': 'stub'}, None
@@ -259,6 +260,99 @@ check('送给模型的 schema 里根本没有 levels 的位置 —— 比事后�
 check('即便如此仍然兜底清一遍', sc2['definition']['scoring']['levels'] == [])
 
 # ---------------------------------------------------------------- 真调用
+
+section('G5b 提示词里必须给"填好的样例", 不能只给 JSON Schema')
+# 这条是拿真模型试出来的: 把 JSON Schema 原样贴进提示词时, DeepSeek 会把那份
+# schema **原样抄回来** —— 返回 {"type":"object","properties":{...}} 而不是实例。
+# 它是合法 JSON, response_format 不报错, 是结构校验把它拦下来的。
+# 打桩测不出这件事, 所以这里退一步守"请求里确实带了样例"。
+_sent = {}
+
+
+class _FakeResp(object):
+    def __init__(self, payload):
+        self._b = json.dumps({'choices': [{'message': {'content': json.dumps(payload)}}],
+                              'usage': {}, 'model': 'stub'}).encode()
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _fake_urlopen(req, timeout=None):
+    _sent['body'] = json.loads(req.data.decode('utf-8'))
+    return _FakeResp({'title': 't', 'sections': [
+        {'name': 'n', 'items': [{'id': 'i', 'text': 'x', 'type': 'text'}]}]})
+
+
+_orig_urlopen = hs.urllib.request.urlopen
+os.environ['DEEPSEEK_API_KEY'] = 'sk-stub-0000000000000000000000'
+hs.urllib.request.urlopen = _fake_urlopen
+try:
+    hs._deepseek_json(hs.CRF_GEN_SYSTEM, '病种: 测试', hs.CRF_GEN_SCHEMA, 'CRF 题目',
+                      example=hs.CRF_GEN_EXAMPLE)
+    prompt = _sent['body']['messages'][-1]['content']
+    check('请求里带了填好的样例(而不是只有 schema)',
+          '（这里写题干）' in prompt, prompt[-160:])
+    check('并且说清了"这只是格式示例, 内容不要照抄" —— '
+          '不写这句模型会把示例里的内容当成要交付的内容',
+          '不要照抄' in prompt)
+    check('没有把 JSON Schema 的关键字贴进去 —— 贴了模型就照着它抄回来',
+          '"properties"' not in prompt and "'properties'" not in prompt, prompt[-120:])
+    check('response_format 仍然要求 json_object',
+          _sent['body']['response_format'] == {'type': 'json_object'})
+    for name, ex, must in (('CRF', hs.CRF_GEN_EXAMPLE, 'sections'),
+                           ('宣教', hs.EDU_GEN_EXAMPLE, 'sections'),
+                           ('量表', hs.SCALE_GEN_EXAMPLE, 'items')):
+        check('%s 的样例本身符合它自己的 schema —— 样例错了模型就跟着错' % name,
+              must in ex and isinstance(ex[must], list) and ex[must])
+finally:
+    hs.urllib.request.urlopen = _orig_urlopen
+    os.environ.pop('DEEPSEEK_API_KEY', None)
+
+
+section('G6 门禁: 花钱出网的那一刻才要口令')
+
+
+class FakeHandler(object):
+    """够 check_platform_token 用就行: 它只读 headers 和调 _send_json。"""
+
+    def __init__(self, token=None):
+        self.headers = {'X-Platform-Token': token} if token else {}
+        self.sent = None
+
+    def _send_json(self, code, data):
+        self.sent = (code, data)
+
+
+_orig_token = hs.PLATFORM_TOKEN
+hs.PLATFORM_TOKEN = 'test-token-123'
+try:
+    h = FakeHandler()
+    check('模板后端不要口令 —— 它不联网不花钱, 平台不该无缘无故要起口令来',
+          hs.require_token_for_llm(h, {'backend': 'template'}) is True and h.sent is None)
+    h = FakeHandler()
+    check('**大模型后端没带口令 -> 挡下** —— 这个 API 挂在公网入口上, '
+          '不挡等于把我们的 key 敞开给任何能访问到它的人',
+          hs.require_token_for_llm(h, {'backend': 'deepseek'}) is False
+          and h.sent and h.sent[0] == 403, (h.sent or ('无',))[0])
+    h = FakeHandler('wrong')
+    check('口令不对也挡下', hs.require_token_for_llm(h, {'backend': 'deepseek'}) is False)
+    h = FakeHandler('test-token-123')
+    check('口令对了放行', hs.require_token_for_llm(h, {'backend': 'deepseek'}) is True)
+    h = FakeHandler()
+    os.environ['SCALE_LLM_PROVIDER'] = 'deepseek'
+    check('后端是从环境变量来的时候同样要口令 —— 别只看请求里写没写 backend',
+          hs.require_token_for_llm(h, {}) is False, h.sent)
+    os.environ.pop('SCALE_LLM_PROVIDER')
+finally:
+    hs.PLATFORM_TOKEN = _orig_token
+
 
 section('G6 真实调用 (要显式 RUN_LIVE_LLM=1 且有 key 才跑)')
 if os.environ.get('RUN_LIVE_LLM') == '1' and os.environ.get('REAL_DEEPSEEK_KEY'):

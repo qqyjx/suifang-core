@@ -2688,6 +2688,22 @@ def _build_scale_from_items(spec, name, instruction, raw_items, notes):
     return _sanitize_generated(draft, notes)
 
 
+def require_token_for_llm(handler, spec):
+    """生成类接口: 走大模型时才要口令。返回 True = 放行。
+
+    门禁的理由是**花钱 + 出网**, 所以它就该正好卡在花钱出网的那一刻:
+      backend=template  本地模板, 不联网不花钱 -> 不要口令(维持原有用法)
+      backend=claude/deepseek 一次调用就是一次外部请求 -> 要口令
+
+    不这么分的话有两种坏法: 一律不要口令, 等于把我们的 key 敞开给任何能访问到
+    这个 API 的人(它挂在公网入口上); 一律要口令, 则原本不花钱的模板生成也被挡住,
+    使用者会觉得平台无缘无故要起口令来。
+    """
+    if resolve_gen_backend(spec or {}) == 'template':
+        return True
+    return check_platform_token(handler)
+
+
 def _generate_via_template(spec, notes):
     """模板后端: 不联网、不需要 key、结果完全可预期。
 
@@ -2808,13 +2824,19 @@ def _json_shape_errors(data, schema, path='$'):
     return errs[:8]
 
 
-def _deepseek_json(system, user, schema, what, max_tokens=8000):
+def _deepseek_json(system, user, schema, what, example=None, max_tokens=8000):
     """让 DeepSeek 产出一份结构化 JSON。返回 (data, meta, error)。
 
     与 Claude 那条路的关键差别, 必须留神:
     Anthropic 那边是把 JSON Schema 交给服务端强制(output_config), 返回的结构一定合法;
     DeepSeek 走 OpenAI 兼容协议, 只有 response_format={'type':'json_object'},
     它保证的是"**能 parse 成 JSON**", 不保证字段对。所以这里自己验一遍再回。
+
+    **提示词里给的是"示例实例"而不是 JSON Schema。** 这一条是拿真模型试出来的:
+    把 schema 原样贴进去时, 模型会把那份 schema **原样抄回来** ——
+    返回 {"type":"object","properties":{...}} 而不是一份填好的实例。
+    它是合法 JSON, 所以 response_format 不报错; 是结构校验把它拦下来的。
+    换成一份填好的样例之后才对。示例只说明格式, 内容仍按 user 里的要求写。
 
     不复用 _call_deepseek: 那个函数的 system prompt 写死成健康咨询的话术,
     而且带对话历史与患者语境 —— 这里要的是干净的一次性结构化生成。
@@ -2826,11 +2848,14 @@ def _deepseek_json(system, user, schema, what, max_tokens=8000):
     base = os.environ.get('DEEPSEEK_BASE_URL') or 'https://api.deepseek.com'
     model = os.environ.get('DEEPSEEK_MODEL') or 'deepseek-chat'
     timeout = int(os.environ.get('GEN_LLM_TIMEOUT') or 120)
+    shape = ('\n\n只输出一个 JSON 对象, **照下面这个样子**。这只是格式示例, '
+             '里面的内容不要照抄, 要按上面的要求重新写:\n'
+             + json.dumps(example, ensure_ascii=False, indent=1)) if example else (
+             '\n\n只输出 JSON, 结构如下:\n' + json.dumps(schema, ensure_ascii=False))
     body = json.dumps({
         'model': model,
         'messages': [{'role': 'system', 'content': system},
-                     {'role': 'user', 'content': user + '\n\n只输出 JSON, 结构如下:\n'
-                      + json.dumps(schema, ensure_ascii=False)}],
+                     {'role': 'user', 'content': user + shape}],
         'response_format': {'type': 'json_object'},
         'temperature': 0.4, 'max_tokens': max_tokens, 'stream': False,
     }).encode('utf-8')
@@ -2945,6 +2970,33 @@ CRF_GEN_SCHEMA = {
     'required': ['title', 'sections'],
 }
 
+# 给 DeepSeek 看的格式示例(不是给 Claude 的 —— 那边 schema 由服务端强制)。
+# 内容刻意写成一眼可辨的占位, 免得模型把示例里的题目当成要交付的题目。
+CRF_GEN_EXAMPLE = {
+    'title': '（这里写表单标题）',
+    'sections': [{
+        'name': '（这里写章节名）',
+        'items': [
+            {'id': 'example_number', 'text': '（这里写题干）', 'type': 'number'},
+            {'id': 'example_choice', 'text': '（这里写题干）', 'type': 'single',
+             'options': [{'label': '是', 'value': 1}, {'label': '否', 'value': 0}]},
+        ],
+    }],
+}
+
+EDU_GEN_EXAMPLE = {
+    'title': '（这里写标题）',
+    'sections': [{'heading': '（这里写小节名，用给定的原文）',
+                  'body': '（这里写这一节的正文，100-300 字）'}],
+}
+
+SCALE_GEN_EXAMPLE = {
+    'name': '（这里写量表名）',
+    'instruction': '（这里写作答指导语）',
+    'items': [{'id': 'q1', 'text': '（这里写题干）',
+               'dimension': '（这里写该题属于哪个维度）', 'reverse': False}],
+}
+
 CRF_GEN_SYSTEM = (
     '你在为临床随访平台起草**数据采集表(CRF)**的题目。产出是草稿, 会由研究者逐题审核后才启用。\n'
     '只设计"要采集哪些字段", 不给任何诊断、治疗建议或评分阈值。'
@@ -2974,7 +3026,8 @@ def _crf_items_via_llm(spec, notes, backend):
     ).format(d=disease or '(未说明)', v=visit, f='、'.join(fields) or '(未指定, 由你判断)')
 
     if backend == 'deepseek':
-        data, meta, err = _deepseek_json(CRF_GEN_SYSTEM, user, CRF_GEN_SCHEMA, 'CRF 题目')
+        data, meta, err = _deepseek_json(CRF_GEN_SYSTEM, user, CRF_GEN_SCHEMA, 'CRF 题目',
+                                         example=CRF_GEN_EXAMPLE)
     elif backend == 'claude':
         data, meta, err = _claude_json(CRF_GEN_SYSTEM, user, CRF_GEN_SCHEMA, 'CRF 题目')
     else:
@@ -3075,7 +3128,8 @@ def _edu_body_via_llm(spec, notes, backend, secs, title):
              secs='\n'.join('- ' + x for x in secs))
 
     if backend == 'deepseek':
-        data, meta, err = _deepseek_json(EDU_GEN_SYSTEM, user, EDU_GEN_SCHEMA, '宣教正文')
+        data, meta, err = _deepseek_json(EDU_GEN_SYSTEM, user, EDU_GEN_SCHEMA, '宣教正文',
+                                         example=EDU_GEN_EXAMPLE)
     elif backend == 'claude':
         data, meta, err = _claude_json(EDU_GEN_SYSTEM, user, EDU_GEN_SCHEMA, '宣教正文')
     else:
@@ -3137,7 +3191,8 @@ def _generate_scale_via_llm(spec, notes, backend):
 
     if backend == 'deepseek':
         data, meta, err = _deepseek_json(SCALE_GEN_SYSTEM, user, SCALE_GEN_SCHEMA,
-                                         '量表题目', max_tokens=8000)
+                                         '量表题目', example=SCALE_GEN_EXAMPLE,
+                                         max_tokens=8000)
     elif backend == 'claude':
         data, meta, err = _claude_json(SCALE_GEN_SYSTEM, user, SCALE_GEN_SCHEMA,
                                        '量表题目', max_tokens=16000)
@@ -14894,6 +14949,8 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/edu/generate':
+                if not require_token_for_llm(self, body.get('spec') or body):
+                    return
                 spec = body if isinstance(body, dict) else {}
                 if not (spec.get('disease') or spec.get('topic')):
                     self._send_json(400, {'ok': False, 'error': '至少要给 disease(病种) 或 topic(主题)'}); return
@@ -14952,6 +15009,8 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 self._send_json(200, dict(classify_crf_change(a, bdef), ok=True))
 
             elif pathname == '/api/platform/crf/generate':
+                if not require_token_for_llm(self, body.get('spec') or body):
+                    return
                 spec = body if isinstance(body, dict) else {}
                 if not (spec.get('disease') or spec.get('fields')):
                     self._send_json(400, {'ok': False,
@@ -14994,7 +15053,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 self._send_json(400 if err else 200, {'ok': False, 'error': err} if err else result)
 
             elif pathname == '/api/platform/scale/generate':
-                # 只生成不落库, 产出交人工审核 —— 与 /scale/parse 同样不走写接口门禁
+                if not require_token_for_llm(self, body.get('spec') or body):
+                    return
+                # 只生成不落库, 产出交人工审核。走模板后端时不要口令(不联网不花钱);
+                # 走大模型后端要口令 —— 见 require_token_for_llm
                 spec = body if isinstance(body, dict) else {}
                 if not (spec.get('goal') or spec.get('dimensions')):
                     self._send_json(400, {'ok': False,

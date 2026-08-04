@@ -2247,8 +2247,8 @@ document.getElementById('scaleGenBtn').onclick = () => {
     if (!goal && !dims.length) { toast('至少填写评估目标或评估维度'); return; }
     btn.disabled = true; btn.textContent = '生成中…';
     try {
-      const res = await fetch(API_BASE + '/api/platform/scale/generate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await apiFetch(API_BASE + '/api/platform/scale/generate', {
+        method: 'POST', headers: headers(true),
         body: JSON.stringify({
           goal, dimensions: dims,
           population: document.getElementById('gnPop').value.trim(),
@@ -4510,8 +4510,8 @@ document.getElementById('eduGenBtn').onclick = () => {
     if (!disease) { toast('请填写病种'); return; }
     btn.disabled = true; btn.textContent = '生成中…';
     try {
-      const res = await fetch(API_BASE + '/api/platform/edu/generate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await apiFetch(API_BASE + '/api/platform/edu/generate', {
+        method: 'POST', headers: headers(true),
         body: JSON.stringify({ disease: disease, stage: document.getElementById('egStage').value.trim(),
           topic: document.getElementById('egTopic').value,
           format: document.getElementById('egFormat').value,
@@ -5039,8 +5039,8 @@ document.getElementById('crfGenBtn').onclick = () => {
     if (!disease && !fields.length) { toast('至少填写病种或采集字段'); return; }
     btn.disabled = true; btn.textContent = '生成中…';
     try {
-      const res = await fetch(API_BASE + '/api/platform/crf/generate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await apiFetch(API_BASE + '/api/platform/crf/generate', {
+        method: 'POST', headers: headers(true),
         body: JSON.stringify({ disease: disease, visit_type: document.getElementById('cgVisit').value,
           fields: fields, code: document.getElementById('cgCode').value.trim() || undefined,
           backend: document.getElementById('cgBackend').value }),
