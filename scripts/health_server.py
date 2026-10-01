@@ -2892,12 +2892,15 @@ def _deepseek_json(system, user, schema, what, example=None, max_tokens=8000):
                     'elapsed_ms': int((time.time() - t0) * 1000)}, None
 
 
-def _claude_json(system, user, schema, what, max_tokens=8000):
+def _claude_json(system, user, schema, what, max_tokens=16000):
     """让 Claude 产出一份结构化 JSON。返回 (data, meta, error)。
 
     这条路 schema 是交给服务端强制的, 所以不需要像 DeepSeek 那样自己再验一遍结构 ——
     但仍然验, 因为 additionalProperties 之类的宽松处照样可能漏字段, 而且两条路
     走同一个下游合并逻辑, 前置条件不一致会让 bug 只在其中一条上出现。
+
+    默认模型 claude-opus-5-5: 思考关不掉, 思考 token 也算进 max_tokens, 所以上限
+    从 8000 提到 16000; effort 默认是 medium, 这里显式写出来, 免得换模型时静默变档。
     """
     try:
         import anthropic
@@ -2909,16 +2912,28 @@ def _claude_json(system, user, schema, what, max_tokens=8000):
     t0 = time.time()
     try:
         client = anthropic.Anthropic()
-        resp = client.messages.create(
-            model=os.environ.get('ANTHROPIC_MODEL') or 'claude-opus-5',
+        # fallbacks='default': 分类器误拒时服务端换 Anthropic 推荐的备用模型重跑,
+        # 数据仍只发给 Anthropic。SDK 旧版没有 fallbacks 形参, 走 extra_body。
+        resp = client.beta.messages.create(
+            model=os.environ.get('ANTHROPIC_MODEL') or 'claude-opus-5-5',
             max_tokens=max_tokens, system=system,
-            output_config={'format': {'type': 'json_schema', 'schema': schema}},
+            output_config={'effort': 'medium',
+                           'format': {'type': 'json_schema', 'schema': schema}},
             messages=[{'role': 'user', 'content': user}],
+            betas=['server-side-fallback-2026-07-01'],
+            extra_body={'fallbacks': 'default'},
         )
         # 安全分类器拒答时是 HTTP 200 + stop_reason='refusal', content 为空 ——
-        # 不先查就读 content[0] 会抛 IndexError
-        if getattr(resp, 'stop_reason', None) == 'refusal':
-            return None, None, '模型拒绝了该生成请求 (stop_reason=refusal)'
+        # 不先查就读 content[0] 会抛 IndexError。走到这里说明备用模型也拒了
+        stop = getattr(resp, 'stop_reason', None)
+        if stop == 'refusal':
+            sd = getattr(resp, 'stop_details', None)
+            # 旧版 SDK 不认识 stop_details, 会原样留成 dict
+            cat = sd.get('category') if isinstance(sd, dict) else getattr(sd, 'category', None)
+            return None, None, '模型拒绝了该生成请求 (stop_reason=refusal, category={})'.format(cat)
+        # 截断的 JSON 解析会报一个看不出原因的错, 先把真实原因报出来
+        if stop == 'max_tokens':
+            return None, None, '输出被 max_tokens={} 截断, JSON 不完整'.format(max_tokens)
         text = next((b.text for b in resp.content if b.type == 'text'), None)
         if not text:
             return None, None, '模型未返回文本内容'
@@ -2929,7 +2944,12 @@ def _claude_json(system, user, schema, what, max_tokens=8000):
     errs = _json_shape_errors(parsed, schema)
     if errs:
         return None, None, '模型返回的结构不符合要求({}): {}'.format(what, '; '.join(errs))
-    return parsed, {'backend': 'claude', 'elapsed_ms': int((time.time() - t0) * 1000)}, None
+    usage = getattr(resp, 'usage', None)
+    # model 取响应里的: 发生 fallback 时它是实际作答的模型, 不是请求里写的那个
+    return parsed, {'backend': 'claude', 'model': getattr(resp, 'model', None),
+                    'input_tokens': getattr(usage, 'input_tokens', None),
+                    'output_tokens': getattr(usage, 'output_tokens', None),
+                    'elapsed_ms': int((time.time() - t0) * 1000)}, None
 
 
 # ---- CRF 的大模型生成 (M14 §2.1(1)) ----
